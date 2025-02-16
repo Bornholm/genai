@@ -15,6 +15,11 @@ type Client struct {
 	model  string
 }
 
+// Model implements llm.Client.
+func (c *Client) Model() string {
+	return c.model
+}
+
 // ChatCompletion implements llm.Client.
 func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)

@@ -127,6 +127,7 @@ func WithTools(tools ...Tool) ChatCompletionOptionFunc {
 }
 
 type Client interface {
+	Model() string
 	ChatCompletion(ctx context.Context, funcs ...ChatCompletionOptionFunc) (CompletionResponse, error)
 }
 
