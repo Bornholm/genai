@@ -8,9 +8,11 @@ require (
 	github.com/RealAlexandreAI/json-repair v0.0.14
 	github.com/abadojack/whatlanggo v1.0.1
 	github.com/blevesearch/bleve/v2 v2.4.4
+	github.com/davecgh/go-spew v1.1.1
 	github.com/gocolly/colly v1.2.0
 	github.com/openai/openai-go v0.1.0-alpha.59
 	github.com/pkg/errors v0.9.1
+	github.com/revrost/go-openrouter v0.0.0-20250128091643-3d014d57014d
 	github.com/yargevad/filepathx v1.0.0
 )
 

@@ -125,6 +125,10 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 		return nil, errors.WithStack(err)
 	}
 
+	if len(completion.Choices) == 0 {
+		return nil, errors.WithStack(llm.ErrNoMessage)
+	}
+
 	openaiMessage := completion.Choices[0].Message
 
 	var message llm.Message = llm.NewMessage(llm.RoleAssistant, openaiMessage.Content)

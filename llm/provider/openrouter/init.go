@@ -1,28 +1,18 @@
-package openai
+package openrouter
 
 import (
 	"context"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 	"github.com/pkg/errors"
+	"github.com/revrost/go-openrouter"
 )
 
-const Name provider.Name = "openai"
+const Name provider.Name = "openrouter"
 
 func init() {
 	provider.Register(Name, func(ctx context.Context) (llm.Client, error) {
-		baseURL, err := provider.ContextAPIBaseURL(ctx)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		options := []option.RequestOption{
-			option.WithBaseURL(baseURL),
-		}
-
 		model, err := provider.ContextModel(ctx)
 		if err != nil {
 			return nil, errors.WithStack(err)
@@ -33,13 +23,7 @@ func init() {
 			return nil, errors.WithStack(err)
 		}
 
-		if apiKey != "" {
-			options = append(options, option.WithAPIKey(apiKey))
-		}
-
-		client := openai.NewClient(
-			options...,
-		)
+		client := openrouter.NewClient(apiKey)
 
 		return NewClient(client, model), nil
 	})

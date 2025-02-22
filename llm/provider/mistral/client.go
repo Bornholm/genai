@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/bornholm/genai/llm"
+	"github.com/pkg/errors"
 )
 
 type Client struct {
@@ -11,12 +12,12 @@ type Client struct {
 
 // Model implements llm.Client.
 func (c *Client) Model() string {
-	panic("unimplemented")
+	return ""
 }
 
 // ChatCompletion implements llm.Client.
 func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
-	panic("unimplemented")
+	return nil, errors.WithStack(llm.ErrNotImplemented)
 }
 
 func NewClient() *Client {
