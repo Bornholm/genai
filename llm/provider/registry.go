@@ -21,12 +21,23 @@ type Registry struct {
 
 type Factory func(ctx context.Context) (llm.Client, error)
 
+type ContextFunc func(ctx context.Context) context.Context
+
 func (r *Registry) Register(name Name, factory Factory) {
 	r.factories[name] = factory
 }
 
-func (r *Registry) Create(ctx context.Context, name Name) (llm.Client, error) {
-	factory, exists := r.factories[name]
+func (r *Registry) Create(ctx context.Context, funcs ...ContextFunc) (llm.Client, error) {
+	for _, fn := range funcs {
+		ctx = fn(ctx)
+	}
+
+	provider, err := ContextProvider(ctx)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	factory, exists := r.factories[provider]
 	if !exists {
 		return nil, errors.WithStack(ErrClientNotFound)
 	}
@@ -49,6 +60,6 @@ func Register(name Name, factory Factory) {
 	defaultRegistry.Register(name, factory)
 }
 
-func Create(ctx context.Context, name Name) (llm.Client, error) {
-	return defaultRegistry.Create(ctx, name)
+func Create(ctx context.Context, funcs ...ContextFunc) (llm.Client, error) {
+	return defaultRegistry.Create(ctx, funcs...)
 }

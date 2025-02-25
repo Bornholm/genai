@@ -7,90 +7,119 @@ import (
 	"github.com/pkg/errors"
 )
 
-type ContextKey string
+type contextKey string
 
 var ErrContextKeyNotFound = errors.New("not found")
 
 const (
-	ContextKeyAPIProvider ContextKey = "LLM_API_PROVIDER"
-	ContextKeyAPIBaseURL  ContextKey = "LLM_API_BASE_URL"
-	ContextKeyAPIKey      ContextKey = "LLM_API_KEY"
-	ContextKeyModel       ContextKey = "LLM_MODEL"
+	ContextKeyProvider contextKey = "PROVIDER"
+	ContextKeyBaseURL  contextKey = "BASE_URL"
+	ContextKeyKey      contextKey = "KEY"
+	ContextKeyModel    contextKey = "MODEL"
 )
 
-func FromMap(ctx context.Context, prefix string, values map[string]string) context.Context {
-	if provider, exists := values[prefix+string(ContextKeyAPIProvider)]; exists {
-		ctx = WithAPIProvider(ctx, Name(provider))
-	}
-
-	if baseURL, exists := values[prefix+string(ContextKeyAPIBaseURL)]; exists {
-		ctx = WithAPIBaseURL(ctx, baseURL)
-	}
-
-	if apiKey, exists := values[prefix+string(ContextKeyAPIKey)]; exists {
-		ctx = WithAPIKey(ctx, apiKey)
-	}
-
-	if model, exists := values[prefix+string(ContextKeyModel)]; exists {
-		ctx = WithModel(ctx, model)
-	}
-
-	return ctx
+type Config struct {
+	Provider Name
+	BaseURL  string
+	Key      string
+	Model    string
 }
 
-func FromEnvironment(ctx context.Context, prefix string) context.Context {
-	if provider, exists := os.LookupEnv(prefix + string(ContextKeyAPIProvider)); exists {
-		ctx = WithAPIProvider(ctx, Name(provider))
+func WithConfig(conf *Config) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		ctx = WithProvider(conf.Provider)(ctx)
+		ctx = WithBaseURL(conf.BaseURL)(ctx)
+		ctx = WithKey(conf.Key)(ctx)
+		ctx = WithModel(conf.Model)(ctx)
+		return ctx
 	}
+}
 
-	if baseURL, exists := os.LookupEnv(prefix + string(ContextKeyAPIBaseURL)); exists {
-		ctx = WithAPIBaseURL(ctx, baseURL)
+func WithMap(values map[string]string, prefix string) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		if provider, exists := values[prefix+string(ContextKeyProvider)]; exists {
+			ctx = WithProvider(Name(provider))(ctx)
+		}
+
+		if baseURL, exists := values[prefix+string(ContextKeyBaseURL)]; exists {
+			ctx = WithBaseURL(baseURL)(ctx)
+		}
+
+		if key, exists := values[prefix+string(ContextKeyKey)]; exists {
+			ctx = WithKey(key)(ctx)
+		}
+
+		if model, exists := values[prefix+string(ContextKeyModel)]; exists {
+			ctx = WithModel(model)(ctx)
+		}
+
+		return ctx
 	}
+}
 
-	if apiKey, exists := os.LookupEnv(prefix + string(ContextKeyAPIKey)); exists {
-		ctx = WithAPIKey(ctx, apiKey)
+func WithEnvironment(prefix string) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		if provider, exists := os.LookupEnv(prefix + string(ContextKeyProvider)); exists {
+			ctx = WithProvider(Name(provider))(ctx)
+		}
+
+		if baseURL, exists := os.LookupEnv(prefix + string(ContextKeyBaseURL)); exists {
+			ctx = WithBaseURL(baseURL)(ctx)
+		}
+
+		if key, exists := os.LookupEnv(prefix + string(ContextKeyKey)); exists {
+			ctx = WithKey(key)(ctx)
+		}
+
+		if model, exists := os.LookupEnv(prefix + string(ContextKeyModel)); exists {
+			ctx = WithModel(model)(ctx)
+		}
+
+		return ctx
 	}
+}
 
-	if model, exists := os.LookupEnv(prefix + string(ContextKeyModel)); exists {
-		ctx = WithModel(ctx, model)
+func WithProvider(provider Name) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		return context.WithValue(ctx, ContextKeyProvider, provider)
 	}
-
-	return ctx
 }
 
-func WithAPIProvider(ctx context.Context, provider Name) context.Context {
-	return context.WithValue(ctx, ContextKeyAPIProvider, provider)
+func ContextProvider(ctx context.Context) (Name, error) {
+	return contextValue[Name](ctx, ContextKeyProvider)
 }
 
-func ContextAPIProvider(ctx context.Context) (Name, error) {
-	return contextValue[Name](ctx, ContextKeyAPIProvider)
+func WithBaseURL(baseURL string) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		return context.WithValue(ctx, ContextKeyBaseURL, baseURL)
+	}
 }
 
-func WithAPIBaseURL(ctx context.Context, baseURL string) context.Context {
-	return context.WithValue(ctx, ContextKeyAPIBaseURL, baseURL)
+func ContextBaseURL(ctx context.Context) (string, error) {
+	return contextValue[string](ctx, ContextKeyBaseURL)
 }
 
-func ContextAPIBaseURL(ctx context.Context) (string, error) {
-	return contextValue[string](ctx, ContextKeyAPIBaseURL)
+func WithKey(key string) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		return context.WithValue(ctx, ContextKeyKey, key)
+	}
 }
 
-func WithAPIKey(ctx context.Context, apiKey string) context.Context {
-	return context.WithValue(ctx, ContextKeyAPIKey, apiKey)
+func ContextKey(ctx context.Context) (string, error) {
+	return contextValue[string](ctx, ContextKeyKey)
 }
 
-func ContextAPIKey(ctx context.Context) (string, error) {
-	return contextValue[string](ctx, ContextKeyAPIKey)
-}
-
-func WithModel(ctx context.Context, model string) context.Context {
-	return context.WithValue(ctx, ContextKeyModel, model)
+func WithModel(model string) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		return context.WithValue(ctx, ContextKeyModel, model)
+	}
 }
 
 func ContextModel(ctx context.Context) (string, error) {
 	return contextValue[string](ctx, ContextKeyModel)
 }
 
-func contextValue[T any](ctx context.Context, key ContextKey) (T, error) {
+func contextValue[T any](ctx context.Context, key contextKey) (T, error) {
 	raw := ctx.Value(key)
 	if raw == nil {
 		return *new(T), errors.WithStack(ErrContextKeyNotFound)

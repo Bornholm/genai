@@ -14,7 +14,7 @@ const Name provider.Name = "openai"
 
 func init() {
 	provider.Register(Name, func(ctx context.Context) (llm.Client, error) {
-		baseURL, err := provider.ContextAPIBaseURL(ctx)
+		baseURL, err := provider.ContextBaseURL(ctx)
 		if err != nil {
 			return nil, errors.WithStack(err)
 		}
@@ -28,13 +28,13 @@ func init() {
 			return nil, errors.WithStack(err)
 		}
 
-		apiKey, err := provider.ContextAPIKey(ctx)
+		key, err := provider.ContextKey(ctx)
 		if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
 			return nil, errors.WithStack(err)
 		}
 
-		if apiKey != "" {
-			options = append(options, option.WithAPIKey(apiKey))
+		if key != "" {
+			options = append(options, option.WithAPIKey(key))
 		}
 
 		client := openai.NewClient(

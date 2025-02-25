@@ -18,7 +18,7 @@ func init() {
 			return nil, errors.WithStack(err)
 		}
 
-		apiKey, err := provider.ContextAPIKey(ctx)
+		apiKey, err := provider.ContextKey(ctx)
 		if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
 			return nil, errors.WithStack(err)
 		}
