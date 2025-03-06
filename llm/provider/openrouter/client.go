@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/provider"
 	"github.com/pkg/errors"
 	"github.com/revrost/go-openrouter"
 )
@@ -119,6 +120,13 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	}
 
 	req.Messages = messages
+
+	transforms, err := ContextTransforms(ctx)
+	if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
+		return nil, errors.WithStack(err)
+	}
+
+	req.Transforms = transforms
 
 	res, err := c.client.CreateChatCompletion(ctx, req)
 	if err != nil {

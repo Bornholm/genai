@@ -109,3 +109,5 @@ require (
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/revrost/go-openrouter => github.com/bornholm/go-openrouter v0.0.0-20250306205247-645443da53e2

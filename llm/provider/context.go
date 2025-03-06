@@ -86,7 +86,7 @@ func WithProvider(provider Name) ContextFunc {
 }
 
 func ContextProvider(ctx context.Context) (Name, error) {
-	return contextValue[Name](ctx, ContextKeyProvider)
+	return ContextValue[Name](ctx, ContextKeyProvider)
 }
 
 func WithBaseURL(baseURL string) ContextFunc {
@@ -96,7 +96,7 @@ func WithBaseURL(baseURL string) ContextFunc {
 }
 
 func ContextBaseURL(ctx context.Context) (string, error) {
-	return contextValue[string](ctx, ContextKeyBaseURL)
+	return ContextValue[string](ctx, ContextKeyBaseURL)
 }
 
 func WithKey(key string) ContextFunc {
@@ -106,7 +106,7 @@ func WithKey(key string) ContextFunc {
 }
 
 func ContextKey(ctx context.Context) (string, error) {
-	return contextValue[string](ctx, ContextKeyKey)
+	return ContextValue[string](ctx, ContextKeyKey)
 }
 
 func WithModel(model string) ContextFunc {
@@ -116,10 +116,10 @@ func WithModel(model string) ContextFunc {
 }
 
 func ContextModel(ctx context.Context) (string, error) {
-	return contextValue[string](ctx, ContextKeyModel)
+	return ContextValue[string](ctx, ContextKeyModel)
 }
 
-func contextValue[T any](ctx context.Context, key contextKey) (T, error) {
+func ContextValue[T any, C any](ctx context.Context, key C) (T, error) {
 	raw := ctx.Value(key)
 	if raw == nil {
 		return *new(T), errors.WithStack(ErrContextKeyNotFound)
