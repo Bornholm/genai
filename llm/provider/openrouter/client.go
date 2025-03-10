@@ -14,9 +14,9 @@ type Client struct {
 	model  string
 }
 
-// Model implements llm.Client.
-func (c *Client) Model() string {
-	return c.model
+// Embeddings implements llm.Client.
+func (c *Client) Embeddings(ctx context.Context, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, errors.WithStack(llm.ErrUnavailable)
 }
 
 // ChatCompletion implements llm.Client.

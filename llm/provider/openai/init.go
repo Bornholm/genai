@@ -23,8 +23,13 @@ func init() {
 			option.WithBaseURL(baseURL),
 		}
 
-		model, err := provider.ContextModel(ctx)
-		if err != nil {
+		chatCompletionModel, err := provider.ContextChatCompletionModel(ctx)
+		if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
+			return nil, errors.WithStack(err)
+		}
+
+		embeddingsModel, err := provider.ContextEmbeddingsModel(ctx)
+		if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
 			return nil, errors.WithStack(err)
 		}
 
@@ -41,6 +46,6 @@ func init() {
 			options...,
 		)
 
-		return NewClient(client, model), nil
+		return NewClient(client, chatCompletionModel, embeddingsModel), nil
 	})
 }

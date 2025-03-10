@@ -11,21 +11,21 @@ import (
 )
 
 type Client struct {
-	client *openai.Client
-	model  string
-}
-
-// Model implements llm.Client.
-func (c *Client) Model() string {
-	return c.model
+	client              *openai.Client
+	chatCompletionModel string
+	embeddingsModel     string
 }
 
 // ChatCompletion implements llm.Client.
 func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
+	if c.chatCompletionModel == "" {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+
 	opts := llm.NewChatCompletionOptions(funcs...)
 
 	params := openai.ChatCompletionNewParams{
-		Model:       openai.F(openai.ChatModel(c.model)),
+		Model:       openai.F(openai.ChatModel(c.chatCompletionModel)),
 		Temperature: openai.Float(opts.Temperature),
 	}
 
@@ -142,10 +142,11 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	return llm.NewCompletionResponse(message, toolCalls...), nil
 }
 
-func NewClient(client *openai.Client, model string) *Client {
+func NewClient(client *openai.Client, chatCompletionModel string, embeddingsModel string) *Client {
 	return &Client{
-		client: client,
-		model:  model,
+		client:              client,
+		chatCompletionModel: chatCompletionModel,
+		embeddingsModel:     embeddingsModel,
 	}
 }
 

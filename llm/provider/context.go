@@ -12,17 +12,19 @@ type contextKey string
 var ErrContextKeyNotFound = errors.New("not found")
 
 const (
-	ContextKeyProvider contextKey = "PROVIDER"
-	ContextKeyBaseURL  contextKey = "BASE_URL"
-	ContextKeyKey      contextKey = "KEY"
-	ContextKeyModel    contextKey = "MODEL"
+	ContextKeyProvider            contextKey = "PROVIDER"
+	ContextKeyBaseURL             contextKey = "BASE_URL"
+	ContextKeyKey                 contextKey = "KEY"
+	ContextKeyChatCompletionModel contextKey = "CHAT_COMPLETION_MODEL"
+	ContextKeyEmbeddingsModel     contextKey = "EMBEDDINGS_MODEL"
 )
 
 type Config struct {
-	Provider Name
-	BaseURL  string
-	Key      string
-	Model    string
+	Provider            Name
+	BaseURL             string
+	Key                 string
+	ChatCompletionModel string
+	EmbeddingsModel     string
 }
 
 func WithConfig(conf *Config) ContextFunc {
@@ -30,7 +32,8 @@ func WithConfig(conf *Config) ContextFunc {
 		ctx = WithProvider(conf.Provider)(ctx)
 		ctx = WithBaseURL(conf.BaseURL)(ctx)
 		ctx = WithKey(conf.Key)(ctx)
-		ctx = WithModel(conf.Model)(ctx)
+		ctx = WithChatCompletionModel(conf.ChatCompletionModel)(ctx)
+		ctx = WithEmbeddingsModel(conf.EmbeddingsModel)(ctx)
 		return ctx
 	}
 }
@@ -49,8 +52,8 @@ func WithMap(values map[string]string, prefix string) ContextFunc {
 			ctx = WithKey(key)(ctx)
 		}
 
-		if model, exists := values[prefix+string(ContextKeyModel)]; exists {
-			ctx = WithModel(model)(ctx)
+		if chatCompletionModel, exists := values[prefix+string(ContextKeyChatCompletionModel)]; exists {
+			ctx = WithChatCompletionModel(chatCompletionModel)(ctx)
 		}
 
 		return ctx
@@ -71,8 +74,8 @@ func WithEnvironment(prefix string) ContextFunc {
 			ctx = WithKey(key)(ctx)
 		}
 
-		if model, exists := os.LookupEnv(prefix + string(ContextKeyModel)); exists {
-			ctx = WithModel(model)(ctx)
+		if chatCompletionModel, exists := os.LookupEnv(prefix + string(ContextKeyChatCompletionModel)); exists {
+			ctx = WithChatCompletionModel(chatCompletionModel)(ctx)
 		}
 
 		return ctx
@@ -109,14 +112,24 @@ func ContextKey(ctx context.Context) (string, error) {
 	return ContextValue[string](ctx, ContextKeyKey)
 }
 
-func WithModel(model string) ContextFunc {
+func WithChatCompletionModel(model string) ContextFunc {
 	return func(ctx context.Context) context.Context {
-		return context.WithValue(ctx, ContextKeyModel, model)
+		return context.WithValue(ctx, ContextKeyChatCompletionModel, model)
 	}
 }
 
-func ContextModel(ctx context.Context) (string, error) {
-	return ContextValue[string](ctx, ContextKeyModel)
+func ContextChatCompletionModel(ctx context.Context) (string, error) {
+	return ContextValue[string](ctx, ContextKeyChatCompletionModel)
+}
+
+func WithEmbeddingsModel(model string) ContextFunc {
+	return func(ctx context.Context) context.Context {
+		return context.WithValue(ctx, ContextKeyEmbeddingsModel, model)
+	}
+}
+
+func ContextEmbeddingsModel(ctx context.Context) (string, error) {
+	return ContextValue[string](ctx, ContextKeyEmbeddingsModel)
 }
 
 func ContextValue[T any, C any](ctx context.Context, key C) (T, error) {

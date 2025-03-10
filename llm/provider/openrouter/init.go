@@ -13,7 +13,7 @@ const Name provider.Name = "openrouter"
 
 func init() {
 	provider.Register(Name, func(ctx context.Context) (llm.Client, error) {
-		model, err := provider.ContextModel(ctx)
+		chatCompletionModel, err := provider.ContextChatCompletionModel(ctx)
 		if err != nil {
 			return nil, errors.WithStack(err)
 		}
@@ -25,6 +25,6 @@ func init() {
 
 		client := openrouter.NewClient(apiKey)
 
-		return NewClient(client, model), nil
+		return NewClient(client, chatCompletionModel), nil
 	})
 }

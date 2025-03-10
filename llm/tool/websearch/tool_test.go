@@ -51,9 +51,9 @@ func TestTool(t *testing.T) {
 	t.Logf("%s", connectionStr)
 
 	client, err := provider.Create(ctx, provider.WithConfig(&provider.Config{
-		Provider: openai.Name,
-		BaseURL:  connectionStr + "/v1/",
-		Model:    model,
+		Provider:            openai.Name,
+		BaseURL:             connectionStr + "/v1/",
+		ChatCompletionModel: model,
 	}))
 
 	tool := Tool(client)
