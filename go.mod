@@ -1,6 +1,6 @@
 module github.com/bornholm/genai
 
-go 1.23.4
+go 1.24.1
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown v1.6.0
@@ -12,7 +12,7 @@ require (
 	github.com/gocolly/colly v1.2.0
 	github.com/openai/openai-go v0.1.0-alpha.59
 	github.com/pkg/errors v0.9.1
-	github.com/revrost/go-openrouter v0.0.0-20250128091643-3d014d57014d
+	github.com/revrost/go-openrouter v0.0.0-20250324130754-71c980358232
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/testcontainers/testcontainers-go/modules/ollama v0.35.0
 	github.com/yargevad/filepathx v1.0.0
@@ -109,5 +109,3 @@ require (
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/revrost/go-openrouter => github.com/bornholm/go-openrouter v0.0.0-20250306205247-645443da53e2
