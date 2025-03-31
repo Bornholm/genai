@@ -10,7 +10,7 @@ import (
 const Name provider.Name = "mistral"
 
 func init() {
-	provider.Register(Name, func(ctx context.Context) (llm.Client, error) {
-		return NewClient(), nil
+	provider.RegisterOCR(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.OCRClient, error) {
+		return NewOCRClient(), nil
 	})
 }

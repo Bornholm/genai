@@ -1,6 +1,8 @@
 package llm
 
-import "context"
+import (
+	"context"
+)
 
 type ResponseFormat string
 
@@ -126,9 +128,21 @@ func WithTools(tools ...Tool) ChatCompletionOptionFunc {
 	}
 }
 
-type Client interface {
+type ChatCompletionClient interface {
 	ChatCompletion(ctx context.Context, funcs ...ChatCompletionOptionFunc) (CompletionResponse, error)
-	Embeddings(ctx context.Context, funcs ...EmbeddingsOptionFunc) (EmbeddingsResponse, error)
+}
+
+type EmbeddingsClient interface {
+	Embeddings(ctx context.Context, input string, funcs ...EmbeddingsOptionFunc) (EmbeddingsResponse, error)
+}
+
+type OCRClient interface {
+	OCR(ctx context.Context, funcs ...OCROptionFunc) (OCRResponse, error)
+}
+
+type Client interface {
+	ChatCompletionClient
+	EmbeddingsClient
 }
 
 type Role string

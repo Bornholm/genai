@@ -10,22 +10,21 @@ import (
 	"github.com/pkg/errors"
 )
 
-type Client struct {
-	client              *openai.Client
-	chatCompletionModel string
-	embeddingsModel     string
+type ChatCompletionClient struct {
+	client *openai.Client
+	model  string
 }
 
 // ChatCompletion implements llm.Client.
-func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
-	if c.chatCompletionModel == "" {
+func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
+	if c.model == "" {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
 
 	opts := llm.NewChatCompletionOptions(funcs...)
 
 	params := openai.ChatCompletionNewParams{
-		Model:       openai.F(openai.ChatModel(c.chatCompletionModel)),
+		Model:       openai.F(openai.ChatModel(c.model)),
 		Temperature: openai.Float(opts.Temperature),
 	}
 
@@ -142,12 +141,11 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	return llm.NewCompletionResponse(message, toolCalls...), nil
 }
 
-func NewClient(client *openai.Client, chatCompletionModel string, embeddingsModel string) *Client {
-	return &Client{
-		client:              client,
-		chatCompletionModel: chatCompletionModel,
-		embeddingsModel:     embeddingsModel,
+func NewChatCompletionClient(client *openai.Client, model string) *ChatCompletionClient {
+	return &ChatCompletionClient{
+		client: client,
+		model:  model,
 	}
 }
 
-var _ llm.Client = &Client{}
+var _ llm.ChatCompletionClient = &ChatCompletionClient{}

@@ -12,12 +12,12 @@ import (
 )
 
 func main() {
-	// Use LLM_* environment variables to create a context
-	// to initialize the LLM client
-	// See llm/provider/context.go for the available keys
+
 	ctx := context.Background()
 
-	client, err := provider.Create(ctx, provider.WithEnvironment("LLM_"))
+	// Use LLM_* environment variables to create a context
+	// to initialize the LLM client
+	client, err := provider.Create(ctx, provider.WithEnv("LLM_", ".env"))
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)
 	}

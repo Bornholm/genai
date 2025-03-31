@@ -10,6 +10,7 @@ require (
 	github.com/blevesearch/bleve/v2 v2.4.4
 	github.com/davecgh/go-spew v1.1.1
 	github.com/gocolly/colly v1.2.0
+	github.com/joho/godotenv v1.5.1
 	github.com/openai/openai-go v0.1.0-alpha.59
 	github.com/pkg/errors v0.9.1
 	github.com/revrost/go-openrouter v0.0.0-20250324130754-71c980358232
@@ -45,6 +46,7 @@ require (
 	github.com/blevesearch/zapx/v14 v14.3.10 // indirect
 	github.com/blevesearch/zapx/v15 v15.3.16 // indirect
 	github.com/blevesearch/zapx/v16 v16.1.9-0.20241217210638-a0519e7caf3b // indirect
+	github.com/caarlos0/env/v11 v11.3.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
 	github.com/containerd/containerd v1.7.18 // indirect
 	github.com/containerd/log v0.1.0 // indirect

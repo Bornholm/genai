@@ -9,17 +9,22 @@ import (
 	"github.com/pkg/errors"
 )
 
+type EmbeddingsClient struct {
+	client *openai.Client
+	model  string
+}
+
 // Embeddings implements llm.Client.
-func (c *Client) Embeddings(ctx context.Context, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
-	if c.embeddingsModel == "" {
+func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	if c.model == "" {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
 
 	opts := llm.NewEmbeddingsOptions(funcs...)
 
 	params := openai.EmbeddingNewParams{
-		Input: openai.F[openai.EmbeddingNewParamsInputUnion](shared.UnionString(opts.Input)),
-		Model: openai.F(c.embeddingsModel),
+		Input: openai.F[openai.EmbeddingNewParamsInputUnion](shared.UnionString(input)),
+		Model: openai.F(c.model),
 	}
 
 	if opts.Dimensions != nil {
@@ -47,5 +52,14 @@ type EmbeddingsResponse struct {
 func (r *EmbeddingsResponse) Embeddings() [][]float64 {
 	return r.embeddings
 }
+
+func NewEmbeddingsClient(client *openai.Client, model string) *EmbeddingsClient {
+	return &EmbeddingsClient{
+		client: client,
+		model:  model,
+	}
+}
+
+var _ llm.EmbeddingsClient = &EmbeddingsClient{}
 
 var _ llm.EmbeddingsResponse = &EmbeddingsResponse{}

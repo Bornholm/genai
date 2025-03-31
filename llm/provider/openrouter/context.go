@@ -1,10 +1,6 @@
 package openrouter
 
-import (
-	"context"
-
-	"github.com/bornholm/genai/llm/provider"
-)
+import "github.com/bornholm/genai/llm/context"
 
 type contextKey string
 
@@ -13,7 +9,7 @@ const (
 )
 
 func ContextTransforms(ctx context.Context) ([]string, error) {
-	return provider.ContextValue[[]string](ctx, ContextKeyTransforms)
+	return context.Value[[]string](ctx, ContextKeyTransforms)
 }
 
 func WithTransforms(ctx context.Context, transforms []string) context.Context {

@@ -5,26 +5,14 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
-	"github.com/pkg/errors"
 	"github.com/revrost/go-openrouter"
 )
 
 const Name provider.Name = "openrouter"
 
 func init() {
-	provider.Register(Name, func(ctx context.Context) (llm.Client, error) {
-		chatCompletionModel, err := provider.ContextChatCompletionModel(ctx)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		apiKey, err := provider.ContextKey(ctx)
-		if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
-			return nil, errors.WithStack(err)
-		}
-
-		client := openrouter.NewClient(apiKey)
-
-		return NewClient(client, chatCompletionModel), nil
+	provider.RegisterChatCompletion(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.ChatCompletionClient, error) {
+		client := openrouter.NewClient(opts.APIKey)
+		return NewChatCompletionClient(client, opts.Model), nil
 	})
 }

@@ -9,6 +9,7 @@ import (
 
 var (
 	ErrClientNotFound = errors.New("not found")
+	ErrNotConfigured  = errors.New("not configured")
 )
 
 var defaultRegistry = NewRegistry()
@@ -16,35 +17,66 @@ var defaultRegistry = NewRegistry()
 type Name string
 
 type Registry struct {
-	factories map[Name]Factory
+	chatCompletionFactories map[Name]Factory[llm.ChatCompletionClient]
+	embeddingsFactories     map[Name]Factory[llm.EmbeddingsClient]
+	ocrFactories            map[Name]Factory[llm.OCRClient]
 }
 
-type Factory func(ctx context.Context) (llm.Client, error)
+type Factory[T any] func(ctx context.Context, opts ClientOptions) (T, error)
 
 type ContextFunc func(ctx context.Context) context.Context
 
-func (r *Registry) Register(name Name, factory Factory) {
-	r.factories[name] = factory
+func (r *Registry) RegisterChatCompletion(name Name, factory Factory[llm.ChatCompletionClient]) {
+	r.chatCompletionFactories[name] = factory
 }
 
-func (r *Registry) Create(ctx context.Context, funcs ...ContextFunc) (llm.Client, error) {
-	for _, fn := range funcs {
-		ctx = fn(ctx)
-	}
+func (r *Registry) RegisterEmbeddings(name Name, factory Factory[llm.EmbeddingsClient]) {
+	r.embeddingsFactories[name] = factory
+}
 
-	provider, err := ContextProvider(ctx)
+func (r *Registry) RegisterOCR(name Name, factory Factory[llm.OCRClient]) {
+	r.ocrFactories[name] = factory
+}
+
+func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client, error) {
+	opts, err := NewOptions(funcs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
-	factory, exists := r.factories[provider]
+	chatCompletion, err := createClient(ctx, opts.ChatCompletion, r.chatCompletionFactories)
+	if err != nil && !errors.Is(err, ErrNotConfigured) {
+		return nil, errors.WithStack(err)
+	}
+
+	embeddings, err := createClient(ctx, opts.Embeddings, r.embeddingsFactories)
+	if err != nil && !errors.Is(err, ErrNotConfigured) {
+		return nil, errors.WithStack(err)
+	}
+
+	ocr, err := createClient(ctx, opts.OCR, r.ocrFactories)
+	if err != nil && !errors.Is(err, ErrNotConfigured) {
+		return nil, errors.WithStack(err)
+	}
+
+	return NewClient(chatCompletion, embeddings, ocr), nil
+}
+
+func createClient[T any](ctx context.Context, clientOpts *ClientOptions, factories map[Name]Factory[T]) (T, error) {
+	if clientOpts == nil {
+		return *new(T), errors.WithStack(ErrNotConfigured)
+	}
+
+	provider := clientOpts.Provider
+
+	clientFactory, exists := factories[provider]
 	if !exists {
-		return nil, errors.WithStack(ErrClientNotFound)
+		return *new(T), errors.Wrapf(ErrClientNotFound, "could not find client factory for provider '%s'", clientOpts.Provider)
 	}
 
-	client, err := factory(ctx)
+	client, err := clientFactory(ctx, *clientOpts)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return *new(T), errors.Wrapf(err, "could not create client with provider '%s'", clientOpts.Provider)
 	}
 
 	return client, nil
@@ -52,14 +84,24 @@ func (r *Registry) Create(ctx context.Context, funcs ...ContextFunc) (llm.Client
 
 func NewRegistry() *Registry {
 	return &Registry{
-		factories: make(map[Name]Factory),
+		chatCompletionFactories: map[Name]Factory[llm.ChatCompletionClient]{},
+		embeddingsFactories:     map[Name]Factory[llm.EmbeddingsClient]{},
+		ocrFactories:            map[Name]Factory[llm.OCRClient]{},
 	}
 }
 
-func Register(name Name, factory Factory) {
-	defaultRegistry.Register(name, factory)
+func RegisterChatCompletion(name Name, factory Factory[llm.ChatCompletionClient]) {
+	defaultRegistry.RegisterChatCompletion(name, factory)
 }
 
-func Create(ctx context.Context, funcs ...ContextFunc) (llm.Client, error) {
+func RegisterEmbeddings(name Name, factory Factory[llm.EmbeddingsClient]) {
+	defaultRegistry.RegisterEmbeddings(name, factory)
+}
+
+func RegisterOCR(name Name, factory Factory[llm.OCRClient]) {
+	defaultRegistry.RegisterOCR(name, factory)
+}
+
+func Create(ctx context.Context, funcs ...OptionFunc) (llm.Client, error) {
 	return defaultRegistry.Create(ctx, funcs...)
 }

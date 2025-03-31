@@ -1,26 +1,19 @@
 package openrouter
 
 import (
-	"context"
-
 	"github.com/bornholm/genai/llm"
-	"github.com/bornholm/genai/llm/provider"
+	"github.com/bornholm/genai/llm/context"
 	"github.com/pkg/errors"
 	"github.com/revrost/go-openrouter"
 )
 
-type Client struct {
+type ChatCompletionClient struct {
 	client *openrouter.Client
 	model  string
 }
 
-// Embeddings implements llm.Client.
-func (c *Client) Embeddings(ctx context.Context, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
-	return nil, errors.WithStack(llm.ErrUnavailable)
-}
-
 // ChatCompletion implements llm.Client.
-func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
+func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
 
 	req := openrouter.ChatCompletionRequest{
@@ -122,7 +115,7 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	req.Messages = messages
 
 	transforms, err := ContextTransforms(ctx)
-	if err != nil && !errors.Is(err, provider.ErrContextKeyNotFound) {
+	if err != nil && !errors.Is(err, context.ErrNotFound) {
 		return nil, errors.WithStack(err)
 	}
 
@@ -150,11 +143,11 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	return llm.NewCompletionResponse(message, toolCalls...), nil
 }
 
-func NewClient(client *openrouter.Client, model string) *Client {
-	return &Client{
+func NewChatCompletionClient(client *openrouter.Client, model string) *ChatCompletionClient {
+	return &ChatCompletionClient{
 		client: client,
 		model:  model,
 	}
 }
 
-var _ llm.Client = &Client{}
+var _ llm.ChatCompletionClient = &ChatCompletionClient{}

@@ -50,10 +50,10 @@ func TestTool(t *testing.T) {
 
 	t.Logf("%s", connectionStr)
 
-	client, err := provider.Create(ctx, provider.WithConfig(&provider.Config{
-		Provider:            openai.Name,
-		BaseURL:             connectionStr + "/v1/",
-		ChatCompletionModel: model,
+	client, err := provider.Create(ctx, provider.WithChatCompletionOptions(provider.ClientOptions{
+		Provider: openai.Name,
+		BaseURL:  connectionStr + "/v1/",
+		Model:    model,
 	}))
 
 	tool := Tool(client)
@@ -62,7 +62,7 @@ func TestTool(t *testing.T) {
 
 	result, err := tool.Execute(ctx, map[string]any{"topic": "What are LLMs ?"})
 	if err != nil {
-		t.Fatalf("failed to get connection string: %s", errors.WithStack(err))
+		t.Fatalf("failed to execute tool: %+v", errors.WithStack(err))
 	}
 
 	spew.Dump(result)
