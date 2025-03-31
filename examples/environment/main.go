@@ -8,20 +8,16 @@ import (
 	"github.com/bornholm/genai/llm/provider"
 
 	// Imports client implementations
-	"github.com/bornholm/genai/llm/provider/openai"
-	_ "github.com/bornholm/genai/llm/provider/openrouter"
+	_ "github.com/bornholm/genai/llm/provider/openai"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// Create a client with chat completion implementation
-	client, err := provider.Create(ctx, provider.WithChatCompletionOptions(provider.ClientOptions{
-		Provider: openai.Name,
-		BaseURL:  "https://api.openai.com/v1/",
-		Model:    "gpt-4o-mini",
-		APIKey:   "<your-api-key>",
-	}))
+	// Use GENAI_* environment variables to create a context to initialize the client
+	// Read and load the .env file to populate the environment
+	// See llm/provider/options.go for the available environment variable names
+	client, err := provider.Create(ctx, provider.WithEnv("GENAI_", ".env"))
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)
 	}
