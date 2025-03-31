@@ -25,7 +25,7 @@ More providers coming soon!
 ## Installation
 
 ```
-go get github.com/bornholm/genai
+go get github.com/Bornholm/genai
 ```
 
 ## Getting started
