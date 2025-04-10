@@ -13,7 +13,7 @@ type ChatCompletionClient struct {
 }
 
 // ChatCompletion implements llm.Client.
-func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
+func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
 
 	req := openrouter.ChatCompletionRequest{
@@ -140,7 +140,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		toolCalls = append(toolCalls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 	}
 
-	return llm.NewCompletionResponse(message, toolCalls...), nil
+	usage := llm.NewChatCompletionUsage(int64(res.Usage.PromptTokens), int64(res.Usage.CompletionTokens), int64(res.Usage.TotalTokens))
+
+	return llm.NewChatCompletionResponse(message, usage, toolCalls...), nil
 }
 
 func NewChatCompletionClient(client *openrouter.Client, model string) *ChatCompletionClient {

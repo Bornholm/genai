@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"log"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
@@ -16,7 +15,7 @@ type ChatCompletionClient struct {
 }
 
 // ChatCompletion implements llm.Client.
-func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
+func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	if c.model == "" {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
@@ -117,8 +116,6 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	params.Messages = openai.F(messages)
 
-	log.Printf("New completion request with %d messages", len(messages))
-
 	completion, err := c.client.Chat.Completions.New(ctx, params)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -138,7 +135,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		toolCalls = append(toolCalls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 	}
 
-	return llm.NewCompletionResponse(message, toolCalls...), nil
+	usage := llm.NewChatCompletionUsage(completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
+
+	return llm.NewChatCompletionResponse(message, usage, toolCalls...), nil
 }
 
 func NewChatCompletionClient(client *openai.Client, model string) *ChatCompletionClient {

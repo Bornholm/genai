@@ -14,7 +14,7 @@ type Client struct {
 }
 
 // ChatCompletion implements llm.Client.
-func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.CompletionResponse, error) {
+func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	if c.chatCompletion == nil {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}

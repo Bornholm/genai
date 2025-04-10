@@ -129,7 +129,7 @@ func WithTools(tools ...Tool) ChatCompletionOptionFunc {
 }
 
 type ChatCompletionClient interface {
-	ChatCompletion(ctx context.Context, funcs ...ChatCompletionOptionFunc) (CompletionResponse, error)
+	ChatCompletion(ctx context.Context, funcs ...ChatCompletionOptionFunc) (ChatCompletionResponse, error)
 }
 
 type EmbeddingsClient interface {
@@ -236,34 +236,79 @@ func NewToolCallsMessage(toolCalls ...ToolCall) *BaseToolCallsMessage {
 	}
 }
 
-type CompletionResponse interface {
+type ChatCompletionResponse interface {
 	Message() Message
 	ToolCalls() []ToolCall
+	Usage() ChatCompletionUsage
 }
 
-type BaseCompletionResponse struct {
+type ChatCompletionUsage interface {
+	TotalTokens() int64
+	PromptTokens() int64
+	CompletionTokens() int64
+}
+
+type BaseChatCompletionResponse struct {
 	message   Message
 	toolCalls []ToolCall
+	usage     ChatCompletionUsage
+}
+
+// Usage implements ChatCompletionResponse.
+func (b *BaseChatCompletionResponse) Usage() ChatCompletionUsage {
+	return b.usage
 }
 
 // Content implements CompletionResponse.
-func (b *BaseCompletionResponse) Message() Message {
+func (b *BaseChatCompletionResponse) Message() Message {
 	return b.message
 }
 
 // ToolCalls implements CompletionResponse.
-func (b *BaseCompletionResponse) ToolCalls() []ToolCall {
+func (b *BaseChatCompletionResponse) ToolCalls() []ToolCall {
 	return b.toolCalls
 }
 
-func NewCompletionResponse(message Message, toolCalls ...ToolCall) *BaseCompletionResponse {
-	return &BaseCompletionResponse{
+func NewChatCompletionResponse(message Message, usage ChatCompletionUsage, toolCalls ...ToolCall) *BaseChatCompletionResponse {
+	return &BaseChatCompletionResponse{
+		usage:     usage,
 		message:   message,
 		toolCalls: toolCalls,
 	}
 }
 
-var _ CompletionResponse = &BaseCompletionResponse{}
+var _ ChatCompletionResponse = &BaseChatCompletionResponse{}
+
+type BaseChatCompletionUsage struct {
+	totalTokens      int64
+	promptTokens     int64
+	completionTokens int64
+}
+
+// CompletionTokens implements ChatCompletionUsage.
+func (u *BaseChatCompletionUsage) CompletionTokens() int64 {
+	return u.completionTokens
+}
+
+// PromptTokens implements ChatCompletionUsage.
+func (u *BaseChatCompletionUsage) PromptTokens() int64 {
+	return u.promptTokens
+}
+
+// TotalTokens implements ChatCompletionUsage.
+func (u *BaseChatCompletionUsage) TotalTokens() int64 {
+	return u.totalTokens
+}
+
+func NewChatCompletionUsage(promptTokens, completionTokens, totalTokens int64) *BaseChatCompletionUsage {
+	return &BaseChatCompletionUsage{
+		promptTokens:     promptTokens,
+		completionTokens: completionTokens,
+		totalTokens:      totalTokens,
+	}
+}
+
+var _ ChatCompletionUsage = &BaseChatCompletionUsage{}
 
 type ToolCall interface {
 	ToolCallsMessage
