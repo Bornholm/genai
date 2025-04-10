@@ -41,11 +41,19 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs .
 		embeddings = append(embeddings, d.Embedding)
 	}
 
-	return &EmbeddingsResponse{embeddings: embeddings}, nil
+	usage := llm.NewEmbeddingsUsage(res.Usage.PromptTokens, res.Usage.TotalTokens)
+
+	return &EmbeddingsResponse{embeddings: embeddings, usage: usage}, nil
 }
 
 type EmbeddingsResponse struct {
 	embeddings [][]float64
+	usage      llm.EmbeddingsUsage
+}
+
+// Usage implements llm.EmbeddingsResponse.
+func (r *EmbeddingsResponse) Usage() llm.EmbeddingsUsage {
+	return r.usage
 }
 
 // Embeddings implements llm.EmbeddingsResponse.

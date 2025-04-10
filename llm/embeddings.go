@@ -22,4 +22,34 @@ func WithDimensions(dimensions int) EmbeddingsOptionFunc {
 
 type EmbeddingsResponse interface {
 	Embeddings() [][]float64
+	Usage() EmbeddingsUsage
 }
+
+type EmbeddingsUsage interface {
+	PromptTokens() int64
+	TotalTokens() int64
+}
+
+type BaseEmbeddingsUsage struct {
+	promptTokens int64
+	totalTokens  int64
+}
+
+// TotalTokens implements EmbeddingsUsage.
+func (u *BaseEmbeddingsUsage) TotalTokens() int64 {
+	return u.totalTokens
+}
+
+// PromptTokens implements EmbeddingsUsage.
+func (u *BaseEmbeddingsUsage) PromptTokens() int64 {
+	return u.promptTokens
+}
+
+func NewEmbeddingsUsage(promptTokens, totalTokens int64) *BaseEmbeddingsUsage {
+	return &BaseEmbeddingsUsage{
+		promptTokens: promptTokens,
+		totalTokens:  totalTokens,
+	}
+}
+
+var _ EmbeddingsUsage = &BaseEmbeddingsUsage{}
