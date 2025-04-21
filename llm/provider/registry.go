@@ -19,7 +19,7 @@ type Name string
 type Registry struct {
 	chatCompletionFactories map[Name]Factory[llm.ChatCompletionClient]
 	embeddingsFactories     map[Name]Factory[llm.EmbeddingsClient]
-	ocrFactories            map[Name]Factory[llm.OCRClient]
+	extractTextFactories    map[Name]Factory[llm.ExtractTextClient]
 }
 
 type Factory[T any] func(ctx context.Context, opts ClientOptions) (T, error)
@@ -34,8 +34,8 @@ func (r *Registry) RegisterEmbeddings(name Name, factory Factory[llm.EmbeddingsC
 	r.embeddingsFactories[name] = factory
 }
 
-func (r *Registry) RegisterOCR(name Name, factory Factory[llm.OCRClient]) {
-	r.ocrFactories[name] = factory
+func (r *Registry) RegisterExtractText(name Name, factory Factory[llm.ExtractTextClient]) {
+	r.extractTextFactories[name] = factory
 }
 
 func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client, error) {
@@ -54,12 +54,12 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 		return nil, errors.WithStack(err)
 	}
 
-	ocr, err := createClient(ctx, opts.OCR, r.ocrFactories)
+	extractText, err := createClient(ctx, opts.ExtractText, r.extractTextFactories)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
 
-	return NewClient(chatCompletion, embeddings, ocr), nil
+	return NewClient(chatCompletion, embeddings, extractText), nil
 }
 
 func createClient[T any](ctx context.Context, clientOpts *ClientOptions, factories map[Name]Factory[T]) (T, error) {
@@ -86,7 +86,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		chatCompletionFactories: map[Name]Factory[llm.ChatCompletionClient]{},
 		embeddingsFactories:     map[Name]Factory[llm.EmbeddingsClient]{},
-		ocrFactories:            map[Name]Factory[llm.OCRClient]{},
+		extractTextFactories:    map[Name]Factory[llm.ExtractTextClient]{},
 	}
 }
 
@@ -98,8 +98,8 @@ func RegisterEmbeddings(name Name, factory Factory[llm.EmbeddingsClient]) {
 	defaultRegistry.RegisterEmbeddings(name, factory)
 }
 
-func RegisterOCR(name Name, factory Factory[llm.OCRClient]) {
-	defaultRegistry.RegisterOCR(name, factory)
+func RegisterExtractText(name Name, factory Factory[llm.ExtractTextClient]) {
+	defaultRegistry.RegisterExtractText(name, factory)
 }
 
 func Create(ctx context.Context, funcs ...OptionFunc) (llm.Client, error) {

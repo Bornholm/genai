@@ -136,13 +136,14 @@ type EmbeddingsClient interface {
 	Embeddings(ctx context.Context, input string, funcs ...EmbeddingsOptionFunc) (EmbeddingsResponse, error)
 }
 
-type OCRClient interface {
-	OCR(ctx context.Context, funcs ...OCROptionFunc) (OCRResponse, error)
+type ExtractTextClient interface {
+	ExtractText(ctx context.Context, funcs ...ExtractTextOptionFunc) (ExtractTextResponse, error)
 }
 
 type Client interface {
 	ChatCompletionClient
 	EmbeddingsClient
+	ExtractTextClient
 }
 
 type Role string
