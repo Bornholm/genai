@@ -76,6 +76,8 @@ func (c *ExtractTextClient) ExtractText(ctx context.Context, funcs ...llm.Extrac
 		return nil, errors.WithStack(err)
 	}
 
+	req = req.WithContext(ctx)
+
 	req.Header.Set("Content-Type", form.FormDataContentType())
 
 	httpRes, err := c.http.Do(req)
@@ -123,7 +125,9 @@ func (c *ExtractTextClient) ExtractText(ctx context.Context, funcs ...llm.Extrac
 func NewExtractTextClient(baseURL *url.URL) *ExtractTextClient {
 	return &ExtractTextClient{
 		baseURL: baseURL,
-		http:    &http.Client{},
+		http: &http.Client{
+			Timeout: 0,
+		},
 	}
 }
 
