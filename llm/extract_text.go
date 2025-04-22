@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/pkg/errors"
 )
@@ -24,8 +25,9 @@ const (
 )
 
 type ExtractTextOptions struct {
-	Reader io.Reader
-	Pages  []int
+	Reader   io.Reader
+	Pages    []int
+	Filename string
 }
 
 func NewExtractTextOptions(funcs ...ExtractTextOptionFunc) (*ExtractTextOptions, error) {
@@ -52,6 +54,7 @@ func WithFile(path string) ExtractTextOptionFunc {
 			return errors.WithStack(err)
 		}
 
+		opts.Filename = filepath.Base(path)
 		opts.Reader = file
 
 		return nil
@@ -68,6 +71,13 @@ func WithReader(r io.Reader) ExtractTextOptionFunc {
 func WithPages(pages ...int) ExtractTextOptionFunc {
 	return func(opts *ExtractTextOptions) error {
 		opts.Pages = pages
+		return nil
+	}
+}
+
+func WithFilename(filename string) ExtractTextOptionFunc {
+	return func(opts *ExtractTextOptions) error {
+		opts.Filename = filename
 		return nil
 	}
 }

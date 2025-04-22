@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -44,7 +46,14 @@ func (c *ExtractTextClient) ExtractText(ctx context.Context, funcs ...llm.Extrac
 		return nil, errors.WithStack(err)
 	}
 
-	fileWriter, err := form.CreateFormFile("file", "file.pdf")
+	var filename string
+	if opts.Filename != "" {
+		filename = opts.Filename
+	} else {
+		filename = fmt.Sprintf("file_%d", time.Now().Nanosecond())
+	}
+
+	fileWriter, err := form.CreateFormFile("file", filename)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
