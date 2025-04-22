@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"io"
 	"os"
 
@@ -10,6 +11,10 @@ import (
 var (
 	ErrMissingReader = errors.New("missing reader")
 )
+
+type ExtractTextClient interface {
+	ExtractText(ctx context.Context, funcs ...ExtractTextOptionFunc) (ExtractTextResponse, error)
+}
 
 type ExtractTextFormat string
 

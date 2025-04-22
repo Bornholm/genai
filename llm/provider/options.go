@@ -1,8 +1,6 @@
 package provider
 
 import (
-	"github.com/caarlos0/env/v11"
-	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
 )
 
@@ -38,22 +36,6 @@ func WithEmbeddingsOptions(clientOpts ClientOptions) OptionFunc {
 func WithExtractTextOptions(clientOpts ClientOptions) OptionFunc {
 	return func(opts *Options) error {
 		opts.ExtractText = &clientOpts
-		return nil
-	}
-}
-
-func WithEnv(variableNamePrefix string, envFiles ...string) OptionFunc {
-	return func(opts *Options) error {
-		if len(envFiles) > 0 {
-			if err := godotenv.Load(envFiles...); err != nil {
-				return errors.WithStack(err)
-			}
-		}
-
-		if err := env.ParseWithOptions(opts, env.Options{Prefix: variableNamePrefix}); err != nil {
-			return errors.WithStack(err)
-		}
-
 		return nil
 	}
 }

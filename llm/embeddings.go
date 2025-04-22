@@ -1,5 +1,11 @@
 package llm
 
+import "context"
+
+type EmbeddingsClient interface {
+	Embeddings(ctx context.Context, input string, funcs ...EmbeddingsOptionFunc) (EmbeddingsResponse, error)
+}
+
 type EmbeddingsOptions struct {
 	Dimensions *int
 }
