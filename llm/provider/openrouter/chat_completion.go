@@ -114,6 +114,14 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	req.Messages = messages
 
+	if opts.Seed != nil {
+		req.Seed = opts.Seed
+	}
+
+	if opts.MaxCompletionTokens != nil {
+		req.MaxCompletionTokens = *opts.MaxCompletionTokens
+	}
+
 	transforms, err := ContextTransforms(ctx)
 	if err != nil && !errors.Is(err, context.ErrNotFound) {
 		return nil, errors.WithStack(err)

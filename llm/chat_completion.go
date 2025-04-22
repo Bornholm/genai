@@ -21,12 +21,14 @@ const (
 )
 
 type ChatCompletionOptions struct {
-	Messages       []Message
-	Tools          []Tool
-	ToolChoice     ToolChoice
-	Temperature    float64
-	ResponseFormat ResponseFormat
-	ResponseSchema ResponseSchema
+	Messages            []Message
+	Tools               []Tool
+	ToolChoice          ToolChoice
+	Temperature         float64
+	ResponseFormat      ResponseFormat
+	ResponseSchema      ResponseSchema
+	Seed                *int
+	MaxCompletionTokens *int
 }
 
 func NewChatCompletionOptions(funcs ...ChatCompletionOptionFunc) *ChatCompletionOptions {
@@ -55,6 +57,18 @@ func WithToolChoice(choice ToolChoice) ChatCompletionOptionFunc {
 func WithTemperature(temperature float64) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		opts.Temperature = temperature
+	}
+}
+
+func WithSeed(seed int) ChatCompletionOptionFunc {
+	return func(opts *ChatCompletionOptions) {
+		opts.Seed = &seed
+	}
+}
+
+func WithMaxCompletionTokens(maxTokens int) ChatCompletionOptionFunc {
+	return func(opts *ChatCompletionOptions) {
+		opts.MaxCompletionTokens = &maxTokens
 	}
 }
 

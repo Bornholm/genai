@@ -70,6 +70,14 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		}
 	}
 
+	if opts.Seed != nil {
+		params.Seed = openai.Int(int64(*opts.Seed))
+	}
+
+	if opts.MaxCompletionTokens != nil {
+		params.MaxCompletionTokens = openai.Int(int64(*opts.MaxCompletionTokens))
+	}
+
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(opts.Messages))
 
 	for _, m := range opts.Messages {
