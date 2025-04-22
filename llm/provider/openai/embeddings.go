@@ -5,12 +5,11 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
 	"github.com/pkg/errors"
 )
 
 type EmbeddingsClient struct {
-	client *openai.Client
+	client openai.Client
 	model  string
 }
 
@@ -23,8 +22,10 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs .
 	opts := llm.NewEmbeddingsOptions(funcs...)
 
 	params := openai.EmbeddingNewParams{
-		Input: openai.F[openai.EmbeddingNewParamsInputUnion](shared.UnionString(input)),
-		Model: openai.F(c.model),
+		Input: openai.EmbeddingNewParamsInputUnion{
+			OfString: openai.String(input),
+		},
+		Model: openai.EmbeddingModel(c.model),
 	}
 
 	if opts.Dimensions != nil {
@@ -61,7 +62,7 @@ func (r *EmbeddingsResponse) Embeddings() [][]float64 {
 	return r.embeddings
 }
 
-func NewEmbeddingsClient(client *openai.Client, model string) *EmbeddingsClient {
+func NewEmbeddingsClient(client openai.Client, model string) *EmbeddingsClient {
 	return &EmbeddingsClient{
 		client: client,
 		model:  model,

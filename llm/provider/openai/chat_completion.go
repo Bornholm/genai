@@ -10,7 +10,7 @@ import (
 )
 
 type ChatCompletionClient struct {
-	client *openai.Client
+	client openai.Client
 	model  string
 }
 
@@ -23,25 +23,27 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	opts := llm.NewChatCompletionOptions(funcs...)
 
 	params := openai.ChatCompletionNewParams{
-		Model:       openai.F(openai.ChatModel(c.model)),
+		Model:       openai.ChatModel(c.model),
 		Temperature: openai.Float(opts.Temperature),
 	}
 
 	if opts.ResponseFormat == llm.ResponseFormatJSON {
-		jsonFormat := openai.ResponseFormatJSONSchemaParam{
-			Type: openai.F(openai.ResponseFormatJSONSchemaTypeJSONSchema),
-		}
+		jsonFormat := openai.ResponseFormatJSONSchemaParam{}
 
 		if opts.ResponseSchema != nil {
-			jsonFormat.JSONSchema = openai.F(openai.ResponseFormatJSONSchemaJSONSchemaParam{
-				Name:        openai.F(opts.ResponseSchema.Name()),
-				Description: openai.F(opts.ResponseSchema.Description()),
-				Schema:      openai.F(opts.ResponseSchema.Schema()),
+			jsonFormat.JSONSchema = openai.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name:        opts.ResponseSchema.Name(),
+				Description: openai.Opt(opts.ResponseSchema.Description()),
+				Schema:      opts.ResponseSchema.Schema(),
 				Strict:      openai.Bool(true),
-			})
+			}
 		}
 
-		params.ResponseFormat = openai.F[openai.ChatCompletionNewParamsResponseFormatUnion](jsonFormat)
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+				JSONSchema: jsonFormat.JSONSchema,
+			},
+		}
 	}
 
 	if len(opts.Tools) > 0 {
@@ -49,24 +51,23 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 		for _, t := range opts.Tools {
 			tools = append(tools, openai.ChatCompletionToolParam{
-				Type: openai.F(openai.ChatCompletionToolTypeFunction),
-				Function: openai.F(openai.FunctionDefinitionParam{
-					Name:        openai.String(t.Name()),
+				Function: openai.FunctionDefinitionParam{
+					Name:        t.Name(),
 					Description: openai.String(t.Description()),
-					Parameters:  openai.F(shared.FunctionParameters(t.Parameters())),
-				}),
+					Parameters:  shared.FunctionParameters(t.Parameters()),
+				},
 			})
 		}
 
-		params.Tools = openai.F(tools)
+		params.Tools = tools
 	}
 
 	if opts.ToolChoice != llm.ToolChoiceDefault {
 		switch opts.ToolChoice {
 		case llm.ToolChoiceAuto:
-			params.ToolChoice = openai.F[openai.ChatCompletionToolChoiceOptionUnionParam](
-				openai.ChatCompletionToolChoiceOptionAutoAuto,
-			)
+			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+				OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoAuto)),
+			}
 		}
 	}
 
@@ -101,28 +102,25 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 				return nil, errors.Errorf("unexpected tool calls message type '%T'", m)
 			}
 
-			message := openai.ChatCompletionAssistantMessageParam{
-				Role: openai.F(openai.ChatCompletionAssistantMessageParamRoleAssistant),
-			}
+			message := openai.ChatCompletionAssistantMessageParam{}
 
 			toolCalls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(toolCallsMessage.ToolCalls()))
 			for _, tc := range toolCallsMessage.ToolCalls() {
 				toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
-					ID: openai.F(tc.ID()),
-					Function: openai.F(openai.ChatCompletionMessageToolCallFunctionParam{
-						Name:      openai.F(tc.Name()),
-						Arguments: openai.F(tc.Parameters().(string)),
-					}),
-					Type: openai.F(openai.ChatCompletionMessageToolCallTypeFunction),
+					ID: tc.ID(),
+					Function: openai.ChatCompletionMessageToolCallFunctionParam{
+						Name:      tc.Name(),
+						Arguments: tc.Parameters().(string),
+					},
 				})
 			}
-			message.ToolCalls = openai.F(toolCalls)
+			message.ToolCalls = toolCalls
 
-			messages = append(messages, message)
+			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &message})
 		}
 	}
 
-	params.Messages = openai.F(messages)
+	params.Messages = messages
 
 	completion, err := c.client.Chat.Completions.New(ctx, params)
 	if err != nil {
@@ -148,7 +146,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	return llm.NewChatCompletionResponse(message, usage, toolCalls...), nil
 }
 
-func NewChatCompletionClient(client *openai.Client, model string) *ChatCompletionClient {
+func NewChatCompletionClient(client openai.Client, model string) *ChatCompletionClient {
 	return &ChatCompletionClient{
 		client: client,
 		model:  model,

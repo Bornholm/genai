@@ -61,18 +61,24 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		switch m.Role() {
 		case llm.RoleSystem:
 			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role:    openrouter.ChatMessageRoleSystem,
-				Content: m.Content(),
+				Role: openrouter.ChatMessageRoleSystem,
+				Content: openrouter.Content{
+					Text: m.Content(),
+				},
 			})
 		case llm.RoleUser:
 			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role:    openrouter.ChatMessageRoleUser,
-				Content: m.Content(),
+				Role: openrouter.ChatMessageRoleUser,
+				Content: openrouter.Content{
+					Text: m.Content(),
+				},
 			})
 		case llm.RoleAssistant:
 			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role:    openrouter.ChatMessageRoleAssistant,
-				Content: m.Content(),
+				Role: openrouter.ChatMessageRoleAssistant,
+				Content: openrouter.Content{
+					Text: m.Content(),
+				},
 			})
 		case llm.RoleTool:
 			toolMessage, ok := m.(llm.ToolMessage)
@@ -83,7 +89,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 			messages = append(messages, openrouter.ChatCompletionMessage{
 				Role:       openrouter.ChatMessageRoleTool,
 				ToolCallID: toolMessage.ID(),
-				Content:    m.Content(),
+				Content: openrouter.Content{
+					Text: m.Content(),
+				},
 			})
 		case llm.RoleToolCalls:
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
@@ -140,7 +148,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	openrouterMessage := res.Choices[0].Message
 
-	var message llm.Message = llm.NewMessage(llm.RoleAssistant, openrouterMessage.Content)
+	var message llm.Message = llm.NewMessage(llm.RoleAssistant, openrouterMessage.Content.Text)
 
 	toolCalls := make([]llm.ToolCall, 0)
 
