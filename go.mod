@@ -16,10 +16,10 @@ require (
 	github.com/openai/openai-go v0.1.0-beta.10
 	github.com/pkg/errors v0.9.1
 	github.com/revrost/go-openrouter v0.0.0-20250414052218-c9123df8a97e
-	github.com/rs/xid v1.6.0
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/testcontainers/testcontainers-go/modules/ollama v0.35.0
 	github.com/yargevad/filepathx v1.0.0
+	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8
 )
 
 require (
