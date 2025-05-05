@@ -10,21 +10,6 @@ import (
 type Client struct {
 	chatCompletion llm.ChatCompletionClient
 	embeddings     llm.EmbeddingsClient
-	extractText    llm.ExtractTextClient
-}
-
-// ExtractText implements llm.Client.
-func (c *Client) ExtractText(ctx context.Context, funcs ...llm.ExtractTextOptionFunc) (llm.ExtractTextResponse, error) {
-	if c.extractText == nil {
-		return nil, errors.WithStack(llm.ErrUnavailable)
-	}
-
-	response, err := c.extractText.ExtractText(ctx, funcs...)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	return response, nil
 }
 
 // ChatCompletion implements llm.Client.
@@ -55,11 +40,10 @@ func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.Embe
 	return response, nil
 }
 
-func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient, extractText llm.ExtractTextClient) *Client {
+func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient) *Client {
 	return &Client{
 		chatCompletion: chatCompletion,
 		embeddings:     embeddings,
-		extractText:    extractText,
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 type Options struct {
 	ChatCompletion *ClientOptions `envPrefix:"CHAT_COMPLETION_"`
 	Embeddings     *ClientOptions `envPrefix:"EMBEDDINGS_"`
-	ExtractText    *ClientOptions `envPrefix:"EXTRACT_TEXT_"`
 }
 
 type ClientOptions struct {
@@ -29,13 +28,6 @@ func WithChatCompletionOptions(clientOpts ClientOptions) OptionFunc {
 func WithEmbeddingsOptions(clientOpts ClientOptions) OptionFunc {
 	return func(opts *Options) error {
 		opts.Embeddings = &clientOpts
-		return nil
-	}
-}
-
-func WithExtractTextOptions(clientOpts ClientOptions) OptionFunc {
-	return func(opts *Options) error {
-		opts.ExtractText = &clientOpts
 		return nil
 	}
 }

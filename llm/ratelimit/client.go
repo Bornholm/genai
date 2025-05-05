@@ -14,14 +14,6 @@ type Client struct {
 	client  llm.Client
 }
 
-// ExtractText implements llm.Client.
-func (c *Client) ExtractText(ctx context.Context, funcs ...llm.ExtractTextOptionFunc) (llm.ExtractTextResponse, error) {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return c.client.ExtractText(ctx, funcs...)
-}
-
 // ChatCompletion implements llm.Client.
 func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	if err := c.limiter.Wait(ctx); err != nil {

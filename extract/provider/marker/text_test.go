@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bornholm/genai/llm"
-	"github.com/bornholm/genai/llm/testsuite"
+	"github.com/bornholm/genai/extract"
+	"github.com/bornholm/genai/extract/testsuite"
 	"github.com/pkg/errors"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -44,12 +44,12 @@ func TestExtract(t *testing.T) {
 		t.Fatalf("+%v", errors.WithStack(err))
 	}
 
-	testsuite.ExtractText(t, func() (llm.ExtractTextClient, error) {
+	testsuite.ExtractText(t, func() (extract.TextClient, error) {
 		baseURL := &url.URL{
 			Scheme: "http",
 			Host:   endpoint,
 		}
 
-		return NewExtractTextClient(baseURL), nil
+		return NewTextClient(baseURL), nil
 	})
 }

@@ -13,24 +13,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/extract"
 	"github.com/pkg/errors"
 )
 
-type ExtractTextClient struct {
+type TextClient struct {
 	baseURL *url.URL
 	http    *http.Client
 }
 
-// ExtractText implements llm.ExtractTextClient.
-func (c *ExtractTextClient) ExtractText(ctx context.Context, funcs ...llm.ExtractTextOptionFunc) (llm.ExtractTextResponse, error) {
-	opts, err := llm.NewExtractTextOptions(funcs...)
+// Text implements llm.TextClient.
+func (c *TextClient) Text(ctx context.Context, funcs ...extract.TextOptionFunc) (extract.TextResponse, error) {
+	opts, err := extract.NewTextOptions(funcs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	if opts.Reader == nil {
-		return nil, errors.WithStack(llm.ErrMissingReader)
+		return nil, errors.WithStack(extract.ErrMissingReader)
 	}
 
 	if closer, ok := opts.Reader.(io.Closer); ok {
@@ -123,16 +123,16 @@ func (c *ExtractTextClient) ExtractText(ctx context.Context, funcs ...llm.Extrac
 		return nil, errors.Errorf("transformation failed:\n%s", httpBody)
 	}
 
-	return &ExtractTextResponse{
-		format:   llm.ExtractTextFormatMarkdown,
+	return &TextResponse{
+		format:   extract.TextFormatMarkdown,
 		output:   bytes.NewBufferString(markerRes.Output),
 		Images:   markerRes.Images,
 		Metadata: markerRes.Metadata,
 	}, nil
 }
 
-func NewExtractTextClient(baseURL *url.URL) *ExtractTextClient {
-	return &ExtractTextClient{
+func NewTextClient(baseURL *url.URL) *TextClient {
+	return &TextClient{
 		baseURL: baseURL,
 		http: &http.Client{
 			Timeout: 0,
@@ -140,4 +140,4 @@ func NewExtractTextClient(baseURL *url.URL) *ExtractTextClient {
 	}
 }
 
-var _ llm.ExtractTextClient = &ExtractTextClient{}
+var _ extract.TextClient = &TextClient{}
