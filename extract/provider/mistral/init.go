@@ -20,7 +20,7 @@ func init() {
 		query := dsn.Query()
 
 		apiKey := query.Get("apiKey")
-
+		query.Del("apiKey")
 		dsn.RawQuery = query.Encode()
 
 		return NewTextClient(dsn, apiKey), nil

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -22,6 +23,8 @@ func (c *TextClient) request(ctx context.Context, method string, path string, he
 	url.Host = c.baseURL.Host
 	url.User = c.baseURL.User
 	url.Path = c.baseURL.JoinPath(path).Path
+
+	slog.DebugContext(ctx, "new request", slog.String("method", method), slog.String("host", url.Host), slog.String("path", path))
 
 	req, err := http.NewRequest(method, url.String(), body)
 	if err != nil {

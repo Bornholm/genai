@@ -1,4 +1,4 @@
-package openai
+package mistral
 
 import (
 	"context"
@@ -7,9 +7,11 @@ import (
 	"github.com/bornholm/genai/llm/provider"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+
+	genai "github.com/bornholm/genai/llm/provider/openai"
 )
 
-const Name provider.Name = "openai"
+const Name provider.Name = "mistral"
 
 func init() {
 	provider.RegisterChatCompletion(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.ChatCompletionClient, error) {
@@ -25,7 +27,7 @@ func init() {
 			options...,
 		)
 
-		return NewChatCompletionClient(client, &paramsBuilder{
+		return genai.NewChatCompletionClient(client, &paramsBuilder{
 			model: opts.Model,
 		}), nil
 	})
@@ -43,6 +45,6 @@ func init() {
 			options...,
 		)
 
-		return NewEmbeddingsClient(client, opts.Model), nil
+		return genai.NewEmbeddingsClient(client, opts.Model), nil
 	})
 }
