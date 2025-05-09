@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 
 	"github.com/pkg/errors"
 )
@@ -96,15 +95,10 @@ func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessa
 		return nil, errors.Errorf("unexpected tool parameters type '%T'", tc.Parameters())
 	}
 
-	log.Printf("Executing tool '%s' with params '%s'", tool.Name(), params)
-
 	result, err := tool.Execute(ctx, params)
 	if err != nil {
-		log.Printf("Error while executing tool: %s", err)
 		return NewToolMessage(tc.ID(), fmt.Sprintf("error: %s", err.Error())), nil
 	}
-
-	log.Printf("Tool result length: %dkb", len(result)/100)
 
 	return NewToolMessage(tc.ID(), result), nil
 }

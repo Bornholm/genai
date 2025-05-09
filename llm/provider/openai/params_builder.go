@@ -155,7 +155,7 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 				return errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
-			messages = append(messages, openai.ToolMessage(toolMessage.ID(), toolMessage.Content()))
+			messages = append(messages, openai.ToolMessage(toolMessage.Content(), toolMessage.ID()))
 		case llm.RoleToolCalls:
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
 			if !ok {
