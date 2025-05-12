@@ -1,0 +1,227 @@
+package task
+
+import (
+	"context"
+	"embed"
+	"log/slog"
+
+	"github.com/bornholm/genai/agent"
+	"github.com/bornholm/genai/llm"
+	"github.com/pkg/errors"
+)
+
+//go:embed prompts/*.gotmpl
+var prompts embed.FS
+
+type HandlerOptions struct {
+	DefaultTools     []llm.Tool
+	DefaultEvaluator Evaluator
+}
+
+type HandlerOptionFunc func(opts *HandlerOptions)
+
+func WithDefaultTools(tools ...llm.Tool) HandlerOptionFunc {
+	return func(opts *HandlerOptions) {
+		opts.DefaultTools = tools
+	}
+}
+
+func WithDefaultEvaluator(evaluator Evaluator) HandlerOptionFunc {
+	return func(opts *HandlerOptions) {
+		opts.DefaultEvaluator = evaluator
+	}
+}
+
+func NewHandlerOptions(funcs ...HandlerOptionFunc) *HandlerOptions {
+	opts := &HandlerOptions{
+		DefaultTools:     []llm.Tool{},
+		DefaultEvaluator: nil,
+	}
+	for _, fn := range funcs {
+		fn(opts)
+	}
+	return opts
+}
+
+type Handler struct {
+	defaultClient    llm.ChatCompletionClient
+	defaultTools     []llm.Tool
+	defaultEvaluator Evaluator
+}
+
+// Handle implements agent.Handler.
+func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan agent.Event) error {
+	messageEvent, ok := input.(agent.MessageEvent)
+	if !ok {
+		return errors.Wrapf(agent.ErrNotSupported, "event type '%T' not supported", input)
+	}
+
+	maxIterations := ContextMaxIterations(ctx, 5)
+	client := ContextClient(ctx, h.defaultClient)
+	tools := ContextTools(ctx, h.defaultTools)
+	evaluator := ContextEvaluator(ctx, h.defaultEvaluator)
+
+	query := messageEvent.Message()
+
+	slog.DebugContext(ctx, "received new message", slog.String("query", query))
+
+	systemPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/task_system.gotmpl", nil)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	messages := []llm.Message{
+		llm.NewMessage(llm.RoleSystem, systemPrompt),
+		llm.NewMessage(llm.RoleUser, query),
+	}
+
+	var (
+		synthesis llm.ChatCompletionResponse
+	)
+
+	var thoughts []string
+
+	for i := 0; i < maxIterations; i++ {
+		slog.DebugContext(ctx, "new iteration", slog.Int("iteration", i))
+
+		messages, err = h.next(ctx, client, tools, messages)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
+		thought := messages[len(messages)-1].Content()
+
+		outputs <- NewThoughtEvent(i, thought, messageEvent)
+
+		slog.DebugContext(ctx, "agent response", slog.String("response", thought))
+
+		thoughts = append(thoughts, thought)
+
+		shouldContinue, err := evaluator.ShouldContinue(ctx, query, thought)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
+		slog.DebugContext(ctx, "evaluator judgement", slog.Bool("shouldContinue", shouldContinue))
+
+		if shouldContinue {
+			iterationPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/task_iteration.gotmpl", nil)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			messages = append(messages, llm.NewMessage(llm.RoleUser, iterationPrompt))
+
+			continue
+		}
+
+		break
+	}
+
+	synthetizeSystemPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/task_synthetize_system.gotmpl", nil)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	synthetizeUserPrompt, err := llm.PromptTemplateFS(&prompts, "prompts/task_synthetize_user.gotmpl", struct {
+		Query    string
+		Thoughts []string
+	}{
+		Query:    query,
+		Thoughts: thoughts,
+	})
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	messages = []llm.Message{
+		llm.NewMessage(llm.RoleSystem, synthetizeSystemPrompt),
+		llm.NewMessage(llm.RoleUser, synthetizeUserPrompt),
+	}
+
+	synthesis, err = client.ChatCompletion(ctx,
+		llm.WithMessages(messages...),
+		llm.WithTemperature(0.6),
+	)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	slog.DebugContext(ctx, "synthesis response", slog.String("synthesis", synthesis.Message().Content()))
+
+	outputs <- NewResultEvent(synthesis.Message().Content(), thoughts, messageEvent)
+
+	return nil
+}
+
+func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message) ([]llm.Message, error) {
+	type legacyToolCall struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+
+	toolChoice := llm.ToolChoiceAuto
+
+	for {
+		res, err := client.ChatCompletion(ctx,
+			llm.WithMessages(messages...),
+			llm.WithToolChoice(toolChoice),
+			llm.WithTools(tools...),
+			llm.WithTemperature(0.3),
+		)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+
+		if toolChoice == llm.ToolChoiceRequired {
+			toolChoice = llm.ToolChoiceAuto
+		}
+
+		hasToolCalls := len(res.ToolCalls()) > 0
+
+		for _, tc := range res.ToolCalls() {
+			tm, err := llm.ExecuteToolCall(ctx, tc, tools...)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+
+			messages = append(messages, tc, tm)
+		}
+
+		if hasToolCalls {
+			toolChoice = llm.ToolChoiceNone
+			continue
+		}
+
+		legacyCalls, err := llm.ParseJSON[legacyToolCall](res.Message())
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+
+		if len(legacyCalls) > 0 && legacyCalls[0].Name != "" {
+			slog.WarnContext(ctx, "detected legacy tool call, retrying while forcing tool call")
+			toolChoice = llm.ToolChoiceRequired
+			continue
+		}
+
+		messages = append(messages, res.Message())
+
+		return messages, nil
+	}
+}
+
+func NewHandler(defaultClient llm.ChatCompletionClient, funcs ...HandlerOptionFunc) *Handler {
+	opts := NewHandlerOptions(funcs...)
+
+	if opts.DefaultEvaluator == nil {
+		opts.DefaultEvaluator = NewLLMJudge(defaultClient)
+	}
+
+	return &Handler{
+		defaultClient:    defaultClient,
+		defaultEvaluator: opts.DefaultEvaluator,
+		defaultTools:     opts.DefaultTools,
+	}
+}
+
+var _ agent.Handler = &Handler{}

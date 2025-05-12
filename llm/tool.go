@@ -102,3 +102,17 @@ func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessa
 
 	return NewToolMessage(tc.ID(), result), nil
 }
+
+func ToolParam[T any](params map[string]any, name string) (T, error) {
+	raw, exists := params[name]
+	if !exists {
+		return *new(T), errors.Errorf("missing '%s' parameter", name)
+	}
+
+	value, ok := raw.(T)
+	if !ok {
+		return *new(T), errors.Errorf("invalid '%s' parameter", name)
+	}
+
+	return value, nil
+}

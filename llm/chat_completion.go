@@ -16,8 +16,9 @@ const (
 type ToolChoice string
 
 const (
-	ToolChoiceAuto    ToolChoice = "auto"
-	ToolChoiceDefault ToolChoice = "default"
+	ToolChoiceNone     ToolChoice = "none"
+	ToolChoiceAuto     ToolChoice = "auto"
+	ToolChoiceRequired ToolChoice = "required"
 )
 
 type ChatCompletionOptions struct {
@@ -38,7 +39,7 @@ func NewChatCompletionOptions(funcs ...ChatCompletionOptionFunc) *ChatCompletion
 		Temperature:    0.6,
 		ResponseFormat: ResponseFormatDefault,
 		ResponseSchema: nil,
-		ToolChoice:     ToolChoiceDefault,
+		ToolChoice:     ToolChoiceNone,
 	}
 	for _, fn := range funcs {
 		fn(opts)

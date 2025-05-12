@@ -2,9 +2,11 @@ package openai
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 	"github.com/pkg/errors"
 )
 
@@ -22,8 +24,13 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		return nil, errors.WithStack(err)
 	}
 
-	completion, err := c.client.Chat.Completions.New(ctx, *params)
+	var httpRes *http.Response
+
+	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
 	if err != nil {
+		if httpRes.StatusCode == http.StatusTooManyRequests {
+			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
+		}
 		return nil, errors.WithStack(err)
 	}
 

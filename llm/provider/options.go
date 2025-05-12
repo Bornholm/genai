@@ -5,8 +5,8 @@ import (
 )
 
 type Options struct {
-	ChatCompletion *ClientOptions `envPrefix:"CHAT_COMPLETION_"`
-	Embeddings     *ClientOptions `envPrefix:"EMBEDDINGS_"`
+	ChatCompletion *ClientOptions `env:"" envPrefix:"CHAT_COMPLETION_"`
+	Embeddings     *ClientOptions `env:"" envPrefix:"EMBEDDINGS_"`
 }
 
 type ClientOptions struct {

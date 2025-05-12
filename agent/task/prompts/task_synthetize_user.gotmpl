@@ -1,0 +1,11 @@
+**Query:**
+
+{{ .Query }}
+
+**Thought Process:**
+
+{{range $index, $thought := .Thoughts}}
+Iteration {{ $index }}:
+
+{{ $thought }}
+{{end}}

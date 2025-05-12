@@ -1,6 +1,8 @@
 package env
 
 import (
+	"os"
+
 	"github.com/bornholm/genai/llm/provider"
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
@@ -10,7 +12,7 @@ import (
 func With(variableNamePrefix string, envFiles ...string) provider.OptionFunc {
 	return func(opts *provider.Options) error {
 		if len(envFiles) > 0 {
-			if err := godotenv.Load(envFiles...); err != nil {
+			if err := godotenv.Load(envFiles...); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return errors.WithStack(err)
 			}
 		}

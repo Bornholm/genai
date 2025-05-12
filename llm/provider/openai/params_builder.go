@@ -126,12 +126,18 @@ func ConfigureTools(ctx context.Context, opts *llm.ChatCompletionOptions, params
 		params.Tools = tools
 	}
 
-	if opts.ToolChoice != llm.ToolChoiceDefault {
-		switch opts.ToolChoice {
-		case llm.ToolChoiceAuto:
-			params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
-				OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoAuto)),
-			}
+	switch opts.ToolChoice {
+	case llm.ToolChoiceAuto:
+		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoAuto)),
+		}
+	case llm.ToolChoiceRequired:
+		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoRequired)),
+		}
+	case llm.ToolChoiceNone:
+		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoNone)),
 		}
 	}
 
