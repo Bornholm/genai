@@ -149,10 +149,10 @@ type Role string
 
 const (
 	RoleAssistant Role = "assistant"
-	RoleUser           = "user"
-	RoleSystem         = "system"
-	RoleTool           = "tool"
-	RoleToolCalls      = "tool_calls"
+	RoleUser      Role = "user"
+	RoleSystem    Role = "system"
+	RoleTool      Role = "tool"
+	RoleToolCalls Role = "tool_calls"
 )
 
 type Message interface {
