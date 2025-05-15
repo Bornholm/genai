@@ -6,11 +6,12 @@ import (
 	"strings"
 
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/prompt"
 	"github.com/pkg/errors"
 )
 
 type Evaluator interface {
-	ShouldContinue(ctx context.Context, query string, response string) (bool, error)
+	ShouldContinue(ctx context.Context, query string, response string, currentIteration, maxIterations int) (bool, error)
 }
 
 type LLMJudge struct {
@@ -18,18 +19,22 @@ type LLMJudge struct {
 }
 
 // ShouldContinue implements Evaluator.
-func (j *LLMJudge) ShouldContinue(ctx context.Context, query string, response string) (bool, error) {
-	systemPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/judge_system.gotmpl", nil)
+func (j *LLMJudge) ShouldContinue(ctx context.Context, query string, response string, currentIteration, maxIterations int) (bool, error) {
+	systemPrompt, err := prompt.FromFS[any](&prompts, "prompts/judge_system.gotmpl", nil)
 	if err != nil {
 		return false, errors.WithStack(err)
 	}
 
-	userPrompt, err := llm.PromptTemplateFS(&prompts, "prompts/judge_user.gotmpl", struct {
-		Query    string
-		Response string
+	userPrompt, err := prompt.FromFS(&prompts, "prompts/judge_user.gotmpl", struct {
+		Query            string
+		CurrentIteration int
+		MaxIterations    int
+		Response         string
 	}{
-		Query:    query,
-		Response: response,
+		Query:            query,
+		Response:         response,
+		CurrentIteration: currentIteration,
+		MaxIterations:    maxIterations,
 	})
 	if err != nil {
 		return false, errors.WithStack(err)

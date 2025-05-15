@@ -7,6 +7,8 @@ import (
 
 	"github.com/bornholm/genai/agent"
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/messageutil"
+	"github.com/bornholm/genai/llm/prompt"
 	"github.com/pkg/errors"
 )
 
@@ -51,29 +53,34 @@ type Handler struct {
 
 // Handle implements agent.Handler.
 func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan agent.Event) error {
+	defer close(outputs)
+
 	messageEvent, ok := input.(agent.MessageEvent)
 	if !ok {
 		return errors.Wrapf(agent.ErrNotSupported, "event type '%T' not supported", input)
 	}
 
+	minIterations := ContextMinIterations(ctx, 2)
 	maxIterations := ContextMaxIterations(ctx, 5)
-	client := ContextClient(ctx, h.defaultClient)
-	tools := ContextTools(ctx, h.defaultTools)
+	client := agent.ContextClient(ctx, h.defaultClient)
+	tools := agent.ContextTools(ctx, h.defaultTools)
 	evaluator := ContextEvaluator(ctx, h.defaultEvaluator)
+	messages := agent.ContextMessages(ctx, []llm.Message{})
 
 	query := messageEvent.Message()
 
 	slog.DebugContext(ctx, "received new message", slog.String("query", query))
 
-	systemPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/task_system.gotmpl", nil)
+	systemPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_system.gotmpl", nil)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	messages := []llm.Message{
-		llm.NewMessage(llm.RoleSystem, systemPrompt),
+	messages = messageutil.InjectSystemPrompt(messageutil.WithoutRoles(messages, llm.RoleSystem), systemPrompt)
+
+	messages = append(messages,
 		llm.NewMessage(llm.RoleUser, query),
-	}
+	)
 
 	var (
 		synthesis llm.ChatCompletionResponse
@@ -91,39 +98,40 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 
 		thought := messages[len(messages)-1].Content()
 
-		outputs <- NewThoughtEvent(i, thought, messageEvent)
-
 		slog.DebugContext(ctx, "agent response", slog.String("response", thought))
+
+		outputs <- NewThoughtEvent(i, thought, messageEvent)
 
 		thoughts = append(thoughts, thought)
 
-		shouldContinue, err := evaluator.ShouldContinue(ctx, query, thought)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-
-		slog.DebugContext(ctx, "evaluator judgement", slog.Bool("shouldContinue", shouldContinue))
-
-		if shouldContinue {
-			iterationPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/task_iteration.gotmpl", nil)
+		shouldContinue := true
+		if i >= minIterations {
+			shouldContinue, err = evaluator.ShouldContinue(ctx, query, thought, i, maxIterations)
 			if err != nil {
 				return errors.WithStack(err)
 			}
 
-			messages = append(messages, llm.NewMessage(llm.RoleUser, iterationPrompt))
-
-			continue
+			slog.DebugContext(ctx, "evaluator judgement", slog.Bool("shouldContinue", shouldContinue))
 		}
 
-		break
+		if !shouldContinue {
+			break
+		}
+
+		iterationPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_iteration.gotmpl", nil)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
+		messages = append(messages, llm.NewMessage(llm.RoleUser, iterationPrompt))
 	}
 
-	synthetizeSystemPrompt, err := llm.PromptTemplateFS[any](&prompts, "prompts/task_synthetize_system.gotmpl", nil)
+	synthetizeSystemPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_synthetize_system.gotmpl", nil)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	synthetizeUserPrompt, err := llm.PromptTemplateFS(&prompts, "prompts/task_synthetize_user.gotmpl", struct {
+	synthetizeUserPrompt, err := prompt.FromFS(&prompts, "prompts/task_synthetize_user.gotmpl", struct {
 		Query    string
 		Thoughts []string
 	}{

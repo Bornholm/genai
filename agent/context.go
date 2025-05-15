@@ -1,4 +1,4 @@
-package simple
+package agent
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 type contextKey string
 
 const (
+	contextKeyAgent    contextKey = "agent"
 	contextKeyClient   contextKey = "client"
 	contextKeyTools    contextKey = "tools"
 	contextKeyMessages contextKey = "messages"
@@ -19,7 +20,7 @@ func WithContextClient(ctx context.Context, client llm.ChatCompletionClient) con
 }
 
 func ContextClient(ctx context.Context, defaultClient llm.ChatCompletionClient) llm.ChatCompletionClient {
-	return contextValue(ctx, contextKeyClient, defaultClient)
+	return ContextValue(ctx, contextKeyClient, defaultClient)
 }
 
 func WithContextTools(ctx context.Context, tools []llm.Tool) context.Context {
@@ -27,7 +28,7 @@ func WithContextTools(ctx context.Context, tools []llm.Tool) context.Context {
 }
 
 func ContextTools(ctx context.Context, defaultTools []llm.Tool) []llm.Tool {
-	return contextValue(ctx, contextKeyTools, defaultTools)
+	return ContextValue(ctx, contextKeyTools, defaultTools)
 }
 
 func WithContextMessages(ctx context.Context, messages []llm.Message) context.Context {
@@ -35,10 +36,18 @@ func WithContextMessages(ctx context.Context, messages []llm.Message) context.Co
 }
 
 func ContextMessages(ctx context.Context, defaultMessages []llm.Message) []llm.Message {
-	return contextValue(ctx, contextKeyMessages, defaultMessages)
+	return ContextValue(ctx, contextKeyMessages, defaultMessages)
 }
 
-func contextValue[T any](ctx context.Context, key contextKey, defaultValue T) T {
+func WithContextAgent(ctx context.Context, agent *Agent) context.Context {
+	return context.WithValue(ctx, contextKeyAgent, agent)
+}
+
+func ContextAgent(ctx context.Context) *Agent {
+	return ContextValue[contextKey, *Agent](ctx, contextKeyAgent, nil)
+}
+
+func ContextValue[K any, T any](ctx context.Context, key K, defaultValue T) T {
 	raw := ctx.Value(key)
 	if raw == nil {
 		return defaultValue

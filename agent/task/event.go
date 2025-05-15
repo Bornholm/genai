@@ -5,7 +5,7 @@ import (
 )
 
 type ThoughtEvent interface {
-	agent.Event
+	agent.MessageEvent
 	Thought() string
 	Index() int
 	Origin() agent.MessageEvent
@@ -15,6 +15,11 @@ type BaseThoughtEvent struct {
 	thought string
 	index   int
 	origin  agent.MessageEvent
+}
+
+// Message implements ThoughtEvent.
+func (e *BaseThoughtEvent) Message() string {
+	return e.thought
 }
 
 // Event implements ThoughtEvent.
@@ -46,7 +51,7 @@ func NewThoughtEvent(index int, thought string, origin agent.MessageEvent) *Base
 }
 
 type ResultEvent interface {
-	agent.Event
+	agent.MessageEvent
 	Thoughts() []string
 	Result() string
 	Origin() agent.MessageEvent
@@ -56,6 +61,11 @@ type BaseResultEvent struct {
 	result   string
 	thoughts []string
 	origin   agent.MessageEvent
+}
+
+// Message implements ResultEvent.
+func (e *BaseResultEvent) Message() string {
+	return e.result
 }
 
 // Thoughts implements ResultEvent.

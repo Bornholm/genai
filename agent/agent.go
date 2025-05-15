@@ -78,9 +78,19 @@ func (a *Agent) Run(ctx context.Context) error {
 
 func (a *Agent) handle(ctx context.Context, input Event) error {
 	handlerCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
-	if err := a.handler.Handle(handlerCtx, input, a.outputs); err != nil {
+	handlerCtx = WithContextAgent(handlerCtx, a)
+
+	handlerOutputs := make(chan Event)
+	go func() {
+		defer cancel()
+
+		for evt := range handlerOutputs {
+			a.outputs <- evt
+		}
+	}()
+
+	if err := a.handler.Handle(handlerCtx, input, handlerOutputs); err != nil {
 		return errors.WithStack(err)
 	}
 

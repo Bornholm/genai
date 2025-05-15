@@ -38,14 +38,16 @@ type Handler struct {
 
 // Handle implements agent.Handler.
 func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan agent.Event) error {
+	defer close(outputs)
+
 	messageEvent, ok := input.(agent.MessageEvent)
 	if !ok {
 		return errors.Wrapf(agent.ErrNotSupported, "event type '%T' not supported", input)
 	}
 
-	client := ContextClient(ctx, h.defaultClient)
-	tools := ContextTools(ctx, h.defaultTools)
-	messages := ContextMessages(ctx, []llm.Message{})
+	client := agent.ContextClient(ctx, h.defaultClient)
+	tools := agent.ContextTools(ctx, h.defaultTools)
+	messages := agent.ContextMessages(ctx, []llm.Message{})
 
 	message := messageEvent.Message()
 

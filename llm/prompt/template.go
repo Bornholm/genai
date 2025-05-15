@@ -1,4 +1,4 @@
-package llm
+package prompt
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-func PromptTemplateFS[T any](fs fs.FS, filename string, data T) (string, error) {
+func FromFS[T any](fs fs.FS, filename string, data T, funcs ...OptionFunc) (string, error) {
 	file, err := fs.Open(filename)
 	if err != nil {
 		return "", errors.WithStack(err)
@@ -22,7 +22,7 @@ func PromptTemplateFS[T any](fs fs.FS, filename string, data T) (string, error) 
 		return "", errors.WithStack(err)
 	}
 
-	prompt, err := PromptTemplate(string(rawTemplate), data)
+	prompt, err := Template(string(rawTemplate), data, funcs...)
 	if err != nil {
 		return "", errors.WithStack(err)
 	}
@@ -30,8 +30,9 @@ func PromptTemplateFS[T any](fs fs.FS, filename string, data T) (string, error) 
 	return prompt, nil
 }
 
-func PromptTemplate[T any](rawTemplate string, data T) (string, error) {
-	tmpl, err := template.New("prompt").Parse(rawTemplate)
+func Template[T any](rawTemplate string, data T, funcs ...OptionFunc) (string, error) {
+	opts := NewOptions(funcs...)
+	tmpl, err := template.New("prompt").Funcs(opts.Funcs).Parse(rawTemplate)
 	if err != nil {
 		return "", errors.WithStack(err)
 	}

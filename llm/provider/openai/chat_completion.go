@@ -28,7 +28,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
 	if err != nil {
-		if httpRes.StatusCode == http.StatusTooManyRequests {
+		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
 			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
 		}
 		return nil, errors.WithStack(err)
