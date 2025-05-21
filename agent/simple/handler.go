@@ -48,6 +48,8 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 	client := agent.ContextClient(ctx, h.defaultClient)
 	tools := agent.ContextTools(ctx, h.defaultTools)
 	messages := agent.ContextMessages(ctx, []llm.Message{})
+	temperature := agent.ContextTemperature(ctx, 0.3)
+	seed := agent.ContextSeed(ctx, -1)
 
 	message := messageEvent.Message()
 
@@ -56,13 +58,20 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 	messages = append(messages, llm.NewMessage(llm.RoleUser, message))
 
 	toolChoice := llm.ToolChoiceAuto
+
+	options := []llm.ChatCompletionOptionFunc{
+		llm.WithMessages(messages...),
+		llm.WithToolChoice(toolChoice),
+		llm.WithTools(tools...),
+		llm.WithTemperature(temperature),
+	}
+
+	if seed != -1 {
+		options = append(options, llm.WithSeed(seed))
+	}
+
 	for {
-		res, err := client.ChatCompletion(ctx,
-			llm.WithMessages(messages...),
-			llm.WithToolChoice(toolChoice),
-			llm.WithTools(tools...),
-			llm.WithTemperature(0.3),
-		)
+		res, err := client.ChatCompletion(ctx, options...)
 		if err != nil {
 			return errors.WithStack(err)
 		}

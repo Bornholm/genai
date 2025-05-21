@@ -16,7 +16,8 @@ type Evaluator interface {
 }
 
 type LLMJudge struct {
-	client llm.ChatCompletionClient
+	client  llm.ChatCompletionClient
+	options []llm.ChatCompletionOptionFunc
 }
 
 // ShouldContinue implements Evaluator.
@@ -27,6 +28,8 @@ func (j *LLMJudge) ShouldContinue(ctx context.Context, query string, response st
 	}
 
 	tools := agent.ContextTools(ctx, []llm.Tool{})
+	temperature := agent.ContextTemperature(ctx, 0.3)
+	seed := agent.ContextSeed(ctx, -1)
 
 	userPrompt, err := prompt.FromFS(&prompts, "prompts/judge_user.gotmpl", struct {
 		Query            string
@@ -50,10 +53,18 @@ func (j *LLMJudge) ShouldContinue(ctx context.Context, query string, response st
 		llm.NewMessage(llm.RoleUser, userPrompt),
 	}
 
-	res, err := j.client.ChatCompletion(ctx,
+	options := []llm.ChatCompletionOptionFunc{
 		llm.WithMessages(messages...),
-		llm.WithTemperature(0.3),
-	)
+		llm.WithTemperature(temperature),
+	}
+
+	if seed != -1 {
+		options = append(options, llm.WithSeed(seed))
+	}
+
+	options = append(options, j.options...)
+
+	res, err := j.client.ChatCompletion(ctx, options...)
 	if err != nil {
 		return false, "", errors.WithStack(err)
 	}
@@ -71,8 +82,9 @@ func (j *LLMJudge) ShouldContinue(ctx context.Context, query string, response st
 
 var _ Evaluator = &LLMJudge{}
 
-func NewLLMJudge(client llm.ChatCompletionClient) *LLMJudge {
+func NewLLMJudge(client llm.ChatCompletionClient, options ...llm.ChatCompletionOptionFunc) *LLMJudge {
 	return &LLMJudge{
-		client: client,
+		client:  client,
+		options: options,
 	}
 }

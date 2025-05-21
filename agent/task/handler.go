@@ -68,6 +68,15 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 	tools := agent.ContextTools(ctx, h.defaultTools)
 	evaluator := ContextEvaluator(ctx, h.defaultEvaluator)
 	messages := agent.ContextMessages(ctx, []llm.Message{})
+	temperature := agent.ContextTemperature(ctx, 0.3)
+	seed := agent.ContextSeed(ctx, -1)
+
+	baseOptions := []llm.ChatCompletionOptionFunc{
+		llm.WithTemperature(temperature),
+	}
+	if seed != -1 {
+		baseOptions = append(baseOptions, llm.WithSeed(seed))
+	}
 
 	query := messageEvent.Message()
 
@@ -93,7 +102,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 	for i := 0; i < maxIterations; i++ {
 		slog.DebugContext(ctx, "new iteration", slog.Int("iteration", i))
 
-		messages, err = h.next(ctx, client, tools, messages)
+		messages, err = h.next(ctx, client, tools, messages, baseOptions)
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -164,10 +173,12 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 		llm.NewMessage(llm.RoleUser, synthetizeUserPrompt),
 	}
 
-	synthesis, err = client.ChatCompletion(ctx,
+	synthesisOptions := append(
+		baseOptions,
 		llm.WithMessages(messages...),
-		llm.WithTemperature(0.6),
 	)
+
+	synthesis, err = client.ChatCompletion(ctx, synthesisOptions...)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -179,7 +190,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 	return nil
 }
 
-func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message) ([]llm.Message, error) {
+func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message, options []llm.ChatCompletionOptionFunc) ([]llm.Message, error) {
 	type legacyToolCall struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
@@ -187,13 +198,14 @@ func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, too
 
 	toolChoice := llm.ToolChoiceAuto
 
+	options = append(options,
+		llm.WithMessages(messages...),
+		llm.WithToolChoice(toolChoice),
+		llm.WithTools(tools...),
+	)
+
 	for {
-		res, err := client.ChatCompletion(ctx,
-			llm.WithMessages(messages...),
-			llm.WithToolChoice(toolChoice),
-			llm.WithTools(tools...),
-			llm.WithTemperature(0.3),
-		)
+		res, err := client.ChatCompletion(ctx, options...)
 		if err != nil {
 			return nil, errors.WithStack(err)
 		}
