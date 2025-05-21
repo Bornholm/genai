@@ -1,14 +1,11 @@
-**Instructions**
-
-You must respond with ONLY one of these two outputs:
-- "STOP" - if the response is complete and relevant to the query or if you think the task can not be completed by the agent with its current capabilities.
-- "CONTINUE" - if the response is incomplete, off-topic or irrelevant.
-
-Do not include explanations, justifications, or any other text in your answer. Respond with only "STOP" or "CONTINUE".
-
 **Query:**
 
 {{ .Query }}
+
+**Tools:**
+{{ range .Tools }}
+- {{ .Name }}: {{ .Description }}
+{{ end }}
 
 **Response:** 
 

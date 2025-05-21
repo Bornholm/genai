@@ -12,7 +12,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-func getFrenchAddress(ctx context.Context, params map[string]any) (string, error) {
+func getFrenchLocation(ctx context.Context, params map[string]any) (string, error) {
 	postalAddress, err := llm.ToolParam[string](params, "postal_address")
 	if err != nil {
 		return "", errors.WithStack(err)

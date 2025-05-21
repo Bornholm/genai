@@ -4,6 +4,8 @@ import (
 	"context"
 	"embed"
 	"log/slog"
+	"strconv"
+	"strings"
 
 	"github.com/bornholm/genai/agent"
 	"github.com/bornholm/genai/llm"
@@ -100,22 +102,37 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 
 		slog.DebugContext(ctx, "agent response", slog.String("response", thought))
 
-		outputs <- NewThoughtEvent(i, thought, messageEvent)
+		outputs <- NewThoughtEvent(i, ThoughtTypeAgent, thought, messageEvent)
 
 		thoughts = append(thoughts, thought)
 
-		shouldContinue := true
 		if i >= minIterations {
-			shouldContinue, err = evaluator.ShouldContinue(ctx, query, thought, i, maxIterations)
+			var wholeThoughts strings.Builder
+
+			for i, t := range thoughts {
+				wholeThoughts.WriteString("## Thought ")
+				wholeThoughts.WriteString(strconv.FormatInt(int64(i), 10))
+				wholeThoughts.WriteString("\n\n")
+				wholeThoughts.WriteString(t)
+				wholeThoughts.WriteString("\n\n")
+			}
+
+			evaluatorCtx := agent.WithContextTools(ctx, tools)
+
+			shouldContinue, evaluatorThought, err := evaluator.ShouldContinue(evaluatorCtx, query, wholeThoughts.String(), i, maxIterations)
 			if err != nil {
 				return errors.WithStack(err)
 			}
 
-			slog.DebugContext(ctx, "evaluator judgement", slog.Bool("shouldContinue", shouldContinue))
-		}
+			if evaluatorThought != "" {
+				outputs <- NewThoughtEvent(i, ThoughtTypeEvaluator, evaluatorThought, messageEvent)
+			}
 
-		if !shouldContinue {
-			break
+			slog.DebugContext(ctx, "evaluator judgement", slog.Bool("shouldContinue", shouldContinue))
+
+			if !shouldContinue {
+				break
+			}
 		}
 
 		iterationPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_iteration.gotmpl", nil)

@@ -4,17 +4,31 @@ import (
 	"github.com/bornholm/genai/agent"
 )
 
+type ThoughtType string
+
+const (
+	ThoughtTypeAgent     ThoughtType = "agent"
+	ThoughtTypeEvaluator ThoughtType = "evaluator"
+)
+
 type ThoughtEvent interface {
 	agent.MessageEvent
+	Type() ThoughtType
 	Thought() string
-	Index() int
+	Iteration() int
 	Origin() agent.MessageEvent
 }
 
 type BaseThoughtEvent struct {
-	thought string
-	index   int
-	origin  agent.MessageEvent
+	thought     string
+	thoughtType ThoughtType
+	iteration   int
+	origin      agent.MessageEvent
+}
+
+// Type implements ThoughtEvent.
+func (e *BaseThoughtEvent) Type() ThoughtType {
+	return e.thoughtType
 }
 
 // Message implements ThoughtEvent.
@@ -25,9 +39,9 @@ func (e *BaseThoughtEvent) Message() string {
 // Event implements ThoughtEvent.
 func (e *BaseThoughtEvent) Event() {}
 
-// Index implements ThoughtEvent.
-func (e *BaseThoughtEvent) Index() int {
-	return e.index
+// Iteration implements ThoughtEvent.
+func (e *BaseThoughtEvent) Iteration() int {
+	return e.iteration
 }
 
 // Origin implements ThoughtEvent.
@@ -42,11 +56,12 @@ func (e *BaseThoughtEvent) Thought() string {
 
 var _ ThoughtEvent = &BaseThoughtEvent{}
 
-func NewThoughtEvent(index int, thought string, origin agent.MessageEvent) *BaseThoughtEvent {
+func NewThoughtEvent(iteration int, thoughtType ThoughtType, thought string, origin agent.MessageEvent) *BaseThoughtEvent {
 	return &BaseThoughtEvent{
-		index:   index,
-		thought: thought,
-		origin:  origin,
+		thoughtType: thoughtType,
+		iteration:   iteration,
+		thought:     thought,
+		origin:      origin,
 	}
 }
 

@@ -35,7 +35,7 @@ func main() {
 
 	client = retry.Wrap(client, time.Second, 3)
 
-	// Create a task agent and give him some time-related tools
+	// Create a task agent and give him some location/meteo related tools
 	taskAgent := agent.New(
 		task.NewHandler(
 			client,
@@ -54,7 +54,7 @@ func main() {
 						"required":              []string{"postal_address"},
 						"additionnalProperties": false,
 					},
-					getFrenchAddress,
+					getFrenchLocation,
 				),
 				llm.NewFuncTool(
 					"get_weather",
@@ -90,7 +90,7 @@ func main() {
 	}()
 
 	// Prepare the task agent query
-	query := agent.NewMessageEvent("Comment devrais je m'habiller aujourd'hui à Dijon ?")
+	query := agent.NewMessageEvent("How should i dress today in Dijon ?")
 
 	log.Printf("--- Query\n%s\n", query.Message())
 
@@ -102,7 +102,7 @@ func main() {
 	for evt := range taskAgent.Output() {
 		switch typ := evt.(type) {
 		case task.ThoughtEvent:
-			log.Printf("--- Thought #%d\n%s\n\n", typ.Index(), typ.Thought())
+			log.Printf("--- Thought (%s) #%d\n%s\n\n", typ.Type(), typ.Iteration(), typ.Thought())
 		case task.ResultEvent:
 			log.Printf("--- Result\n%s\n", typ.Result())
 			// We exit when the agent has emitted its response
