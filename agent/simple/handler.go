@@ -59,18 +59,23 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 
 	toolChoice := llm.ToolChoiceAuto
 
-	options := []llm.ChatCompletionOptionFunc{
-		llm.WithMessages(messages...),
-		llm.WithToolChoice(toolChoice),
+	baseOptions := []llm.ChatCompletionOptionFunc{
 		llm.WithTools(tools...),
 		llm.WithTemperature(temperature),
 	}
 
 	if seed != -1 {
-		options = append(options, llm.WithSeed(seed))
+		baseOptions = append(baseOptions, llm.WithSeed(seed))
 	}
 
 	for {
+		options := append(
+			baseOptions,
+			llm.WithToolChoice(toolChoice),
+			llm.WithTools(tools...),
+			llm.WithMessages(messages...),
+		)
+
 		res, err := client.ChatCompletion(ctx, options...)
 		if err != nil {
 			return errors.WithStack(err)
