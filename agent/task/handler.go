@@ -62,7 +62,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 		return errors.Wrapf(agent.ErrNotSupported, "event type '%T' not supported", input)
 	}
 
-	minIterations := ContextMinIterations(ctx, 2)
+	minIterations := ContextMinIterations(ctx, 1)
 	maxIterations := ContextMaxIterations(ctx, 5)
 	client := agent.ContextClient(ctx, h.defaultClient)
 	tools := agent.ContextTools(ctx, h.defaultTools)
@@ -115,7 +115,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 
 		thoughts = append(thoughts, thought)
 
-		if i >= minIterations {
+		if i >= minIterations-1 {
 			var wholeThoughts strings.Builder
 
 			for i, t := range thoughts {
