@@ -90,7 +90,7 @@ func main() {
 	}()
 
 	// Prepare the task agent query
-	query := agent.NewMessageEvent("How should i dress today in Dijon ?")
+	query := agent.NewMessageEvent("Comment dois-je m'habiller aujourd'hui à Dijon ?")
 
 	log.Printf("--- Query\n%s\n", query.Message())
 

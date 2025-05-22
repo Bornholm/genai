@@ -190,7 +190,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 	return nil
 }
 
-func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message, options []llm.ChatCompletionOptionFunc) ([]llm.Message, error) {
+func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message, baseOptions []llm.ChatCompletionOptionFunc) ([]llm.Message, error) {
 	type legacyToolCall struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
@@ -198,13 +198,14 @@ func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, too
 
 	toolChoice := llm.ToolChoiceAuto
 
-	options = append(options,
-		llm.WithMessages(messages...),
-		llm.WithToolChoice(toolChoice),
-		llm.WithTools(tools...),
-	)
-
 	for {
+		options := append(
+			baseOptions,
+			llm.WithToolChoice(toolChoice),
+			llm.WithTools(tools...),
+			llm.WithMessages(messages...),
+		)
+
 		res, err := client.ChatCompletion(ctx, options...)
 		if err != nil {
 			return nil, errors.WithStack(err)
