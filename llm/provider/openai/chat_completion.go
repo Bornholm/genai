@@ -2,7 +2,10 @@ package openai
 
 import (
 	"context"
+	"io"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
@@ -26,11 +29,25 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	var httpRes *http.Response
 
+	log.Println("start chat completion")
+	before := time.Now()
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
+	log.Printf("chat completion took %s", time.Since(before))
+
 	if err != nil {
 		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
 			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
 		}
+
+		if httpRes != nil && httpRes.Body != nil {
+			body, readdErr := io.ReadAll(httpRes.Body)
+			if readdErr != nil {
+				return nil, errors.WithStack(err)
+			}
+
+			return nil, errors.Wrapf(err, "%s", body)
+		}
+
 		return nil, errors.WithStack(err)
 	}
 
