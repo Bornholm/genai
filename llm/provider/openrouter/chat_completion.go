@@ -1,6 +1,8 @@
 package openrouter
 
 import (
+	"net/http"
+
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/context"
 	"github.com/pkg/errors"
@@ -148,6 +150,13 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	res, err := c.client.CreateChatCompletion(ctx, req)
 	if err != nil {
+		var reqErr *openrouter.RequestError
+		if errors.As(err, &reqErr) {
+			if reqErr.HTTPStatusCode == http.StatusTooManyRequests {
+				return nil, errors.WithStack(llm.ErrRateLimit)
+			}
+		}
+
 		return nil, errors.WithStack(err)
 	}
 
