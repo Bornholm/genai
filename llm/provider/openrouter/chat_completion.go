@@ -16,9 +16,11 @@ type ChatCompletionClient struct {
 func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
 
+	temperature := float32(opts.Temperature)
+
 	req := openrouter.ChatCompletionRequest{
 		Model:       c.model,
-		Temperature: float32(opts.Temperature),
+		Temperature: &temperature,
 	}
 
 	if opts.ResponseFormat == llm.ResponseFormatJSON {
@@ -136,6 +138,13 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	}
 
 	req.Transforms = transforms
+
+	models, err := ContextModels(ctx)
+	if err != nil && !errors.Is(err, context.ErrNotFound) {
+		return nil, errors.WithStack(err)
+	}
+
+	req.Models = models
 
 	res, err := c.client.CreateChatCompletion(ctx, req)
 	if err != nil {
