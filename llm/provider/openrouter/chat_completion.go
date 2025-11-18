@@ -18,11 +18,16 @@ type ChatCompletionClient struct {
 func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
 
+	// Validate options before proceeding
+	if err := opts.Validate(); err != nil {
+		return nil, errors.WithStack(err)
+	}
+
 	temperature := float32(opts.Temperature)
 
 	req := openrouter.ChatCompletionRequest{
 		Model:       c.model,
-		Temperature: &temperature,
+		Temperature: temperature,
 	}
 
 	if opts.ResponseFormat == llm.ResponseFormatJSON {
@@ -109,11 +114,16 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 			toolCalls := make([]openrouter.ToolCall, 0, len(toolCallsMessage.ToolCalls()))
 			for _, tc := range toolCallsMessage.ToolCalls() {
+				arguments, ok := tc.Parameters().(string)
+				if !ok {
+					return nil, errors.Errorf("expected string parameters for tool call %s, got %T", tc.ID(), tc.Parameters())
+				}
+
 				toolCalls = append(toolCalls, openrouter.ToolCall{
 					ID: tc.ID(),
 					Function: openrouter.FunctionCall{
 						Name:      tc.Name(),
-						Arguments: tc.Parameters().(string),
+						Arguments: arguments,
 					},
 					Type: openrouter.ToolTypeFunction,
 				})

@@ -116,3 +116,43 @@ func ToolParam[T any](params map[string]any, name string) (T, error) {
 
 	return value, nil
 }
+
+type JSONSchema map[string]any
+
+func NewJSONSchema() JSONSchema {
+	return map[string]any{
+		"type":                  "object",
+		"properties":            map[string]any{},
+		"required":              []string{},
+		"additionnalProperties": false,
+	}
+}
+
+func (s JSONSchema) RequiredProperty(name, description, jsonType string, attrs ...any) JSONSchema {
+	s = s.Property(name, description, jsonType, attrs...)
+	required := s["required"].([]string)
+	required = append(required, name)
+	s["required"] = required
+	return s
+}
+
+func (s JSONSchema) Property(name, description, jsonType string, attrs ...any) JSONSchema {
+	properties := s["properties"].(map[string]any)
+
+	properties[name] = map[string]any{
+		"type":        jsonType,
+		"description": description,
+	}
+
+	for i, v := range attrs {
+		if i == 0 {
+			continue
+		}
+		key := v.(string)
+		properties[key] = attrs[i-1]
+	}
+
+	s["properties"] = properties
+
+	return s
+}

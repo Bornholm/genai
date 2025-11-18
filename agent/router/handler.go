@@ -1,8 +1,6 @@
 package router
 
 import (
-	"context"
-
 	"github.com/bornholm/genai/agent"
 	"github.com/pkg/errors"
 )
@@ -20,8 +18,8 @@ type Handler struct {
 }
 
 // Handle implements agent.Handler.
-func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan agent.Event) error {
-	name, err := h.matcher.Match(ctx, input)
+func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
+	name, err := h.matcher.Match(input)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -35,7 +33,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 		return errors.Wrapf(ErrNoMatch, "could not find handler named '%s'", name)
 	}
 
-	if err := handler.Handle(ctx, input, outputs); err != nil {
+	if err := handler.Handle(input, outputs); err != nil {
 		return errors.WithStack(err)
 	}
 
@@ -53,13 +51,13 @@ func (h *Handler) SetDefault(name string) {
 var _ agent.Handler = &Handler{}
 
 type Matcher interface {
-	Match(ctx context.Context, input agent.Event) (string, error)
+	Match(input agent.Event) (string, error)
 }
 
-type MatchFunc func(ctx context.Context, input agent.Event) (string, error)
+type MatchFunc func(input agent.Event) (string, error)
 
-func (fn MatchFunc) Match(ctx context.Context, input agent.Event) (string, error) {
-	return fn(ctx, input)
+func (fn MatchFunc) Match(input agent.Event) (string, error) {
+	return fn(input)
 }
 
 func NewHandler(matcher Matcher) *Handler {

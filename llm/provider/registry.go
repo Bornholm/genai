@@ -49,24 +49,35 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 		return nil, errors.WithStack(err)
 	}
 
+	if embeddings == nil && chatCompletion == nil {
+		return nil, errors.WithStack(ErrNotConfigured)
+	}
+
 	return NewClient(chatCompletion, embeddings), nil
 }
 
 func createClient[T any](ctx context.Context, clientOpts *ClientOptions, factories map[Name]Factory[T]) (T, error) {
+	var zero T
+
 	if clientOpts == nil {
-		return *new(T), errors.WithStack(ErrNotConfigured)
+		return zero, errors.WithStack(ErrNotConfigured)
+	}
+
+	// Validate client options
+	if err := clientOpts.Validate(); err != nil {
+		return zero, errors.WithStack(err)
 	}
 
 	provider := clientOpts.Provider
 
 	clientFactory, exists := factories[provider]
 	if !exists {
-		return *new(T), errors.Wrapf(ErrClientNotFound, "could not find client factory for provider '%s'", clientOpts.Provider)
+		return zero, errors.Wrapf(ErrClientNotFound, "could not find client factory for provider '%s'", clientOpts.Provider)
 	}
 
 	client, err := clientFactory(ctx, *clientOpts)
 	if err != nil {
-		return *new(T), errors.Wrapf(err, "could not create client with provider '%s'", clientOpts.Provider)
+		return zero, errors.Wrapf(err, "could not create client with provider '%s'", clientOpts.Provider)
 	}
 
 	return client, nil

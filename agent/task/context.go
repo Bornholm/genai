@@ -4,14 +4,14 @@ import (
 	"context"
 
 	"github.com/bornholm/genai/agent"
+	"github.com/bornholm/genai/llm"
 )
 
-type contextKey string
-
 const (
-	contextKeyMinIterations contextKey = "minIterations"
-	contextKeyMaxIterations contextKey = "maxIterations"
-	contextKeyEvaluator     contextKey = "evaluator"
+	contextKeyMinIterations agent.ContextKey = "minIterations"
+	contextKeyMaxIterations agent.ContextKey = "maxIterations"
+	contextKeyEvaluator     agent.ContextKey = "evaluator"
+	contextKeySchema        agent.ContextKey = "schema"
 )
 
 func WithContextMinIterations(ctx context.Context, minIterations int) context.Context {
@@ -36,4 +36,12 @@ func WithContextEvaluator(ctx context.Context, evaluator Evaluator) context.Cont
 
 func ContextEvaluator(ctx context.Context, defaultEvaluator Evaluator) Evaluator {
 	return agent.ContextValue(ctx, contextKeyEvaluator, defaultEvaluator)
+}
+
+func WithContextSchema(ctx context.Context, schema llm.ResponseSchema) context.Context {
+	return context.WithValue(ctx, contextKeySchema, schema)
+}
+
+func ContextSchema(ctx context.Context, defaultSchema llm.ResponseSchema) llm.ResponseSchema {
+	return agent.ContextValue(ctx, contextKeySchema, defaultSchema)
 }

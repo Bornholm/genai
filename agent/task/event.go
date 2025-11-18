@@ -1,6 +1,8 @@
 package task
 
 import (
+	"context"
+
 	"github.com/bornholm/genai/agent"
 )
 
@@ -20,10 +22,34 @@ type ThoughtEvent interface {
 }
 
 type BaseThoughtEvent struct {
+	id          agent.EventID
+	ctx         context.Context
 	thought     string
 	thoughtType ThoughtType
 	iteration   int
 	origin      agent.MessageEvent
+}
+
+// ID implements ThoughtEvent.
+func (e *BaseThoughtEvent) ID() agent.EventID {
+	return e.id
+}
+
+// WithContext implements ThoughtEvent.
+func (e *BaseThoughtEvent) WithContext(ctx context.Context) agent.Event {
+	return &BaseThoughtEvent{
+		id:          e.id,
+		ctx:         ctx,
+		thought:     e.thought,
+		thoughtType: e.thoughtType,
+		iteration:   e.iteration,
+		origin:      e.origin,
+	}
+}
+
+// Context implements ThoughtEvent.
+func (e *BaseThoughtEvent) Context() context.Context {
+	return e.ctx
 }
 
 // Type implements ThoughtEvent.
@@ -56,8 +82,10 @@ func (e *BaseThoughtEvent) Thought() string {
 
 var _ ThoughtEvent = &BaseThoughtEvent{}
 
-func NewThoughtEvent(iteration int, thoughtType ThoughtType, thought string, origin agent.MessageEvent) *BaseThoughtEvent {
+func NewThoughtEvent(ctx context.Context, iteration int, thoughtType ThoughtType, thought string, origin agent.MessageEvent) *BaseThoughtEvent {
 	return &BaseThoughtEvent{
+		id:          agent.NewEventID(),
+		ctx:         ctx,
 		thoughtType: thoughtType,
 		iteration:   iteration,
 		thought:     thought,
@@ -73,9 +101,32 @@ type ResultEvent interface {
 }
 
 type BaseResultEvent struct {
+	id       agent.EventID
 	result   string
 	thoughts []string
 	origin   agent.MessageEvent
+	ctx      context.Context
+}
+
+// ID implements ResultEvent.
+func (e *BaseResultEvent) ID() agent.EventID {
+	return e.id
+}
+
+// WithContext implements ResultEvent.
+func (e *BaseResultEvent) WithContext(ctx context.Context) agent.Event {
+	return &BaseResultEvent{
+		id:       e.id,
+		ctx:      ctx,
+		result:   e.result,
+		thoughts: e.thoughts,
+		origin:   e.origin,
+	}
+}
+
+// Context implements ResultEvent.
+func (e *BaseResultEvent) Context() context.Context {
+	return e.ctx
 }
 
 // Message implements ResultEvent.
@@ -103,8 +154,10 @@ func (e *BaseResultEvent) Result() string {
 
 var _ ResultEvent = &BaseResultEvent{}
 
-func NewResultEvent(result string, thoughts []string, origin agent.MessageEvent) *BaseResultEvent {
+func NewResultEvent(ctx context.Context, result string, thoughts []string, origin agent.MessageEvent) *BaseResultEvent {
 	return &BaseResultEvent{
+		id:       agent.NewEventID(),
+		ctx:      ctx,
 		origin:   origin,
 		thoughts: thoughts,
 		result:   result,

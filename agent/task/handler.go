@@ -17,6 +17,14 @@ import (
 //go:embed prompts/*.gotmpl
 var prompts embed.FS
 
+// Default configuration constants
+const (
+	DefaultMinIterations = 1
+	DefaultMaxIterations = 5
+	DefaultTemperature   = 0.3
+	DefaultSeed          = -1
+)
+
 type HandlerOptions struct {
 	DefaultTools     []llm.Tool
 	DefaultEvaluator Evaluator
@@ -54,27 +62,27 @@ type Handler struct {
 }
 
 // Handle implements agent.Handler.
-func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan agent.Event) error {
-	defer close(outputs)
-
+func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 	messageEvent, ok := input.(agent.MessageEvent)
 	if !ok {
 		return errors.Wrapf(agent.ErrNotSupported, "event type '%T' not supported", input)
 	}
 
-	minIterations := ContextMinIterations(ctx, 1)
-	maxIterations := ContextMaxIterations(ctx, 5)
+	ctx := input.Context()
+
+	minIterations := ContextMinIterations(ctx, DefaultMinIterations)
+	maxIterations := ContextMaxIterations(ctx, DefaultMaxIterations)
 	client := agent.ContextClient(ctx, h.defaultClient)
 	tools := agent.ContextTools(ctx, h.defaultTools)
 	evaluator := ContextEvaluator(ctx, h.defaultEvaluator)
 	messages := agent.ContextMessages(ctx, []llm.Message{})
-	temperature := agent.ContextTemperature(ctx, 0.3)
-	seed := agent.ContextSeed(ctx, -1)
+	temperature := agent.ContextTemperature(ctx, DefaultTemperature)
+	seed := agent.ContextSeed(ctx, DefaultSeed)
 
 	baseOptions := []llm.ChatCompletionOptionFunc{
 		llm.WithTemperature(temperature),
 	}
-	if seed != -1 {
+	if seed != DefaultSeed {
 		baseOptions = append(baseOptions, llm.WithSeed(seed))
 	}
 
@@ -111,7 +119,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 
 		slog.DebugContext(ctx, "agent response", slog.String("response", thought))
 
-		outputs <- NewThoughtEvent(i, ThoughtTypeAgent, thought, messageEvent)
+		outputs <- NewThoughtEvent(ctx, i, ThoughtTypeAgent, thought, messageEvent)
 
 		thoughts = append(thoughts, thought)
 
@@ -133,11 +141,11 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 				return errors.WithStack(err)
 			}
 
-			if evaluatorThought != "" {
-				outputs <- NewThoughtEvent(i, ThoughtTypeEvaluator, evaluatorThought, messageEvent)
-			}
+			slog.DebugContext(ctx, "evaluator judgement", slog.String("thought", evaluatorThought), slog.Bool("shouldContinue", shouldContinue))
 
-			slog.DebugContext(ctx, "evaluator judgement", slog.Bool("shouldContinue", shouldContinue))
+			if evaluatorThought != "" {
+				outputs <- NewThoughtEvent(ctx, i, ThoughtTypeEvaluator, evaluatorThought, messageEvent)
+			}
 
 			if !shouldContinue {
 				break
@@ -178,6 +186,11 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 		llm.WithMessages(messages...),
 	)
 
+	schema := ContextSchema(ctx, nil)
+	if schema != nil {
+		synthesisOptions = append(synthesisOptions, llm.WithJSONResponse(schema))
+	}
+
 	synthesis, err = client.ChatCompletion(ctx, synthesisOptions...)
 	if err != nil {
 		return errors.WithStack(err)
@@ -185,7 +198,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 
 	slog.DebugContext(ctx, "synthesis response", slog.String("synthesis", synthesis.Message().Content()))
 
-	outputs <- NewResultEvent(synthesis.Message().Content(), thoughts, messageEvent)
+	outputs <- NewResultEvent(ctx, synthesis.Message().Content(), thoughts, messageEvent)
 
 	return nil
 }

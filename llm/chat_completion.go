@@ -1,6 +1,8 @@
 package llm
 
-import "context"
+import (
+	"context"
+)
 
 type ChatCompletionClient interface {
 	ChatCompletion(ctx context.Context, funcs ...ChatCompletionOptionFunc) (ChatCompletionResponse, error)
@@ -30,6 +32,31 @@ type ChatCompletionOptions struct {
 	ResponseSchema      ResponseSchema
 	Seed                *int
 	MaxCompletionTokens *int
+}
+
+// Validate checks if the ChatCompletionOptions are valid
+func (opts *ChatCompletionOptions) Validate() error {
+	if opts.Temperature < 0 || opts.Temperature > 2 {
+		return NewValidationError("temperature", "temperature must be between 0 and 2")
+	}
+	if opts.MaxCompletionTokens != nil && *opts.MaxCompletionTokens <= 0 {
+		return NewValidationError("max_completion_tokens", "max completion tokens must be positive")
+	}
+	if len(opts.Messages) == 0 {
+		return NewValidationError("messages", "at least one message is required")
+	}
+	// Validate that we have at least one non-empty message
+	hasContent := false
+	for _, msg := range opts.Messages {
+		if msg.Content() != "" {
+			hasContent = true
+			break
+		}
+	}
+	if !hasContent {
+		return NewValidationError("messages", "at least one message must have content")
+	}
+	return nil
 }
 
 func NewChatCompletionOptions(funcs ...ChatCompletionOptionFunc) *ChatCompletionOptions {

@@ -1,4 +1,4 @@
-package main
+package tool
 
 import (
 	"context"
@@ -10,6 +10,18 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
+)
+
+var GetFrenchLocation = llm.NewFuncTool(
+	"get_french_address_location",
+	"retrieve the coordinates for a french postal address",
+	llm.NewJSONSchema().
+		RequiredProperty(
+			"postal_address",
+			"the postal address of the location",
+			"string",
+		),
+	getFrenchLocation,
 )
 
 func getFrenchLocation(ctx context.Context, params map[string]any) (string, error) {
@@ -52,13 +64,43 @@ func getFrenchLocation(ctx context.Context, params map[string]any) (string, erro
 		return "", errors.WithStack(err)
 	}
 
+	// Check if we got any results
+	if len(payload.Features) == 0 {
+		return "", errors.Errorf("no location found for address: %s", postalAddress)
+	}
+
+	// Check if coordinates are available
+	if len(payload.Features[0].Geometry.Coordinates) < 2 {
+		return "", errors.Errorf("invalid coordinates returned for address: %s", postalAddress)
+	}
+
+	longitude := payload.Features[0].Geometry.Coordinates[0]
+	latitude := payload.Features[0].Geometry.Coordinates[1]
+
 	result := fmt.Sprintf(`Coordinates for "%s":
 		Longitude: %v
 		Latitude: %v
-	`, postalAddress, payload.Features[0].Geometry.Coordinates[0], payload.Features[0].Geometry.Coordinates[1])
+	`, postalAddress, longitude, latitude)
 
 	return result, nil
 }
+
+var GetWeather = llm.NewFuncTool(
+	"get_weather",
+	"get the weather of the day at the given location",
+	llm.NewJSONSchema().
+		RequiredProperty(
+			"latitude",
+			"the latitude of the location",
+			"number",
+		).
+		RequiredProperty(
+			"longitude",
+			"the longitude of the location",
+			"number",
+		),
+	getWeather,
+)
 
 func getWeather(ctx context.Context, params map[string]any) (string, error) {
 	longitude, err := llm.ToolParam[float64](params, "longitude")
@@ -74,6 +116,9 @@ func getWeather(ctx context.Context, params map[string]any) (string, error) {
 	slog.InfoContext(ctx, "retrieving weather for location", slog.Float64("longitude", longitude), slog.Float64("latitude", latitude))
 
 	url, err := url.Parse("https://api.open-meteo.com/v1/forecast")
+	if err != nil {
+		return "", errors.WithStack(err)
+	}
 
 	query := url.Query()
 	query.Set("current", "apparent_temperature,precipitation,cloud_cover,wind_speed_10m,temperature_2m,wind_direction_10m,rain,showers,relative_humidity_2m")

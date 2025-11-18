@@ -17,8 +17,28 @@ func With(variableNamePrefix string, envFiles ...string) provider.OptionFunc {
 			}
 		}
 
-		if err := env.ParseWithOptions(opts, env.Options{Prefix: variableNamePrefix}); err != nil {
+		nilChatCompletion := opts.ChatCompletion == nil
+		if nilChatCompletion {
+			opts.ChatCompletion = &provider.ClientOptions{}
+		}
+
+		nilEmbeddings := opts.Embeddings == nil
+		if nilEmbeddings {
+			opts.Embeddings = &provider.ClientOptions{}
+		}
+
+		if err := env.ParseWithOptions(opts, env.Options{
+			Prefix: variableNamePrefix,
+		}); err != nil {
 			return errors.WithStack(err)
+		}
+
+		if err := opts.ChatCompletion.Validate(); nilChatCompletion && err != nil {
+			opts.ChatCompletion = nil
+		}
+
+		if err := opts.Embeddings.Validate(); nilEmbeddings && err != nil {
+			opts.Embeddings = nil
 		}
 
 		return nil

@@ -8,7 +8,8 @@ import (
 	"github.com/bornholm/genai/llm/provider"
 
 	// Imports client implementations
-	"github.com/bornholm/genai/llm/provider/openai"
+
+	"github.com/bornholm/genai/llm/provider/env"
 	_ "github.com/bornholm/genai/llm/provider/openrouter"
 )
 
@@ -16,12 +17,7 @@ func main() {
 	ctx := context.Background()
 
 	// Create a client with chat completion implementation
-	client, err := provider.Create(ctx, provider.WithChatCompletionOptions(provider.ClientOptions{
-		Provider: openai.Name,
-		BaseURL:  "https://api.openai.com/v1/",
-		Model:    "gpt-4o-mini",
-		APIKey:   "<your-api-key>",
-	}))
+	client, err := provider.Create(ctx, env.With("GENAI_", ".env"))
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)
 	}
@@ -32,8 +28,10 @@ func main() {
 		llm.NewMessage(llm.RoleUser, "Please tell me a beautiful story."),
 	}
 
+	// The chat completion options will now be validated before sending
 	res, err := client.ChatCompletion(ctx,
 		llm.WithMessages(messages...),
+		llm.WithTemperature(0.7), // This will be validated to be between 0 and 2
 	)
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)

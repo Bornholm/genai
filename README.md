@@ -62,8 +62,9 @@ log.Printf("[STORY] %s", res.Message().Content())
 
 ## Examples
 
-- [Basic](./examples/basic) - A basic example of a chat completion client (same as in README)
+- [Basic](./examples/basic) - A basic example of a chat completion client with input validation
 - [Using environment](./examples/environment) - An example of using environment variables to configure the client
+- [Resilient](./examples/resilient) - An example showing how to build a resilient client with circuit breaker, rate limiting, and retry logic
 
 ## License
 

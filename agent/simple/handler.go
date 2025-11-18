@@ -1,7 +1,6 @@
 package simple
 
 import (
-	"context"
 	"log/slog"
 
 	"github.com/bornholm/genai/agent"
@@ -37,13 +36,15 @@ type Handler struct {
 }
 
 // Handle implements agent.Handler.
-func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan agent.Event) error {
+func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 	defer close(outputs)
 
 	messageEvent, ok := input.(agent.MessageEvent)
 	if !ok {
 		return errors.Wrapf(agent.ErrNotSupported, "event type '%T' not supported", input)
 	}
+
+	ctx := input.Context()
 
 	client := agent.ContextClient(ctx, h.defaultClient)
 	tools := agent.ContextTools(ctx, h.defaultTools)
@@ -102,7 +103,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Event, outputs chan ag
 		break
 	}
 
-	outputs <- NewResponseEvent(messages[len(messages)-1].Content(), messageEvent)
+	outputs <- NewResponseEvent(ctx, messages[len(messages)-1].Content(), messageEvent)
 
 	return nil
 }

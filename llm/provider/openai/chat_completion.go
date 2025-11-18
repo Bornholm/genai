@@ -3,7 +3,7 @@ package openai
 import (
 	"context"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -22,6 +22,11 @@ type ChatCompletionClient struct {
 func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
 
+	// Validate options before proceeding
+	if err := opts.Validate(); err != nil {
+		return nil, errors.WithStack(err)
+	}
+
 	params, err := c.params.BuildParams(ctx, opts)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -29,10 +34,11 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	var httpRes *http.Response
 
-	log.Println("start chat completion")
+	slog.DebugContext(ctx, "starting chat completion")
 	before := time.Now()
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
-	log.Printf("chat completion took %s", time.Since(before))
+	duration := time.Since(before)
+	slog.DebugContext(ctx, "chat completion completed", slog.Duration("duration", duration))
 
 	if err != nil {
 		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {

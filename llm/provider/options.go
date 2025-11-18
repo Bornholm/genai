@@ -1,12 +1,13 @@
 package provider
 
 import (
+	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
 )
 
 type Options struct {
-	ChatCompletion *ClientOptions `env:"" envPrefix:"CHAT_COMPLETION_"`
-	Embeddings     *ClientOptions `env:"" envPrefix:"EMBEDDINGS_"`
+	ChatCompletion *ClientOptions `envPrefix:"CHAT_COMPLETION_"`
+	Embeddings     *ClientOptions `envPrefix:"EMBEDDINGS_"`
 }
 
 type ClientOptions struct {
@@ -14,6 +15,23 @@ type ClientOptions struct {
 	BaseURL  string `env:"BASE_URL"`
 	APIKey   string `env:"API_KEY"`
 	Model    string `env:"MODEL"`
+}
+
+// Validate checks if the ClientOptions are valid
+func (opts *ClientOptions) Validate() error {
+	if opts.Provider == "" {
+		return llm.NewValidationError("provider", "provider is required")
+	}
+	if opts.APIKey == "" {
+		return llm.NewValidationError("api_key", "API key is required")
+	}
+	if opts.Model == "" {
+		return llm.NewValidationError("model", "model is required")
+	}
+	if opts.BaseURL == "" {
+		return llm.NewValidationError("base_url", "base URL is required")
+	}
+	return nil
 }
 
 type OptionFunc func(opts *Options) error
