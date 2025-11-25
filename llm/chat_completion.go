@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 )
 
 type ChatCompletionClient interface {
@@ -45,17 +46,27 @@ func (opts *ChatCompletionOptions) Validate() error {
 	if len(opts.Messages) == 0 {
 		return NewValidationError("messages", "at least one message is required")
 	}
-	// Validate that we have at least one non-empty message
+	// Validate that we have at least one non-empty message or message with attachments
 	hasContent := false
 	for _, msg := range opts.Messages {
-		if msg.Content() != "" {
+		if msg.Content() != "" || len(msg.Attachments()) > 0 {
 			hasContent = true
 			break
 		}
 	}
 	if !hasContent {
-		return NewValidationError("messages", "at least one message must have content")
+		return NewValidationError("messages", "at least one message must have content or attachments")
 	}
+
+	// Validate attachments format (Layer 1 validation)
+	for i, msg := range opts.Messages {
+		for j, attachment := range msg.Attachments() {
+			if err := attachment.ValidateFormat(); err != nil {
+				return NewValidationError("messages", fmt.Sprintf("message %d attachment %d validation failed: %v", i, j, err))
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -185,6 +196,7 @@ const (
 type Message interface {
 	Role() Role
 	Content() string
+	Attachments() []Attachment
 }
 
 type BaseMessage struct {
@@ -202,6 +214,11 @@ func (b *BaseMessage) Role() Role {
 	return b.role
 }
 
+// Attachments implements Message.
+func (b *BaseMessage) Attachments() []Attachment {
+	return nil
+}
+
 var _ Message = &BaseMessage{}
 
 func NewMessage(role Role, content string) *BaseMessage {
@@ -209,6 +226,40 @@ func NewMessage(role Role, content string) *BaseMessage {
 		role:    role,
 		content: content,
 	}
+}
+
+// MultimodalMessage represents a message with both text content and attachments
+type MultimodalMessage struct {
+	BaseMessage
+	attachments []Attachment
+}
+
+// Attachments implements Message.
+func (m *MultimodalMessage) Attachments() []Attachment {
+	return m.attachments
+}
+
+// HasAttachments returns true if the message has attachments
+func (m *MultimodalMessage) HasAttachments() bool {
+	return len(m.attachments) > 0
+}
+
+var _ Message = &MultimodalMessage{}
+
+// NewMultimodalMessage creates a new message with text content and attachments
+func NewMultimodalMessage(role Role, content string, attachments ...Attachment) *MultimodalMessage {
+	return &MultimodalMessage{
+		BaseMessage: BaseMessage{
+			role:    role,
+			content: content,
+		},
+		attachments: attachments,
+	}
+}
+
+// NewMessageWithAttachments creates a new message with attachments (alias for NewMultimodalMessage)
+func NewMessageWithAttachments(role Role, content string, attachments ...Attachment) *MultimodalMessage {
+	return NewMultimodalMessage(role, content, attachments...)
 }
 
 type ToolMessage interface {
@@ -223,6 +274,11 @@ type BaseToolMessage struct {
 
 func (b *BaseToolMessage) ID() string {
 	return b.id
+}
+
+// Attachments implements Message (inherited from BaseMessage, but explicit for clarity).
+func (b *BaseToolMessage) Attachments() []Attachment {
+	return b.BaseMessage.Attachments()
 }
 
 var _ ToolMessage = &BaseToolMessage{}
@@ -249,6 +305,11 @@ type BaseToolCallsMessage struct {
 
 func (b *BaseToolCallsMessage) ToolCalls() []ToolCall {
 	return b.toolCalls
+}
+
+// Attachments implements Message (inherited from BaseMessage, but explicit for clarity).
+func (b *BaseToolCallsMessage) Attachments() []Attachment {
+	return b.BaseMessage.Attachments()
 }
 
 var _ ToolCallsMessage = &BaseToolCallsMessage{}
@@ -378,6 +439,11 @@ func (b *BaseToolCall) Name() string {
 // Parameters implements ToolCall.
 func (b *BaseToolCall) Parameters() any {
 	return b.parameters
+}
+
+// Attachments implements ToolCall (inherited from Message interface).
+func (b *BaseToolCall) Attachments() []Attachment {
+	return nil
 }
 
 var _ ToolCall = &BaseToolCall{}

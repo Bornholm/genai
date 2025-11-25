@@ -13,8 +13,8 @@ import (
 
 	// Imports client implementations
 
+	_ "github.com/bornholm/genai/llm/provider/all"
 	"github.com/bornholm/genai/llm/provider/env"
-	_ "github.com/bornholm/genai/llm/provider/openrouter"
 )
 
 func main() {

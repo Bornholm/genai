@@ -1,7 +1,9 @@
 package openrouter
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/context"
@@ -66,9 +68,22 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	messages := make([]openrouter.ChatCompletionMessage, 0, len(opts.Messages))
 
+	// Create validator for provider-specific validation (Layer 2)
+	validator := NewOpenRouterAttachmentValidator(c.model)
+
 	for _, m := range opts.Messages {
+		// Validate attachments (Layer 2 - provider-specific validation)
+		for _, attachment := range m.Attachments() {
+			if err := validator.ValidateAttachment(attachment); err != nil {
+				return nil, errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
+			}
+		}
+
 		switch m.Role() {
 		case llm.RoleSystem:
+			if len(m.Attachments()) > 0 {
+				return nil, errors.Errorf("system messages cannot have attachments")
+			}
 			messages = append(messages, openrouter.ChatCompletionMessage{
 				Role: openrouter.ChatMessageRoleSystem,
 				Content: openrouter.Content{
@@ -76,13 +91,68 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 				},
 			})
 		case llm.RoleUser:
-			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role: openrouter.ChatMessageRoleUser,
-				Content: openrouter.Content{
-					Text: m.Content(),
-				},
-			})
+			if len(m.Attachments()) > 0 {
+				// Handle multimodal user message
+				if len(m.Attachments()) == 1 {
+					// Single attachment - use the conversion function
+					content, err := ConvertAttachmentToContent(m.Attachments()[0], m.Content())
+					if err != nil {
+						return nil, errors.Wrapf(err, "failed to convert attachment to content")
+					}
+					messages = append(messages, openrouter.ChatCompletionMessage{
+						Role:    openrouter.ChatMessageRoleUser,
+						Content: content,
+					})
+				} else {
+					// Multiple attachments - build multi-part content manually
+					parts := make([]openrouter.ChatMessagePart, 0)
+
+					// Add text content if present
+					if m.Content() != "" {
+						parts = append(parts, openrouter.ChatMessagePart{
+							Type: openrouter.ChatMessagePartTypeText,
+							Text: m.Content(),
+						})
+					}
+
+					// Add all attachments
+					for _, attachment := range m.Attachments() {
+						switch attachment.Type() {
+						case llm.AttachmentTypeImage:
+							data := attachment.Data()
+							if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
+								data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
+							}
+							parts = append(parts, openrouter.ChatMessagePart{
+								Type: openrouter.ChatMessagePartTypeImageURL,
+								ImageURL: &openrouter.ChatMessageImageURL{
+									URL: data,
+								},
+							})
+						default:
+							return nil, errors.Errorf("unsupported attachment type: %s", attachment.Type())
+						}
+					}
+
+					messages = append(messages, openrouter.ChatCompletionMessage{
+						Role: openrouter.ChatMessageRoleUser,
+						Content: openrouter.Content{
+							Multi: parts,
+						},
+					})
+				}
+			} else {
+				messages = append(messages, openrouter.ChatCompletionMessage{
+					Role: openrouter.ChatMessageRoleUser,
+					Content: openrouter.Content{
+						Text: m.Content(),
+					},
+				})
+			}
 		case llm.RoleAssistant:
+			if len(m.Attachments()) > 0 {
+				return nil, errors.Errorf("assistant messages cannot have attachments")
+			}
 			messages = append(messages, openrouter.ChatCompletionMessage{
 				Role: openrouter.ChatMessageRoleAssistant,
 				Content: openrouter.Content{
@@ -90,6 +160,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 				},
 			})
 		case llm.RoleTool:
+			if len(m.Attachments()) > 0 {
+				return nil, errors.Errorf("tool messages cannot have attachments")
+			}
 			toolMessage, ok := m.(llm.ToolMessage)
 			if !ok {
 				return nil, errors.Errorf("unexpected tool message type '%T'", m)
@@ -103,6 +176,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 				},
 			})
 		case llm.RoleToolCalls:
+			if len(m.Attachments()) > 0 {
+				return nil, errors.Errorf("tool calls messages cannot have attachments")
+			}
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
 			if !ok {
 				return nil, errors.Errorf("unexpected tool calls message type '%T'", m)

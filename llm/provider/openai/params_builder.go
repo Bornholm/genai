@@ -147,15 +147,59 @@ func ConfigureTools(ctx context.Context, opts *llm.ChatCompletionOptions, params
 func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(opts.Messages))
 
+	// Create validator for provider-specific validation (Layer 2)
+	validator := NewOpenAIAttachmentValidator(string(params.Model))
+
 	for _, m := range opts.Messages {
+		// Validate attachments (Layer 2 - provider-specific validation)
+		for _, attachment := range m.Attachments() {
+			if err := validator.ValidateAttachment(attachment); err != nil {
+				return errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
+			}
+		}
+
 		switch m.Role() {
 		case llm.RoleSystem:
+			if len(m.Attachments()) > 0 {
+				return errors.Errorf("system messages cannot have attachments")
+			}
 			messages = append(messages, openai.SystemMessage(m.Content()))
 		case llm.RoleUser:
-			messages = append(messages, openai.UserMessage(m.Content()))
+			if len(m.Attachments()) > 0 {
+				// Create multimodal user message
+				contentParts := make([]openai.ChatCompletionContentPartUnionParam, 0)
+
+				// Add text content if present
+				if m.Content() != "" {
+					contentParts = append(contentParts, openai.ChatCompletionContentPartUnionParam{
+						OfText: &openai.ChatCompletionContentPartTextParam{
+							Text: m.Content(),
+						},
+					})
+				}
+
+				// Add attachments
+				for _, attachment := range m.Attachments() {
+					contentPart, err := ConvertAttachmentToContentPart(attachment)
+					if err != nil {
+						return errors.Wrapf(err, "failed to convert attachment to content part")
+					}
+					contentParts = append(contentParts, contentPart)
+				}
+
+				messages = append(messages, openai.UserMessage(contentParts))
+			} else {
+				messages = append(messages, openai.UserMessage(m.Content()))
+			}
 		case llm.RoleAssistant:
+			if len(m.Attachments()) > 0 {
+				return errors.Errorf("assistant messages cannot have attachments")
+			}
 			messages = append(messages, openai.AssistantMessage(m.Content()))
 		case llm.RoleTool:
+			if len(m.Attachments()) > 0 {
+				return errors.Errorf("tool messages cannot have attachments")
+			}
 			toolMessage, ok := m.(llm.ToolMessage)
 			if !ok {
 				return errors.Errorf("unexpected tool message type '%T'", m)
@@ -163,6 +207,9 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 
 			messages = append(messages, openai.ToolMessage(toolMessage.Content(), toolMessage.ID()))
 		case llm.RoleToolCalls:
+			if len(m.Attachments()) > 0 {
+				return errors.Errorf("tool calls messages cannot have attachments")
+			}
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
 			if !ok {
 				return errors.Errorf("unexpected tool calls message type '%T'", m)
