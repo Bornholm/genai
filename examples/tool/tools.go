@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 
@@ -29,8 +28,6 @@ func getFrenchLocation(ctx context.Context, params map[string]any) (string, erro
 	if err != nil {
 		return "", errors.WithStack(err)
 	}
-
-	slog.InfoContext(ctx, "retrieving french address location", slog.String("postalAddress", postalAddress))
 
 	url, err := url.Parse("https://data.geopf.fr/geocodage/search")
 	if err != nil {
@@ -112,8 +109,6 @@ func getWeather(ctx context.Context, params map[string]any) (string, error) {
 	if err != nil {
 		return "", errors.WithStack(err)
 	}
-
-	slog.InfoContext(ctx, "retrieving weather for location", slog.Float64("longitude", longitude), slog.Float64("latitude", latitude))
 
 	url, err := url.Parse("https://api.open-meteo.com/v1/forecast")
 	if err != nil {

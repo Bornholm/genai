@@ -66,6 +66,8 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		req.Tools = tools
 	}
 
+	req.ToolChoice = opts.ToolChoice
+
 	messages := make([]openrouter.ChatCompletionMessage, 0, len(opts.Messages))
 
 	// Create validator for provider-specific validation (Layer 2)

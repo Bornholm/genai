@@ -204,20 +204,20 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 }
 
 func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message, baseOptions []llm.ChatCompletionOptionFunc) ([]llm.Message, error) {
-	type legacyToolCall struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
-	}
-
 	toolChoice := llm.ToolChoiceAuto
+	toolIteration := 0
+	maxTooIterations := ContextMaxToolIterations(ctx, 1)
 
 	for {
 		options := append(
 			baseOptions,
 			llm.WithToolChoice(toolChoice),
-			llm.WithTools(tools...),
 			llm.WithMessages(messages...),
 		)
+
+		if toolChoice != llm.ToolChoiceNone {
+			options = append(options, llm.WithTools(tools...))
+		}
 
 		res, err := client.ChatCompletion(ctx, options...)
 		if err != nil {
@@ -240,22 +240,18 @@ func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, too
 		}
 
 		if hasToolCalls {
-			toolChoice = llm.ToolChoiceNone
+			toolIteration++
+
+			if toolIteration >= maxTooIterations {
+				toolChoice = llm.ToolChoiceNone
+			}
+
 			continue
 		}
 
-		legacyCalls, err := llm.ParseJSON[legacyToolCall](res.Message())
-		if err != nil {
-			return nil, errors.WithStack(err)
+		if res.Message().Content() != "" {
+			messages = append(messages, res.Message())
 		}
-
-		if len(legacyCalls) > 0 && legacyCalls[0].Name != "" {
-			slog.WarnContext(ctx, "detected legacy tool call, retrying while forcing tool call")
-			toolChoice = llm.ToolChoiceRequired
-			continue
-		}
-
-		messages = append(messages, res.Message())
 
 		return messages, nil
 	}

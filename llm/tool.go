@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/pkg/errors"
 )
@@ -31,6 +32,8 @@ func (f *FuncTool) Description() string {
 
 // Execute implements Tool.
 func (f *FuncTool) Execute(ctx context.Context, params map[string]any) (string, error) {
+	slog.DebugContext(ctx, "executing func tool", slog.String("name", f.name), slog.Any("params", params))
+
 	result, err := f.execute(ctx, params)
 	if err != nil {
 		return "", errors.WithStack(err)

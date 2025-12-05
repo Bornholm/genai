@@ -88,14 +88,14 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 
 	breakerErr := c.breaker.Execute(func() error {
 		response, err = c.client.ChatCompletion(ctx, funcs...)
-		return err
+		return errors.WithStack(err)
 	})
 
 	if breakerErr != nil {
 		return nil, errors.WithStack(breakerErr)
 	}
 
-	return response, err
+	return response, errors.WithStack(err)
 }
 
 // Embeddings implements llm.Client with circuit breaker protection
@@ -105,14 +105,14 @@ func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.Embe
 
 	breakerErr := c.breaker.Execute(func() error {
 		response, err = c.client.Embeddings(ctx, input, funcs...)
-		return err
+		return errors.WithStack(err)
 	})
 
 	if breakerErr != nil {
 		return nil, errors.WithStack(breakerErr)
 	}
 
-	return response, err
+	return response, errors.WithStack(err)
 }
 
 var _ llm.Client = &Client{}

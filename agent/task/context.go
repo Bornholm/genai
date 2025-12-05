@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	contextKeyMinIterations agent.ContextKey = "minIterations"
-	contextKeyMaxIterations agent.ContextKey = "maxIterations"
-	contextKeyEvaluator     agent.ContextKey = "evaluator"
-	contextKeySchema        agent.ContextKey = "schema"
+	contextKeyMinIterations     agent.ContextKey = "minIterations"
+	contextKeyMaxToolIterations agent.ContextKey = "maxToolIterations"
+	contextKeyMaxIterations     agent.ContextKey = "maxIterations"
+	contextKeyEvaluator         agent.ContextKey = "evaluator"
+	contextKeySchema            agent.ContextKey = "schema"
 )
 
 func WithContextMinIterations(ctx context.Context, minIterations int) context.Context {
@@ -28,6 +29,14 @@ func WithContextMaxIterations(ctx context.Context, maxIterations int) context.Co
 
 func ContextMaxIterations(ctx context.Context, defaultMaxIterations int) int {
 	return agent.ContextValue(ctx, contextKeyMaxIterations, defaultMaxIterations)
+}
+
+func WithContextMaxToolIterations(ctx context.Context, maxIterations int) context.Context {
+	return context.WithValue(ctx, contextKeyMaxToolIterations, maxIterations)
+}
+
+func ContextMaxToolIterations(ctx context.Context, defaultMaxIterations int) int {
+	return agent.ContextValue(ctx, contextKeyMaxToolIterations, defaultMaxIterations)
 }
 
 func WithContextEvaluator(ctx context.Context, evaluator Evaluator) context.Context {
