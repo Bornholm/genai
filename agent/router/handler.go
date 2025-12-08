@@ -1,6 +1,8 @@
 package router
 
 import (
+	"sync"
+
 	"github.com/bornholm/genai/agent"
 	"github.com/pkg/errors"
 )
@@ -14,11 +16,15 @@ var (
 type Handler struct {
 	matcher        Matcher
 	handlers       map[string]agent.Handler
+	mutex          sync.RWMutex
 	defaultHandler string
 }
 
 // Handle implements agent.Handler.
 func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
+	h.mutex.RLock()
+	defer h.mutex.RUnlock()
+
 	name, err := h.matcher.Match(input)
 	if err != nil {
 		return errors.WithStack(err)
@@ -41,10 +47,16 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 }
 
 func (h *Handler) Set(name string, handler agent.Handler) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+
 	h.handlers[name] = handler
 }
 
 func (h *Handler) SetDefault(name string) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+
 	h.defaultHandler = name
 }
 

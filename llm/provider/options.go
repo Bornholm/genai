@@ -22,9 +22,6 @@ func (opts *ClientOptions) Validate() error {
 	if opts.Provider == "" {
 		return llm.NewValidationError("provider", "provider is required")
 	}
-	if opts.APIKey == "" {
-		return llm.NewValidationError("api_key", "API key is required")
-	}
 	if opts.Model == "" {
 		return llm.NewValidationError("model", "model is required")
 	}

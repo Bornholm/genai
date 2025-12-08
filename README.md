@@ -8,7 +8,7 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 
 ## Features
 
-- Multi-provider support - Use OpenAI, OpenRouter, Ollama, and other providers with the same interface
+- Multi-provider support - Use OpenAI, OpenRouter, Mistral, Ollama and other providers with the same interface
 - Unified API - Simple and consistent API for all providers
 - Chat Completions - Create conversational AI experiences with ease
 - Environment-based configuration - Configure your clients using environment variables
@@ -19,8 +19,7 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 - OpenAI
 - OpenRouter
 - Ollama
-
-More providers coming soon!
+- Mistral
 
 ## Installation
 
@@ -65,6 +64,13 @@ log.Printf("[STORY] %s", res.Message().Content())
 - [Basic](./examples/basic) - A basic example of a chat completion client with input validation
 - [Using environment](./examples/environment) - An example of using environment variables to configure the client
 - [Resilient](./examples/resilient) - An example showing how to build a resilient client with circuit breaker, rate limiting, and retry logic
+- [Agent](./examples/agent) - An example of a [ReAct](https://arxiv.org/abs/2210.03629) agent with tools access
+- [Multimodal](./examples/multimodal/) - An example of a multimodal LLM model call
+- [JSON](./examples/json) - An example of a LLM call with structured output
+
+## CLI
+
+A CLI using this library is available. It supports the main operations provided by this library.
 
 ## License
 
