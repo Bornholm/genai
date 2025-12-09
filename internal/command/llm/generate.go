@@ -31,7 +31,7 @@ func Generate() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "system",
-				Usage:    "System prompt",
+				Usage:    "System prompt (text format, or @file to load from file)",
 				EnvVars:  []string{"GENAI_SYSTEM_PROMPT"},
 				Required: false,
 			},
@@ -42,7 +42,7 @@ func Generate() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:     "prompt",
-				Usage:    "User prompt",
+				Usage:    "User prompt (text format, or @file to load from file)",
 				EnvVars:  []string{"GENAI_USER_PROMPT"},
 				Required: true,
 			},
@@ -209,6 +209,17 @@ func buildMessages(cliCtx *cli.Context) ([]llm.Message, error) {
 
 // processPromptWithData processes a prompt template with optional JSON data
 func processPromptWithData(promptText, dataInput string) (string, error) {
+
+	// Check if promptText starts with "@" (file path)
+	if strings.HasPrefix(promptText, "@") {
+		filePath := promptText[1:] // Remove the "@" prefix
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", errors.Wrapf(err, "failed to read data file: %s", filePath)
+		}
+		promptText = string(content)
+	}
+
 	if dataInput == "" {
 		return promptText, nil
 	}
