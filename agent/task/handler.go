@@ -213,6 +213,7 @@ func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, too
 			baseOptions,
 			llm.WithToolChoice(toolChoice),
 			llm.WithMessages(messages...),
+			llm.WithTools(),
 		)
 
 		if toolChoice != llm.ToolChoiceNone {
@@ -224,11 +225,7 @@ func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, too
 			return nil, errors.WithStack(err)
 		}
 
-		if toolChoice == llm.ToolChoiceRequired {
-			toolChoice = llm.ToolChoiceAuto
-		}
-
-		hasToolCalls := len(res.ToolCalls()) > 0
+		hasToolCalls := len(res.ToolCalls()) > 0 && toolChoice != llm.ToolChoiceNone
 
 		for _, tc := range res.ToolCalls() {
 			tm, err := llm.ExecuteToolCall(ctx, tc, tools...)

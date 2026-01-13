@@ -179,7 +179,7 @@ func WithTools(tools ...Tool) ChatCompletionOptionFunc {
 			opts.Tools = make([]Tool, 0)
 		}
 
-		opts.Tools = append(opts.Tools, tools...)
+		opts.Tools = tools
 	}
 }
 
