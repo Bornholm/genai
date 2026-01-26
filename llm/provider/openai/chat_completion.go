@@ -37,8 +37,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	slog.DebugContext(ctx, "starting chat completion")
 	before := time.Now()
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
-	duration := time.Since(before)
-	slog.DebugContext(ctx, "chat completion completed", slog.Duration("duration", duration))
+	slog.DebugContext(ctx, "chat completion completed", slog.Duration("duration", time.Since(before)))
 
 	if err != nil {
 		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {

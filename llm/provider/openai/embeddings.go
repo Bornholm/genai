@@ -2,9 +2,14 @@ package openai
 
 import (
 	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 	"github.com/pkg/errors"
 )
 
@@ -32,8 +37,27 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs .
 		params.Dimensions = openai.Int(int64(*opts.Dimensions))
 	}
 
-	res, err := c.client.Embeddings.New(ctx, params)
+	var httpRes *http.Response
+
+	slog.DebugContext(ctx, "starting embeddings")
+	before := time.Now()
+	res, err := c.client.Embeddings.New(ctx, params, option.WithResponseInto(&httpRes))
+	slog.DebugContext(ctx, "embeddings completed", slog.Duration("duration", time.Since(before)))
+
 	if err != nil {
+		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
+			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
+		}
+
+		if httpRes != nil && httpRes.Body != nil {
+			body, readdErr := io.ReadAll(httpRes.Body)
+			if readdErr != nil {
+				return nil, errors.WithStack(err)
+			}
+
+			return nil, errors.Wrapf(err, "%s", body)
+		}
+
 		return nil, errors.WithStack(err)
 	}
 
