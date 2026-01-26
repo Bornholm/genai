@@ -73,6 +73,35 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	}
 }
 
+// ChatCompletionStream implements llm.Client.
+func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	backoff := c.baseDelay
+	maxRetries := c.maxRetries
+	retries := 0
+
+	for {
+		stream, err := c.client.ChatCompletionStream(ctx, funcs...)
+		if err != nil {
+			if retries >= maxRetries {
+				return nil, errors.WithStack(err)
+			}
+
+			if errors.Is(err, llm.ErrRateLimit) {
+				slog.DebugContext(ctx, "stream request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
+
+				retries++
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+
+			return nil, errors.WithStack(err)
+		}
+
+		return stream, nil
+	}
+}
+
 func Wrap(client llm.Client, baseDelay time.Duration, maxRetries int) *Client {
 	return &Client{
 		baseDelay:  baseDelay,

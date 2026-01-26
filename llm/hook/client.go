@@ -27,6 +27,26 @@ func (fn AfterChatCompletionFunc) AfterChatCompletion(ctx context.Context, funcs
 	return fn(ctx, funcs, res)
 }
 
+type BeforeChatCompletionStreamHook interface {
+	BeforeChatCompletionStream(ctx context.Context, funcs []llm.ChatCompletionOptionFunc) (context.Context, []llm.ChatCompletionOptionFunc, error)
+}
+
+type BeforeChatCompletionStreamFunc func(ctx context.Context, funcs []llm.ChatCompletionOptionFunc) (context.Context, []llm.ChatCompletionOptionFunc, error)
+
+func (fn BeforeChatCompletionStreamFunc) BeforeChatCompletionStream(ctx context.Context, funcs []llm.ChatCompletionOptionFunc) (context.Context, []llm.ChatCompletionOptionFunc, error) {
+	return fn(ctx, funcs)
+}
+
+type AfterChatCompletionStreamHook interface {
+	AfterChatCompletionStream(ctx context.Context, funcs []llm.ChatCompletionOptionFunc, stream <-chan llm.StreamChunk) (<-chan llm.StreamChunk, error)
+}
+
+type AfterChatCompletionStreamFunc func(ctx context.Context, funcs []llm.ChatCompletionOptionFunc, stream <-chan llm.StreamChunk) (<-chan llm.StreamChunk, error)
+
+func (fn AfterChatCompletionStreamFunc) AfterChatCompletionStream(ctx context.Context, funcs []llm.ChatCompletionOptionFunc, stream <-chan llm.StreamChunk) (<-chan llm.StreamChunk, error) {
+	return fn(ctx, funcs, stream)
+}
+
 type EmbeddingsHook interface {
 	BeforeEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc) (context.Context, string, []llm.EmbeddingsOptionFunc, error)
 	AfterEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
@@ -55,18 +75,22 @@ func (fn AfterEmbeddingsFunc) AfterEmbeddings(ctx context.Context, input string,
 type Client struct {
 	client llm.Client
 
-	beforeChatCompletion BeforeChatCompletionHook
-	afterChatCompletion  AfterChatCompletionHook
+	beforeChatCompletion       BeforeChatCompletionHook
+	afterChatCompletion        AfterChatCompletionHook
+	beforeChatCompletionStream BeforeChatCompletionStreamHook
+	afterChatCompletionStream  AfterChatCompletionStreamHook
 
 	beforeEmbeddings BeforeEmbeddingsHook
 	afterEmbeddings  AfterEmbeddingsHook
 }
 
 type Options struct {
-	BeforeChatCompletion BeforeChatCompletionHook
-	AfterChatCompletion  AfterChatCompletionHook
-	BeforeEmbeddings     BeforeEmbeddingsHook
-	AfterEmbeddings      AfterEmbeddingsHook
+	BeforeChatCompletion       BeforeChatCompletionHook
+	AfterChatCompletion        AfterChatCompletionHook
+	BeforeChatCompletionStream BeforeChatCompletionStreamHook
+	AfterChatCompletionStream  AfterChatCompletionStreamHook
+	BeforeEmbeddings           BeforeEmbeddingsHook
+	AfterEmbeddings            AfterEmbeddingsHook
 }
 
 type OptionFunc func(opts *Options)
@@ -115,8 +139,28 @@ func WithAfterEmbeddings(hook AfterEmbeddingsHook) OptionFunc {
 	}
 }
 
-func WithfterEmbeddingsFunc(fn AfterEmbeddingsFunc) OptionFunc {
+func WithAfterEmbeddingsFunc(fn AfterEmbeddingsFunc) OptionFunc {
 	return WithAfterEmbeddings(AfterEmbeddingsHook(fn))
+}
+
+func WithBeforeChatCompletionStream(hook BeforeChatCompletionStreamHook) OptionFunc {
+	return func(opts *Options) {
+		opts.BeforeChatCompletionStream = hook
+	}
+}
+
+func WithBeforeChatCompletionStreamFunc(fn BeforeChatCompletionStreamFunc) OptionFunc {
+	return WithBeforeChatCompletionStream(BeforeChatCompletionStreamHook(fn))
+}
+
+func WithAfterChatCompletionStream(hook AfterChatCompletionStreamHook) OptionFunc {
+	return func(opts *Options) {
+		opts.AfterChatCompletionStream = hook
+	}
+}
+
+func WithAfterChatCompletionStreamFunc(fn AfterChatCompletionStreamFunc) OptionFunc {
+	return WithAfterChatCompletionStream(AfterChatCompletionStreamHook(fn))
 }
 
 // ChatCompletion implements llm.Client.
@@ -171,14 +215,42 @@ func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.Embe
 	return res, nil
 }
 
+// ChatCompletionStream implements llm.Client.
+func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	var err error
+
+	if c.beforeChatCompletionStream != nil {
+		ctx, funcs, err = c.beforeChatCompletionStream.BeforeChatCompletionStream(ctx, funcs)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+	}
+
+	stream, err := c.client.ChatCompletionStream(ctx, funcs...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	if c.afterChatCompletionStream != nil {
+		stream, err = c.afterChatCompletionStream.AfterChatCompletionStream(ctx, funcs, stream)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+	}
+
+	return stream, nil
+}
+
 func Wrap(client llm.Client, funcs ...OptionFunc) *Client {
 	opts := NewOptions(funcs...)
 	return &Client{
-		client:               client,
-		beforeChatCompletion: opts.BeforeChatCompletion,
-		afterChatCompletion:  opts.AfterChatCompletion,
-		beforeEmbeddings:     opts.BeforeEmbeddings,
-		afterEmbeddings:      opts.AfterEmbeddings,
+		client:                     client,
+		beforeChatCompletion:       opts.BeforeChatCompletion,
+		afterChatCompletion:        opts.AfterChatCompletion,
+		beforeChatCompletionStream: opts.BeforeChatCompletionStream,
+		afterChatCompletionStream:  opts.AfterChatCompletionStream,
+		beforeEmbeddings:           opts.BeforeEmbeddings,
+		afterEmbeddings:            opts.AfterEmbeddings,
 	}
 }
 

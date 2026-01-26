@@ -26,6 +26,21 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 	return response, nil
 }
 
+// ChatCompletionStream implements llm.Client.
+func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	streamingClient, ok := c.chatCompletion.(llm.ChatCompletionStreamingClient)
+	if !ok {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+
+	stream, err := streamingClient.ChatCompletionStream(ctx, funcs...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return stream, nil
+}
+
 // Embeddings implements llm.Client.
 func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	if c.embeddings == nil {

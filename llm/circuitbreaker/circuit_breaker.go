@@ -115,4 +115,21 @@ func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.Embe
 	return response, errors.WithStack(err)
 }
 
+// ChatCompletionStream implements llm.Client with circuit breaker protection
+func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	var stream <-chan llm.StreamChunk
+	var err error
+
+	breakerErr := c.breaker.Execute(func() error {
+		stream, err = c.client.ChatCompletionStream(ctx, funcs...)
+		return errors.WithStack(err)
+	})
+
+	if breakerErr != nil {
+		return nil, errors.WithStack(breakerErr)
+	}
+
+	return stream, errors.WithStack(err)
+}
+
 var _ llm.Client = &Client{}
