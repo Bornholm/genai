@@ -15,4 +15,9 @@ func init() {
 		client := openrouter.NewClient(opts.APIKey)
 		return NewChatCompletionClient(client, opts.Model), nil
 	})
+
+	provider.RegisterEmbeddings(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.EmbeddingsClient, error) {
+		client := openrouter.NewClient(opts.APIKey)
+		return NewEmbeddingsClient(client, opts.Model), nil
+	})
 }
