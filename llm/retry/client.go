@@ -16,13 +16,13 @@ type Client struct {
 }
 
 // Embeddings implements llm.Client.
-func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	backoff := c.baseDelay
 	maxRetries := c.maxRetries
 	retries := 0
 
 	for {
-		res, err := c.client.Embeddings(ctx, input, funcs...)
+		res, err := c.client.Embeddings(ctx, inputs, funcs...)
 		if err != nil {
 			if retries >= maxRetries {
 				return nil, errors.WithStack(err)

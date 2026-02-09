@@ -31,11 +31,11 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 }
 
 // Embeddings implements llm.Client.
-func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return c.client.Embeddings(ctx, input, funcs...)
+	return c.client.Embeddings(ctx, inputs, funcs...)
 }
 
 func Wrap(client llm.Client, minInterval time.Duration, maxBurst int) *Client {

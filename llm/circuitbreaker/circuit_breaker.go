@@ -99,12 +99,12 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 }
 
 // Embeddings implements llm.Client with circuit breaker protection
-func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	var response llm.EmbeddingsResponse
 	var err error
 
 	breakerErr := c.breaker.Execute(func() error {
-		response, err = c.client.Embeddings(ctx, input, funcs...)
+		response, err = c.client.Embeddings(ctx, inputs, funcs...)
 		return errors.WithStack(err)
 	})
 

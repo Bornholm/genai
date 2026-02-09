@@ -3,10 +3,8 @@ package openai
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
 	"sync/atomic"
-	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
@@ -35,11 +33,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	var httpRes *http.Response
 
-	slog.DebugContext(ctx, "starting chat completion")
-	before := time.Now()
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
-	slog.DebugContext(ctx, "chat completion completed", slog.Duration("duration", time.Since(before)))
-
 	if err != nil {
 		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
 			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
@@ -105,7 +99,6 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	var httpRes *http.Response
 
-	slog.DebugContext(ctx, "starting chat completion stream")
 	stream := c.client.Chat.Completions.NewStreaming(ctx, *params, option.WithResponseInto(&httpRes))
 
 	chunks := make(chan llm.StreamChunk, 10)

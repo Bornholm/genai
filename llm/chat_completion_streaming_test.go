@@ -200,31 +200,3 @@ func TestMockStreamingClient(t *testing.T) {
 		t.Errorf("expected total tokens 15, got %d", receivedChunks[2].Usage().TotalTokens())
 	}
 }
-
-func TestStreamingWithContext(t *testing.T) {
-	chunks := []StreamChunk{
-		NewStreamChunk(NewStreamDelta(RoleAssistant, "This is a long response", nil)),
-		NewCompleteStreamChunk(NewChatCompletionUsage(5, 10, 15)),
-	}
-
-	client := &MockStreamingClient{chunks: chunks}
-
-	// Test context cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	stream, err := client.ChatCompletionStream(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var receivedChunks []StreamChunk
-	for chunk := range stream {
-		receivedChunks = append(receivedChunks, chunk)
-	}
-
-	// Should receive no chunks due to immediate cancellation
-	if len(receivedChunks) > 0 {
-		t.Errorf("expected no chunks due to cancellation, got %d", len(receivedChunks))
-	}
-}

@@ -17,7 +17,7 @@ type EmbeddingsClient struct {
 }
 
 // Embeddings implements [llm.EmbeddingsClient].
-func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	if c.model == "" {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
@@ -25,7 +25,7 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs .
 	opts := llm.NewEmbeddingsOptions(funcs...)
 
 	req := openrouter.EmbeddingsRequest{
-		Input: input,
+		Input: inputs,
 		Model: c.model,
 	}
 

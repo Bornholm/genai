@@ -48,28 +48,28 @@ func (fn AfterChatCompletionStreamFunc) AfterChatCompletionStream(ctx context.Co
 }
 
 type EmbeddingsHook interface {
-	BeforeEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc) (context.Context, string, []llm.EmbeddingsOptionFunc, error)
-	AfterEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
+	BeforeEmbeddings(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc) (context.Context, []string, []llm.EmbeddingsOptionFunc, error)
+	AfterEmbeddings(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
 }
 
 type BeforeEmbeddingsHook interface {
-	BeforeEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc) (context.Context, string, []llm.EmbeddingsOptionFunc, error)
+	BeforeEmbeddings(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc) (context.Context, []string, []llm.EmbeddingsOptionFunc, error)
 }
 
-type BeforeEmbeddingsFunc func(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc) (context.Context, string, []llm.EmbeddingsOptionFunc, error)
+type BeforeEmbeddingsFunc func(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc) (context.Context, []string, []llm.EmbeddingsOptionFunc, error)
 
-func (fn BeforeEmbeddingsFunc) BeforeEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc) (context.Context, string, []llm.EmbeddingsOptionFunc, error) {
-	return fn(ctx, input, funcs)
+func (fn BeforeEmbeddingsFunc) BeforeEmbeddings(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc) (context.Context, []string, []llm.EmbeddingsOptionFunc, error) {
+	return fn(ctx, inputs, funcs)
 }
 
 type AfterEmbeddingsHook interface {
-	AfterEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
+	AfterEmbeddings(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
 }
 
-type AfterEmbeddingsFunc func(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
+type AfterEmbeddingsFunc func(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error)
 
-func (fn AfterEmbeddingsFunc) AfterEmbeddings(ctx context.Context, input string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error) {
-	return fn(ctx, input, funcs, res)
+func (fn AfterEmbeddingsFunc) AfterEmbeddings(ctx context.Context, inputs []string, funcs []llm.EmbeddingsOptionFunc, res llm.EmbeddingsResponse) (llm.EmbeddingsResponse, error) {
+	return fn(ctx, inputs, funcs, res)
 }
 
 type Client struct {
@@ -190,23 +190,23 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 }
 
 // Embeddings implements llm.Client.
-func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	var err error
 
 	if c.beforeEmbeddings != nil {
-		ctx, input, funcs, err = c.beforeEmbeddings.BeforeEmbeddings(ctx, input, funcs)
+		ctx, inputs, funcs, err = c.beforeEmbeddings.BeforeEmbeddings(ctx, inputs, funcs)
 		if err != nil {
 			return nil, errors.WithStack(err)
 		}
 	}
 
-	res, err := c.client.Embeddings(ctx, input, funcs...)
+	res, err := c.client.Embeddings(ctx, inputs, funcs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	if c.afterEmbeddings != nil {
-		res, err = c.afterEmbeddings.AfterEmbeddings(ctx, input, funcs, res)
+		res, err = c.afterEmbeddings.AfterEmbeddings(ctx, inputs, funcs, res)
 		if err != nil {
 			return nil, errors.WithStack(err)
 		}

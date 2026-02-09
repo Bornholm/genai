@@ -19,7 +19,7 @@ type EmbeddingsClient struct {
 }
 
 // Embeddings implements llm.Client.
-func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	if c.model == "" {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
@@ -28,7 +28,7 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, input string, funcs .
 
 	params := openai.EmbeddingNewParams{
 		Input: openai.EmbeddingNewParamsInputUnion{
-			OfString: openai.String(input),
+			OfArrayOfStrings: inputs,
 		},
 		Model: openai.EmbeddingModel(c.model),
 	}

@@ -42,12 +42,12 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 }
 
 // Embeddings implements llm.Client.
-func (c *Client) Embeddings(ctx context.Context, input string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	if c.embeddings == nil {
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
 
-	response, err := c.embeddings.Embeddings(ctx, input, funcs...)
+	response, err := c.embeddings.Embeddings(ctx, inputs, funcs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
