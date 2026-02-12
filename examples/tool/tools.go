@@ -23,15 +23,15 @@ var GetFrenchLocation = llm.NewFuncTool(
 	getFrenchLocation,
 )
 
-func getFrenchLocation(ctx context.Context, params map[string]any) (string, error) {
+func getFrenchLocation(ctx context.Context, params map[string]any) (llm.ToolResult, error) {
 	postalAddress, err := llm.ToolParam[string](params, "postal_address")
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	url, err := url.Parse("https://data.geopf.fr/geocodage/search")
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	query := url.Query()
@@ -43,7 +43,7 @@ func getFrenchLocation(ctx context.Context, params map[string]any) (string, erro
 
 	res, err := http.Get(url.String())
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	defer res.Body.Close()
@@ -58,17 +58,17 @@ func getFrenchLocation(ctx context.Context, params map[string]any) (string, erro
 		} `json:"features"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	// Check if we got any results
 	if len(payload.Features) == 0 {
-		return "", errors.Errorf("no location found for address: %s", postalAddress)
+		return nil, errors.Errorf("no location found for address: %s", postalAddress)
 	}
 
 	// Check if coordinates are available
 	if len(payload.Features[0].Geometry.Coordinates) < 2 {
-		return "", errors.Errorf("invalid coordinates returned for address: %s", postalAddress)
+		return nil, errors.Errorf("invalid coordinates returned for address: %s", postalAddress)
 	}
 
 	longitude := payload.Features[0].Geometry.Coordinates[0]
@@ -79,7 +79,7 @@ func getFrenchLocation(ctx context.Context, params map[string]any) (string, erro
 		Latitude: %v
 	`, postalAddress, longitude, latitude)
 
-	return result, nil
+	return llm.NewToolResult(result), nil
 }
 
 var GetWeather = llm.NewFuncTool(
@@ -99,20 +99,20 @@ var GetWeather = llm.NewFuncTool(
 	getWeather,
 )
 
-func getWeather(ctx context.Context, params map[string]any) (string, error) {
+func getWeather(ctx context.Context, params map[string]any) (llm.ToolResult, error) {
 	longitude, err := llm.ToolParam[float64](params, "longitude")
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	latitude, err := llm.ToolParam[float64](params, "latitude")
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	url, err := url.Parse("https://api.open-meteo.com/v1/forecast")
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	query := url.Query()
@@ -123,7 +123,7 @@ func getWeather(ctx context.Context, params map[string]any) (string, error) {
 
 	res, err := http.Get(url.String())
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	defer res.Body.Close()
@@ -141,7 +141,7 @@ func getWeather(ctx context.Context, params map[string]any) (string, error) {
 		} `json:"current"`
 	}
 	if err := decoder.Decode(&payload); err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	result := fmt.Sprintf(`
@@ -164,5 +164,5 @@ func getWeather(ctx context.Context, params map[string]any) (string, error) {
 		payload.Current.RelativeHumidity,
 	)
 
-	return result, nil
+	return llm.NewToolResult(result), nil
 }

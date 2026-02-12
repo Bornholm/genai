@@ -13,8 +13,37 @@ type Tool interface {
 	Name() string
 	Description() string
 	Parameters() map[string]any
-	Execute(ctx context.Context, params map[string]any) (string, error)
+	Execute(ctx context.Context, params map[string]any) (ToolResult, error)
 }
+
+type ToolResult interface {
+	Text() string
+	Attachments() []Attachment
+}
+
+type BaseToolResult struct {
+	text        string
+	attachments []Attachment
+}
+
+// Attachments implements [ToolResult].
+func (r *BaseToolResult) Attachments() []Attachment {
+	return r.attachments
+}
+
+// Text implements [ToolResult].
+func (r *BaseToolResult) Text() string {
+	return r.text
+}
+
+func NewToolResult(text string, attachments ...Attachment) *BaseToolResult {
+	return &BaseToolResult{
+		text:        text,
+		attachments: attachments,
+	}
+}
+
+var _ ToolResult = &BaseToolResult{}
 
 type FuncTool struct {
 	name        string
@@ -23,7 +52,7 @@ type FuncTool struct {
 	execute     ExecuteFunc
 }
 
-type ExecuteFunc func(ctx context.Context, params map[string]any) (string, error)
+type ExecuteFunc func(ctx context.Context, params map[string]any) (ToolResult, error)
 
 // Description implements Tool.
 func (f *FuncTool) Description() string {
@@ -31,12 +60,12 @@ func (f *FuncTool) Description() string {
 }
 
 // Execute implements Tool.
-func (f *FuncTool) Execute(ctx context.Context, params map[string]any) (string, error) {
+func (f *FuncTool) Execute(ctx context.Context, params map[string]any) (ToolResult, error) {
 	slog.DebugContext(ctx, "executing func tool", slog.String("name", f.name), slog.Any("params", params))
 
 	result, err := f.execute(ctx, params)
 	if err != nil {
-		return "", errors.WithStack(err)
+		return nil, errors.WithStack(err)
 	}
 
 	return result, nil
@@ -75,7 +104,8 @@ func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessa
 	}
 
 	if tool == nil {
-		return NewToolMessage(tc.ID(), fmt.Sprintf("Unknown tool named '%s'.", tc.Name())), nil
+		toolResult := NewToolResult(fmt.Sprintf("Unknown tool named '%s'.", tc.Name()))
+		return NewToolMessage(tc.ID(), toolResult), nil
 	}
 
 	var params map[string]any
@@ -83,12 +113,14 @@ func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessa
 	switch typ := tc.Parameters().(type) {
 	case string:
 		if err := json.Unmarshal([]byte(typ), &params); err != nil {
-			return NewToolMessage(tc.ID(), "Invalid parameter format"), nil
+			toolResult := NewToolResult("Invalid parameter format")
+			return NewToolMessage(tc.ID(), toolResult), nil
 		}
 
 	case []byte:
 		if err := json.Unmarshal(typ, &params); err != nil {
-			return NewToolMessage(tc.ID(), "Invalid parameter format"), nil
+			toolResult := NewToolResult("Invalid parameter format")
+			return NewToolMessage(tc.ID(), toolResult), nil
 		}
 
 	case map[string]any:
@@ -100,7 +132,7 @@ func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessa
 
 	result, err := tool.Execute(ctx, params)
 	if err != nil {
-		return NewToolMessage(tc.ID(), fmt.Sprintf("error: %s", err.Error())), nil
+		return nil, errors.Wrap(err, "could not execute tool")
 	}
 
 	return NewToolMessage(tc.ID(), result), nil

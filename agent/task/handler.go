@@ -3,11 +3,13 @@ package task
 import (
 	"context"
 	"embed"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 
 	"github.com/bornholm/genai/agent"
+	"github.com/bornholm/genai/internal/logx"
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/messageutil"
 	"github.com/bornholm/genai/llm/prompt"
@@ -78,6 +80,7 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 	messages := agent.ContextMessages(ctx, []llm.Message{})
 	temperature := agent.ContextTemperature(ctx, DefaultTemperature)
 	seed := agent.ContextSeed(ctx, DefaultSeed)
+	additionalContext := ContextAdditionalContext(ctx, "")
 
 	baseOptions := []llm.ChatCompletionOptionFunc{
 		llm.WithTemperature(temperature),
@@ -86,11 +89,15 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 		baseOptions = append(baseOptions, llm.WithSeed(seed))
 	}
 
-	query := messageEvent.Message()
+	task := messageEvent.Message()
 
-	slog.DebugContext(ctx, "received new message", slog.String("query", query))
+	slog.DebugContext(ctx, "received new message", slog.String("task", task))
 
-	systemPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_system.gotmpl", nil)
+	systemPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_system.gotmpl", struct {
+		AdditionalContext string
+	}{
+		AdditionalContext: additionalContext,
+	})
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -98,7 +105,7 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 	messages = messageutil.InjectSystemPrompt(messageutil.WithoutRoles(messages, llm.RoleSystem), systemPrompt)
 
 	messages = append(messages,
-		llm.NewMessage(llm.RoleUser, query),
+		llm.NewMessage(llm.RoleUser, task),
 	)
 
 	var (
@@ -106,6 +113,8 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 	)
 
 	var thoughts []string
+
+	var finalEvaluation string
 
 	for i := 0; i < maxIterations; i++ {
 		slog.DebugContext(ctx, "new iteration", slog.Int("iteration", i))
@@ -115,19 +124,57 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 			return errors.WithStack(err)
 		}
 
-		thought := messages[len(messages)-1].Content()
+		iterationPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_iteration.gotmpl", nil)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 
-		slog.DebugContext(ctx, "agent response", slog.String("response", thought))
+		messages = append(messages, llm.NewMessage(llm.RoleUser, iterationPrompt))
 
-		outputs <- NewThoughtEvent(ctx, i, ThoughtTypeAgent, thought, messageEvent)
+		res, err := client.ChatCompletion(ctx,
+			llm.WithMessages(messages...),
+			llm.WithToolChoice(llm.ToolChoiceNone),
+			llm.WithTools(),
+		)
+		if err != nil {
+			return errors.WithStack(err)
+		}
 
-		thoughts = append(thoughts, thought)
+		if thought := res.Message().Content(); thought != "" {
+			messages = append(messages, res.Message())
+			outputs <- NewThoughtEvent(ctx, i, ThoughtTypeAgent, thought, messageEvent)
+			thoughts = append(thoughts, thought)
+		}
 
 		if i >= minIterations-1 {
 			var wholeThoughts strings.Builder
 
+			wholeThoughts.WriteString("## Tool calls\n\n")
+
+			toolCallIndex := 0
+			for _, m := range messages {
+				if m.Role() != llm.RoleToolCalls {
+					continue
+				}
+
+				toolCalls, ok := m.(llm.ToolCallsMessage)
+				if !ok {
+					continue
+				}
+
+				for _, c := range toolCalls.ToolCalls() {
+					wholeThoughts.WriteString(strconv.FormatInt(int64(toolCallIndex), 10))
+					wholeThoughts.WriteString(". ")
+					wholeThoughts.WriteString(c.Name())
+					wholeThoughts.WriteString("(" + fmt.Sprintf("%s", c.Parameters()) + ")\n")
+					toolCallIndex++
+				}
+			}
+
+			wholeThoughts.WriteString("\n## Thoughts\n\n")
+
 			for i, t := range thoughts {
-				wholeThoughts.WriteString("## Thought ")
+				wholeThoughts.WriteString("### Thought ")
 				wholeThoughts.WriteString(strconv.FormatInt(int64(i), 10))
 				wholeThoughts.WriteString("\n\n")
 				wholeThoughts.WriteString(t)
@@ -136,7 +183,7 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 
 			evaluatorCtx := agent.WithContextTools(ctx, tools)
 
-			shouldContinue, evaluatorThought, err := evaluator.ShouldContinue(evaluatorCtx, query, wholeThoughts.String(), i, maxIterations)
+			shouldContinue, evaluatorThought, err := evaluator.ShouldContinue(evaluatorCtx, task, wholeThoughts.String(), i, maxIterations)
 			if err != nil {
 				return errors.WithStack(err)
 			}
@@ -144,20 +191,17 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 			slog.DebugContext(ctx, "evaluator judgement", slog.String("thought", evaluatorThought), slog.Bool("shouldContinue", shouldContinue))
 
 			if evaluatorThought != "" {
+				finalEvaluation = evaluatorThought
 				outputs <- NewThoughtEvent(ctx, i, ThoughtTypeEvaluator, evaluatorThought, messageEvent)
 			}
 
 			if !shouldContinue {
 				break
 			}
+
+			messages = append(messages, llm.NewMessage(llm.RoleSystem, "This is a independant analysis of your progress so far:\n\n"+evaluatorThought))
 		}
 
-		iterationPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_iteration.gotmpl", nil)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-
-		messages = append(messages, llm.NewMessage(llm.RoleUser, iterationPrompt))
 	}
 
 	synthetizeSystemPrompt, err := prompt.FromFS[any](&prompts, "prompts/task_synthetize_system.gotmpl", nil)
@@ -166,11 +210,13 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 	}
 
 	synthetizeUserPrompt, err := prompt.FromFS(&prompts, "prompts/task_synthetize_user.gotmpl", struct {
-		Query    string
-		Thoughts []string
+		Task            string
+		Thoughts        []string
+		FinalEvaluation string
 	}{
-		Query:    query,
-		Thoughts: thoughts,
+		Task:            task,
+		Thoughts:        thoughts,
+		FinalEvaluation: finalEvaluation,
 	})
 	if err != nil {
 		return errors.WithStack(err)
@@ -204,28 +250,27 @@ func (h *Handler) Handle(input agent.Event, outputs chan agent.Event) error {
 }
 
 func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, tools []llm.Tool, messages []llm.Message, baseOptions []llm.ChatCompletionOptionFunc) ([]llm.Message, error) {
-	toolChoice := llm.ToolChoiceAuto
 	toolIteration := 0
-	maxTooIterations := ContextMaxToolIterations(ctx, 1)
+	maxTooIterations := ContextMaxToolIterations(ctx, 5)
 
 	for {
+		iterationCtx := logx.WithAttrs(ctx, slog.Int("tool_iteration", toolIteration))
+
 		options := append(
 			baseOptions,
-			llm.WithToolChoice(toolChoice),
+			llm.WithToolChoice(llm.ToolChoiceAuto),
 			llm.WithMessages(messages...),
-			llm.WithTools(),
+			llm.WithTools(tools...),
 		)
 
-		if toolChoice != llm.ToolChoiceNone {
-			options = append(options, llm.WithTools(tools...))
-		}
+		slog.DebugContext(iterationCtx, "executing iteration")
 
 		res, err := client.ChatCompletion(ctx, options...)
 		if err != nil {
 			return nil, errors.WithStack(err)
 		}
 
-		hasToolCalls := len(res.ToolCalls()) > 0 && toolChoice != llm.ToolChoiceNone
+		hasToolCalls := len(res.ToolCalls()) > 0
 
 		for _, tc := range res.ToolCalls() {
 			tm, err := llm.ExecuteToolCall(ctx, tc, tools...)
@@ -236,21 +281,31 @@ func (h *Handler) next(ctx context.Context, client llm.ChatCompletionClient, too
 			messages = append(messages, tc, tm)
 		}
 
+		shouldEnd := toolIteration >= maxTooIterations
+
+		if shouldEnd {
+			return messages, nil
+		}
+
 		if hasToolCalls {
 			toolIteration++
-
-			if toolIteration >= maxTooIterations {
-				toolChoice = llm.ToolChoiceNone
-			}
-
 			continue
-		}
+		} else {
+			content := res.Message().Content()
+			hasHallucinated := strings.Contains(content, "tool_call>") || strings.Contains(content, "TOOL_CALLS]") || strings.Contains(content, "<|tool_calls")
+			if hasHallucinated {
+				toolIteration++
 
-		if res.Message().Content() != "" {
-			messages = append(messages, res.Message())
-		}
+				slog.WarnContext(iterationCtx, "model hallucinated tool call in text", slog.String("content", content))
 
-		return messages, nil
+				errorMsg := llm.NewMessage(llm.RoleSystem, "Error: You wrote a tool call in text. You must use the native Tool usage triggers provided by the API. Do not write XML or pseudo-code.")
+				messages = append(messages, errorMsg)
+
+				continue
+			} else {
+				return messages, nil
+			}
+		}
 	}
 }
 

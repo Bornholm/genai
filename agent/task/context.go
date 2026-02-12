@@ -13,6 +13,7 @@ const (
 	contextKeyMaxIterations     agent.ContextKey = "maxIterations"
 	contextKeyEvaluator         agent.ContextKey = "evaluator"
 	contextKeySchema            agent.ContextKey = "schema"
+	contextKeyAdditionalContext agent.ContextKey = "additionaContext"
 )
 
 func WithContextMinIterations(ctx context.Context, minIterations int) context.Context {
@@ -53,4 +54,12 @@ func WithContextSchema(ctx context.Context, schema llm.ResponseSchema) context.C
 
 func ContextSchema(ctx context.Context, defaultSchema llm.ResponseSchema) llm.ResponseSchema {
 	return agent.ContextValue(ctx, contextKeySchema, defaultSchema)
+}
+
+func WithAdditionalContext(ctx context.Context, additionalContext string) context.Context {
+	return context.WithValue(ctx, contextKeyAdditionalContext, additionalContext)
+}
+
+func ContextAdditionalContext(ctx context.Context, defaultAdditionalContext string) string {
+	return agent.ContextValue(ctx, contextKeyAdditionalContext, defaultAdditionalContext)
 }

@@ -163,21 +163,72 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 				},
 			})
 		case llm.RoleTool:
-			if len(m.Attachments()) > 0 {
-				return nil, errors.Errorf("tool messages cannot have attachments")
-			}
 			toolMessage, ok := m.(llm.ToolMessage)
 			if !ok {
 				return nil, errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
-			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role:       openrouter.ChatMessageRoleTool,
-				ToolCallID: toolMessage.ID(),
-				Content: openrouter.Content{
-					Text: m.Content(),
-				},
-			})
+			if len(m.Attachments()) > 0 {
+				// Handle multimodal user message
+				if len(m.Attachments()) == 1 {
+					// Single attachment - use the conversion function
+					content, err := ConvertAttachmentToContent(m.Attachments()[0], m.Content())
+					if err != nil {
+						return nil, errors.Wrapf(err, "failed to convert attachment to content")
+					}
+					messages = append(messages, openrouter.ChatCompletionMessage{
+						Role:       openrouter.ChatMessageRoleTool,
+						ToolCallID: toolMessage.ID(),
+						Content:    content,
+					})
+				} else {
+					// Multiple attachments - build multi-part content manually
+					parts := make([]openrouter.ChatMessagePart, 0)
+
+					// Add text content if present
+					if m.Content() != "" {
+						parts = append(parts, openrouter.ChatMessagePart{
+							Type: openrouter.ChatMessagePartTypeText,
+							Text: m.Content(),
+						})
+					}
+
+					// Add all attachments
+					for _, attachment := range m.Attachments() {
+						switch attachment.Type() {
+						case llm.AttachmentTypeImage:
+							data := attachment.Data()
+							if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
+								data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
+							}
+							parts = append(parts, openrouter.ChatMessagePart{
+								Type: openrouter.ChatMessagePartTypeImageURL,
+								ImageURL: &openrouter.ChatMessageImageURL{
+									URL: data,
+								},
+							})
+						default:
+							return nil, errors.Errorf("unsupported attachment type: %s", attachment.Type())
+						}
+					}
+
+					messages = append(messages, openrouter.ChatCompletionMessage{
+						Role:       openrouter.ChatMessageRoleTool,
+						ToolCallID: toolMessage.ID(),
+						Content: openrouter.Content{
+							Multi: parts,
+						},
+					})
+				}
+			} else {
+				messages = append(messages, openrouter.ChatCompletionMessage{
+					Role:       openrouter.ChatMessageRoleTool,
+					ToolCallID: toolMessage.ID(),
+					Content: openrouter.Content{
+						Text: m.Content(),
+					},
+				})
+			}
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
 				return nil, errors.Errorf("tool calls messages cannot have attachments")
@@ -415,21 +466,68 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				},
 			})
 		case llm.RoleTool:
-			if len(m.Attachments()) > 0 {
-				return nil, errors.Errorf("tool messages cannot have attachments")
-			}
 			toolMessage, ok := m.(llm.ToolMessage)
 			if !ok {
 				return nil, errors.Errorf("unexpected tool message type '%T'", m)
 			}
+			if len(toolMessage.Attachments()) > 0 {
+				// Handle multimodal user message
+				if len(toolMessage.Attachments()) == 1 {
+					// Single attachment - use the conversion function
+					content, err := ConvertAttachmentToContent(toolMessage.Attachments()[0], toolMessage.Content())
+					if err != nil {
+						return nil, errors.Wrapf(err, "failed to convert attachment to content")
+					}
+					messages = append(messages, openrouter.ChatCompletionMessage{
+						Role:    openrouter.ChatMessageRoleTool,
+						Content: content,
+					})
+				} else {
+					// Multiple attachments - build multi-part content manually
+					parts := make([]openrouter.ChatMessagePart, 0)
 
-			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role:       openrouter.ChatMessageRoleTool,
-				ToolCallID: toolMessage.ID(),
-				Content: openrouter.Content{
-					Text: m.Content(),
-				},
-			})
+					// Add text content if present
+					if m.Content() != "" {
+						parts = append(parts, openrouter.ChatMessagePart{
+							Type: openrouter.ChatMessagePartTypeText,
+							Text: m.Content(),
+						})
+					}
+
+					// Add all attachments
+					for _, attachment := range m.Attachments() {
+						switch attachment.Type() {
+						case llm.AttachmentTypeImage:
+							data := attachment.Data()
+							if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
+								data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
+							}
+							parts = append(parts, openrouter.ChatMessagePart{
+								Type: openrouter.ChatMessagePartTypeImageURL,
+								ImageURL: &openrouter.ChatMessageImageURL{
+									URL: data,
+								},
+							})
+						default:
+							return nil, errors.Errorf("unsupported attachment type: %s", attachment.Type())
+						}
+					}
+
+					messages = append(messages, openrouter.ChatCompletionMessage{
+						Role: openrouter.ChatMessageRoleTool,
+						Content: openrouter.Content{
+							Multi: parts,
+						},
+					})
+				}
+			} else {
+				messages = append(messages, openrouter.ChatCompletionMessage{
+					Role: openrouter.ChatMessageRoleTool,
+					Content: openrouter.Content{
+						Text: m.Content(),
+					},
+				})
+			}
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
 				return nil, errors.Errorf("tool calls messages cannot have attachments")

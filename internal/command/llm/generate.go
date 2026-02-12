@@ -2,20 +2,15 @@ package llm
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"mime"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/bornholm/genai/internal/command/common"
 	"github.com/bornholm/genai/llm"
-	"github.com/bornholm/genai/llm/prompt"
-	"github.com/bornholm/genai/llm/provider"
-	"github.com/bornholm/genai/llm/provider/openrouter"
-	"github.com/invopop/jsonschema"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 
@@ -68,10 +63,17 @@ func Generate() *cli.Command {
 				Value:   0.7,
 			},
 			&cli.StringFlag{
-				Name:    "env-file",
-				Usage:   "Environment file path",
-				EnvVars: []string{"GENAI_ENV_FILE"},
-				Value:   ".env",
+				Name:      "env-file",
+				Usage:     "Environment file path",
+				EnvVars:   []string{"GENAI_LLM_ENV_FILE"},
+				Value:     ".env",
+				TakesFile: true,
+			},
+			&cli.StringFlag{
+				Name:    "env-prefix",
+				Usage:   "Environment llm variables prefix",
+				EnvVars: []string{"GENAI_LLM_ENV_PREFIX"},
+				Value:   "GENAI_",
 			},
 			&cli.StringFlag{
 				Name:    "output",
@@ -79,42 +81,16 @@ func Generate() *cli.Command {
 				Usage:   "Output file path (default: stdout)",
 				EnvVars: []string{"GENAI_OUTPUT"},
 			},
-			&cli.StringFlag{
-				Name:    "llm-provider",
-				Usage:   "LLM provider (available: openai, openrouter, mistral)",
-				EnvVars: []string{"GENAI_LLM_PROVIDER"},
-				Value:   string(openrouter.Name),
-			},
-			&cli.StringFlag{
-				Name:    "llm-base-url",
-				Usage:   "LLM provider base URL",
-				EnvVars: []string{"GENAI_LLM_BASE_URL"},
-				Value:   "https://openrouter.ai/api/v1",
-			},
-			&cli.StringFlag{
-				Name:    "llm-api-key",
-				Usage:   "LLM provider API key",
-				EnvVars: []string{"GENAI_LLM_API_KEY"},
-				Value:   "",
-			},
-			&cli.StringFlag{
-				Name:    "llm-model",
-				Usage:   "LLM model",
-				EnvVars: []string{"GENAI_LLM_MODEL"},
-				Value:   "openai/gpt-oss-20b:free",
-			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
 
-			client, err := provider.Create(ctx, provider.WithChatCompletionOptions(provider.ClientOptions{
-				Provider: provider.Name(cliCtx.String("llm-provider")),
-				BaseURL:  cliCtx.String("llm-base-url"),
-				APIKey:   cliCtx.String("llm-api-key"),
-				Model:    cliCtx.String("llm-model"),
-			}))
+			envPrefix := cliCtx.String("env-prefix")
+			envFile := cliCtx.String("env-file")
+
+			client, err := common.NewResilientClient(ctx, envPrefix, envFile)
 			if err != nil {
-				return errors.Wrap(err, "failed to create LLM client")
+				return errors.Wrap(err, "failed to create llm client")
 			}
 
 			// Build messages
@@ -129,17 +105,13 @@ func Generate() *cli.Command {
 				llm.WithTemperature(cliCtx.Float64("temperature")),
 			}
 
-			// Add JSON schema if provided
-			if schemaPath := cliCtx.String("schema"); schemaPath != "" {
-				schema, err := loadJSONSchema(schemaPath)
-				if err != nil {
-					return errors.Wrap(err, "failed to load JSON schema")
-				}
-				opts = append(opts, llm.WithJSONResponse(llm.NewResponseSchema(
-					"response",
-					"Structured response according to provided schema",
-					schema,
-				)))
+			responseSchema, err := common.GetResponseSchema(cliCtx, "schema")
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			if responseSchema != nil {
+				opts = append(opts, llm.WithJSONResponse(responseSchema))
 			}
 
 			// Generate completion
@@ -148,15 +120,8 @@ func Generate() *cli.Command {
 				return errors.Wrap(err, "failed to generate completion")
 			}
 
-			// Output the response
-			content := response.Message().Content()
-			if outputPath := cliCtx.String("output"); outputPath != "" {
-				err := os.WriteFile(outputPath, []byte(content), 0644)
-				if err != nil {
-					return errors.Wrap(err, "failed to write output file")
-				}
-			} else {
-				fmt.Print(content)
+			if err := common.WriteToOutput(*cliCtx, "output", response.Message().Content()); err != nil {
+				return errors.Wrap(err, "failed to write to output")
 			}
 
 			// Log usage information to stderr
@@ -177,8 +142,8 @@ func buildMessages(cliCtx *cli.Context) ([]llm.Message, error) {
 	var messages []llm.Message
 
 	// Add system message if provided
-	if systemPrompt := cliCtx.String("system"); systemPrompt != "" {
-		processedSystem, err := processPromptWithData(systemPrompt, cliCtx.String("system-data"))
+	if cliCtx.Count("system") != 0 {
+		processedSystem, err := common.GetPrompt(cliCtx, "system", "system-data")
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to process system prompt")
 		}
@@ -186,8 +151,7 @@ func buildMessages(cliCtx *cli.Context) ([]llm.Message, error) {
 	}
 
 	// Process user prompt
-	userPrompt := cliCtx.String("prompt")
-	processedUser, err := processPromptWithData(userPrompt, cliCtx.String("prompt-data"))
+	processedUser, err := common.GetPrompt(cliCtx, "prompt", "prompt-data")
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to process user prompt")
 	}
@@ -205,50 +169,6 @@ func buildMessages(cliCtx *cli.Context) ([]llm.Message, error) {
 	}
 
 	return messages, nil
-}
-
-// processPromptWithData processes a prompt template with optional JSON data
-func processPromptWithData(promptText, dataInput string) (string, error) {
-
-	// Check if promptText starts with "@" (file path)
-	if strings.HasPrefix(promptText, "@") {
-		filePath := promptText[1:] // Remove the "@" prefix
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			return "", errors.Wrapf(err, "failed to read data file: %s", filePath)
-		}
-		promptText = string(content)
-	}
-
-	if dataInput == "" {
-		return promptText, nil
-	}
-
-	var dataJSON string
-
-	// Check if dataInput starts with "@" (file path)
-	if strings.HasPrefix(dataInput, "@") {
-		filePath := dataInput[1:] // Remove the "@" prefix
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			return "", errors.Wrapf(err, "failed to read data file: %s", filePath)
-		}
-		dataJSON = string(content)
-	} else {
-		dataJSON = dataInput
-	}
-
-	var data interface{}
-	if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
-		return "", errors.Wrap(err, "failed to parse data JSON")
-	}
-
-	processed, err := prompt.Template(promptText, data)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to process prompt template")
-	}
-
-	return processed, nil
 }
 
 // processFileAttachments processes file paths into attachments
@@ -305,25 +225,4 @@ func createAttachmentFromFile(filePath string) (llm.Attachment, error) {
 	}
 
 	return attachment, nil
-}
-
-// loadJSONSchema loads and parses a JSON schema from a file
-func loadJSONSchema(schemaPath string) (*jsonschema.Schema, error) {
-	file, err := os.Open(schemaPath)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to open schema file")
-	}
-	defer file.Close()
-
-	content, err := io.ReadAll(file)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to read schema file")
-	}
-
-	var schema jsonschema.Schema
-	if err := json.Unmarshal(content, &schema); err != nil {
-		return nil, errors.Wrap(err, "failed to parse JSON schema")
-	}
-
-	return &schema, nil
 }

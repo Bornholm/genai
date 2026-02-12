@@ -268,7 +268,7 @@ type ToolMessage interface {
 }
 
 type BaseToolMessage struct {
-	BaseMessage
+	MultimodalMessage
 	id string
 }
 
@@ -278,18 +278,21 @@ func (b *BaseToolMessage) ID() string {
 
 // Attachments implements Message (inherited from BaseMessage, but explicit for clarity).
 func (b *BaseToolMessage) Attachments() []Attachment {
-	return b.BaseMessage.Attachments()
+	return b.MultimodalMessage.Attachments()
 }
 
 var _ ToolMessage = &BaseToolMessage{}
 
-func NewToolMessage(id string, content string) *BaseToolMessage {
+func NewToolMessage(id string, result ToolResult) *BaseToolMessage {
 	return &BaseToolMessage{
-		BaseMessage: BaseMessage{
-			role:    RoleTool,
-			content: content,
-		},
 		id: id,
+		MultimodalMessage: MultimodalMessage{
+			BaseMessage: BaseMessage{
+				role:    RoleTool,
+				content: result.Text(),
+			},
+			attachments: result.Attachments(),
+		},
 	}
 }
 
