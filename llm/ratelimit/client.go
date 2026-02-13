@@ -38,7 +38,7 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	return c.client.Embeddings(ctx, inputs, funcs...)
 }
 
-func Wrap(client llm.Client, minInterval time.Duration, maxBurst int) *Client {
+func NewClient(client llm.Client, minInterval time.Duration, maxBurst int) *Client {
 	return &Client{
 		limiter: rate.NewLimiter(rate.Every(minInterval), maxBurst),
 		client:  client,

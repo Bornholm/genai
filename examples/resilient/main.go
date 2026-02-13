@@ -10,6 +10,7 @@ import (
 	"github.com/bornholm/genai/llm/provider"
 	"github.com/bornholm/genai/llm/ratelimit"
 	"github.com/bornholm/genai/llm/retry"
+	"github.com/bornholm/genai/llm/tokenlimit"
 
 	// Imports client implementations
 
@@ -27,13 +28,16 @@ func main() {
 	}
 
 	// Wrap with retry logic (3 retries with 1 second base delay)
-	retryClient := retry.Wrap(baseClient, time.Second, 3)
+	retryClient := retry.NewClient(baseClient, time.Second, 3)
 
 	// Wrap with rate limiting (max 10 requests per minute)
-	rateLimitedClient := ratelimit.Wrap(retryClient, time.Minute/10, 1)
+	rateLimitedClient := ratelimit.NewClient(retryClient, time.Minute/10, 1)
+
+	// Wrap with token rate limiting (by default, 500k/minute total tokens for chat completion)
+	tokenRateLimitedClient := tokenlimit.NewClient(rateLimitedClient)
 
 	// Wrap with circuit breaker (max 5 failures, 30 second reset timeout)
-	resilientClient := circuitbreaker.NewClient(rateLimitedClient, 5, 30*time.Second)
+	resilientClient := circuitbreaker.NewClient(tokenRateLimitedClient, 5, 30*time.Second)
 
 	// Create our chat completion history
 	messages := []llm.Message{

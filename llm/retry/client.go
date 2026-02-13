@@ -102,7 +102,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	}
 }
 
-func Wrap(client llm.Client, baseDelay time.Duration, maxRetries int) *Client {
+func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int) *Client {
 	return &Client{
 		baseDelay:  baseDelay,
 		maxRetries: maxRetries,

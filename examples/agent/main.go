@@ -29,7 +29,7 @@ func main() {
 
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 
-	client = retry.Wrap(client, time.Second, 3)
+	client = retry.NewClient(client, time.Second, 3)
 
 	// Create a task agent and give him some location/meteo related tools
 	taskAgent := agent.New(

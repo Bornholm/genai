@@ -96,6 +96,10 @@ func (c *TextClient) Text(ctx context.Context, funcs ...extract.TextOptionFunc) 
 
 	defer httpRes.Body.Close()
 
+	if httpRes.StatusCode == http.StatusTooManyRequests {
+		return nil, errors.WithStack(extract.ErrRateLimit)
+	}
+
 	httpBody, err := io.ReadAll(httpRes.Body)
 	if err != nil {
 		return nil, errors.WithStack(err)

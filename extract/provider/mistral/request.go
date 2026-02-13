@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/bornholm/genai/extract"
 	"github.com/pkg/errors"
 )
 
@@ -48,6 +49,10 @@ func (c *TextClient) request(ctx context.Context, method string, path string, he
 	defer res.Body.Close()
 
 	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusBadRequest {
+		if res.StatusCode == http.StatusTooManyRequests {
+			return errors.WithStack(extract.ErrRateLimit)
+		}
+
 		return errors.Errorf("unexpected response code %d (%s)", res.StatusCode, res.Status)
 	}
 

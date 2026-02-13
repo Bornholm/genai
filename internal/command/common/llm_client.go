@@ -25,8 +25,8 @@ func NewResilientClient(ctx context.Context, envPrefix string, envFile string) (
 		return nil, errors.WithStack(err)
 	}
 
-	client = retry.Wrap(client, time.Second, 5)
-	client = ratelimit.Wrap(client, time.Duration(rate.Every(time.Second)), 1)
+	client = retry.NewClient(client, time.Second, 5)
+	client = ratelimit.NewClient(client, time.Duration(rate.Every(time.Second)), 1)
 	client = circuitbreaker.NewClient(client, 5, 30*time.Second)
 
 	return client, nil

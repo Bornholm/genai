@@ -241,7 +241,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return stream, nil
 }
 
-func Wrap(client llm.Client, funcs ...OptionFunc) *Client {
+func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 	opts := NewOptions(funcs...)
 	return &Client{
 		client:                     client,
