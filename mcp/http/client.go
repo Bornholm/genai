@@ -1,8 +1,7 @@
-package stdio
+package http
 
 import (
 	"context"
-	"os/exec"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/mcp"
@@ -31,16 +30,16 @@ func (c *Client) Stop() error {
 	return c.client.Stop()
 }
 
-func NewClient(command []string, funcs ...OptionFunc) *Client {
+func NewClient(endpoint string, funcs ...OptionFunc) *Client {
 	opts := NewOptions(funcs...)
+
 	var connector common.ConnectorFunc = func(ctx context.Context) (*goMCP.ClientSession, error) {
 		client := goMCP.NewClient(&goMCP.Implementation{Name: "mcp-client", Version: "v1.0.0"}, nil)
 
-		cmd := exec.Command(command[0], command[1:]...)
-
-		cmd.Env = opts.Env
-
-		transport := &goMCP.CommandTransport{Command: cmd}
+		transport := &goMCP.SSEClientTransport{
+			Endpoint:   endpoint,
+			HTTPClient: opts.HTTPClient,
+		}
 
 		session, err := client.Connect(ctx, transport, nil)
 		if err != nil {

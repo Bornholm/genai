@@ -3,17 +3,11 @@ package agent
 import (
 	"log"
 	"log/slog"
-	"net/url"
 	"slices"
 
 	"github.com/bornholm/genai/agent"
 	"github.com/bornholm/genai/agent/task"
 	"github.com/bornholm/genai/internal/command/common"
-	"github.com/bornholm/genai/llm"
-	"github.com/bornholm/genai/mcp"
-	"github.com/bornholm/genai/mcp/stdio"
-	"github.com/bornholm/go-x/slogx"
-	"github.com/google/shlex"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 
@@ -70,6 +64,11 @@ func Do() *cli.Command {
 				Usage:   "MCP server URL",
 				EnvVars: []string{"GENAI_MCP"},
 			},
+			&cli.StringSliceFlag{
+				Name:    "mcp-auth-token",
+				Usage:   "MCP server auth token",
+				EnvVars: []string{"GENAI_MCP_AUTH_TOKEN"},
+			},
 			&cli.StringFlag{
 				Name:    "output",
 				Aliases: []string{"o"},
@@ -102,9 +101,9 @@ func Do() *cli.Command {
 
 			opts := make([]task.HandlerOptionFunc, 0)
 
-			llmTools, close, err := getMCPTools(cliCtx, "mcp")
+			llmTools, close, err := common.GetMCPTools(cliCtx, "mcp", "mcp-auth-token")
 			if err != nil {
-				return errors.Wrap(err, "failed to create llm client")
+				return errors.Wrap(err, "failed to get mcp tools")
 			}
 
 			defer close()
@@ -181,54 +180,4 @@ func Do() *cli.Command {
 			return nil
 		},
 	}
-}
-
-func getMCPTools(ctx *cli.Context, param string) ([]llm.Tool, func(), error) {
-	mcpURLs := ctx.StringSlice(param)
-
-	clients := make([]mcp.Client, 0)
-
-	close := func() {
-		for _, c := range clients {
-			if err := c.Stop(); err != nil {
-				slog.ErrorContext(ctx.Context, "could not stop mcp client", slogx.Error(err))
-			}
-		}
-	}
-
-	for _, u := range mcpURLs {
-		if _, err := url.ParseRequestURI(u); err == nil {
-			// TODO Handle HTTP MCP servers
-		} else {
-			command, err := shlex.Split(u)
-			if err != nil {
-				return nil, nil, errors.Wrapf(err, "could not parse mcp server command '%s'", u)
-			}
-			c := stdio.NewClient(command...)
-
-			slog.DebugContext(ctx.Context, "starting mcp client", slog.String("command", u))
-
-			if err := c.Start(ctx.Context); err != nil {
-				return nil, nil, errors.Wrapf(err, "could not start mcp client '%s'", u)
-			}
-
-			slog.DebugContext(ctx.Context, "mcp client started", slog.String("command", u))
-
-			clients = append(clients, c)
-		}
-	}
-
-	tools := make([]llm.Tool, 0)
-
-	for i, c := range clients {
-		clientTools, err := c.GetTools(ctx.Context)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "could not retrieve mcp server '%s' tools", mcpURLs[i])
-		}
-
-		tools = append(tools, clientTools...)
-	}
-
-	return tools, close, nil
-
 }

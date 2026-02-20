@@ -1,6 +1,9 @@
 package llm
 
-import "github.com/urfave/cli/v2"
+import (
+	"github.com/bornholm/genai/internal/command/llm/chat"
+	"github.com/urfave/cli/v2"
+)
 
 func Root() *cli.Command {
 	return &cli.Command{
@@ -9,6 +12,7 @@ func Root() *cli.Command {
 		Flags: []cli.Flag{},
 		Subcommands: []*cli.Command{
 			Generate(),
+			chat.Root(),
 		},
 	}
 }

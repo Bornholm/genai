@@ -479,8 +479,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 						return nil, errors.Wrapf(err, "failed to convert attachment to content")
 					}
 					messages = append(messages, openrouter.ChatCompletionMessage{
-						Role:    openrouter.ChatMessageRoleTool,
-						Content: content,
+						Role:       openrouter.ChatMessageRoleTool,
+						ToolCallID: toolMessage.ID(),
+						Content:    content,
 					})
 				} else {
 					// Multiple attachments - build multi-part content manually
@@ -514,7 +515,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					}
 
 					messages = append(messages, openrouter.ChatCompletionMessage{
-						Role: openrouter.ChatMessageRoleTool,
+						Role:       openrouter.ChatMessageRoleTool,
+						ToolCallID: toolMessage.ID(),
 						Content: openrouter.Content{
 							Multi: parts,
 						},
@@ -522,7 +524,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				}
 			} else {
 				messages = append(messages, openrouter.ChatCompletionMessage{
-					Role: openrouter.ChatMessageRoleTool,
+					Role:       openrouter.ChatMessageRoleTool,
+					ToolCallID: toolMessage.ID(),
 					Content: openrouter.Content{
 						Text: m.Content(),
 					},
