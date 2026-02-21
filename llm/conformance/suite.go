@@ -2,8 +2,6 @@ package conformance
 
 import (
 	"testing"
-
-	"github.com/bornholm/genai/llm"
 )
 
 // Feature flags declare which capabilities the provider under test supports.
@@ -21,7 +19,7 @@ const (
 
 // Suite runs a set of conformance tests against an llm.Client.
 type Suite struct {
-	client   llm.Client
+	client   any
 	features Feature
 }
 
@@ -36,7 +34,7 @@ func WithFeatures(f Feature) Option {
 }
 
 // New creates a Suite for the given client.
-func New(client llm.Client, opts ...Option) *Suite {
+func New(client any, opts ...Option) *Suite {
 	s := &Suite{client: client}
 	for _, o := range opts {
 		o(s)

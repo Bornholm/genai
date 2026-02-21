@@ -27,7 +27,7 @@ func main() {
 	// Create a basic client
 	client, err := provider.Create(ctx, env.With("GENAI_", envFile))
 	if err != nil {
-		log.Fatalf("[FATAL] %s", err)
+		log.Fatalf("[FATAL] %+v", err)
 	}
 
 	stream, err := client.ChatCompletionStream(ctx,

@@ -25,9 +25,6 @@ func (opts *ClientOptions) Validate() error {
 	if opts.Model == "" {
 		return llm.NewValidationError("model", "model is required")
 	}
-	if opts.BaseURL == "" {
-		return llm.NewValidationError("base_url", "base URL is required")
-	}
 	return nil
 }
 

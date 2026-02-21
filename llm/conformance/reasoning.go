@@ -7,7 +7,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testReasoning(t *testing.T, client llm.Client) {
+func testReasoning(t *testing.T, client any) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)

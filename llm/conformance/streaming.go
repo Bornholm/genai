@@ -8,7 +8,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testStreaming(t *testing.T, client llm.Client) {
+func testStreaming(t *testing.T, client any) {
 	t.Helper()
 
 	streamClient, ok := client.(llm.ChatCompletionStreamingClient)

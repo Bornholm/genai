@@ -8,7 +8,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testEmbeddings(t *testing.T, client llm.Client) {
+func testEmbeddings(t *testing.T, client any) {
 	t.Helper()
 
 	embClient, ok := client.(llm.EmbeddingsClient)
