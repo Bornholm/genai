@@ -2,13 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"time"
 
 	"github.com/bornholm/genai/agent"
-	"github.com/bornholm/genai/agent/task"
+	"github.com/bornholm/genai/agent/loop"
 	"github.com/bornholm/genai/examples/tool"
+	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
 	"github.com/bornholm/genai/llm/retry"
 	"github.com/pkg/errors"
@@ -31,33 +33,64 @@ func main() {
 
 	client = retry.NewClient(client, time.Second, 3)
 
-	// Create a task agent and give him some location/meteo related tools
-	taskAgent := agent.New(
-		task.NewHandler(
-			client,
-			task.WithDefaultTools(
-				tool.GetFrenchLocation,
-				tool.GetWeather,
-			),
-		),
-	)
+	// Build system prompt with tools
+	tools := []llm.Tool{tool.GetFrenchLocation, tool.GetWeather}
+	toolInfos := make([]loop.ToolInfo, len(tools))
+	for i, t := range tools {
+		toolInfos[i] = loop.ToolInfo{
+			Name:        t.Name(),
+			Description: t.Description(),
+		}
+	}
 
-	// Start running the agent
-	if _, _, err := taskAgent.Start(ctx); err != nil {
+	systemPrompt, err := loop.DefaultSystemPrompt(toolInfos, "")
+	if err != nil {
 		log.Fatalf("%+v", errors.WithStack(err))
 	}
 
-	query := "Comment devrais-je m'habiller aujourd'hui à Dijon ?"
-
-	result, err := task.Do(ctx, taskAgent, query,
-		task.WithOnThought(func(evt task.ThoughtEvent) error {
-			log.Printf("--- Thought (%s) #%d\n%s\n\n", evt.Type(), evt.Iteration(), evt.Thought())
-			return nil
-		}),
+	// Create a loop handler with tools
+	handler, err := loop.NewHandler(
+		loop.WithClient(client),
+		loop.WithTools(tools...),
+		loop.WithSystemPrompt(systemPrompt),
+		loop.WithMaxIterations(10),
 	)
 	if err != nil {
 		log.Fatalf("%+v", errors.WithStack(err))
 	}
 
-	log.Printf("--- Result\n%s\n", result.Result())
+	// Create runner
+	runner := agent.NewRunner(handler)
+
+	query := "Comment devrais-je m'habiller aujourd'hui à Dijon ?"
+
+	// Run the agent
+	var result string
+	err = runner.Run(ctx, agent.NewInput(query), func(evt agent.Event) error {
+		switch evt.Type() {
+		case agent.EventTypeComplete:
+			data := evt.Data().(*agent.CompleteData)
+			result = data.Message
+			fmt.Printf("--- Complete\n%s\n", data.Message)
+		case agent.EventTypeToolCallStart:
+			data := evt.Data().(*agent.ToolCallStartData)
+			fmt.Printf("--- Tool Call: %s(%v)\n", data.Name, data.Parameters)
+		case agent.EventTypeToolCallDone:
+			data := evt.Data().(*agent.ToolCallDoneData)
+			fmt.Printf("--- Tool Result: %s\n", data.Result)
+		case agent.EventTypeTodoUpdated:
+			data := evt.Data().(*agent.TodoUpdatedData)
+			fmt.Printf("--- Todo Updated: %v\n", data.Items)
+		case agent.EventTypeError:
+			data := evt.Data().(*agent.ErrorData)
+			fmt.Printf("--- Error: %s\n", data.Message)
+		}
+		return nil
+	})
+
+	if err != nil {
+		log.Fatalf("%+v", errors.WithStack(err))
+	}
+
+	fmt.Printf("\n--- Final Result\n%s\n", result)
 }

@@ -1,13 +1,19 @@
 package agent
 
 import (
+	"encoding/base64"
 	"log"
 	"log/slog"
+	"mime"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/bornholm/genai/agent"
-	"github.com/bornholm/genai/agent/task"
+	"github.com/bornholm/genai/agent/loop"
 	"github.com/bornholm/genai/internal/command/common"
+	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 
@@ -76,16 +82,17 @@ func Do() *cli.Command {
 				EnvVars: []string{"GENAI_OUTPUT"},
 			},
 			&cli.IntFlag{
-				Name:    "tool-max-iterations",
-				Usage:   "Define the maximum number of iterations in a row for tool calls",
-				Value:   3,
-				EnvVars: []string{"GENAI_TOOL_MAX_ITERATIONS"},
-			},
-			&cli.IntFlag{
 				Name:    "max-iterations",
 				Usage:   "Define the maximum number of iterations for the agent to make",
-				Value:   10,
+				Value:   100,
 				EnvVars: []string{"GENAI_MAX_ITERATIONS"},
+			},
+			&cli.StringSliceFlag{
+				Name:      "attachment",
+				Aliases:   []string{"a"},
+				Usage:     "File attachments to pass to the agent (supports images, documents, etc.)",
+				EnvVars:   []string{"GENAI_ATTACHMENTS"},
+				TakesFile: true,
 			},
 		},
 		Action: func(cliCtx *cli.Context) error {
@@ -98,8 +105,6 @@ func Do() *cli.Command {
 			if err != nil {
 				return errors.Wrap(err, "failed to create llm client")
 			}
-
-			opts := make([]task.HandlerOptionFunc, 0)
 
 			llmTools, close, err := common.GetMCPTools(cliCtx, "mcp", "mcp-auth-token")
 			if err != nil {
@@ -116,36 +121,11 @@ func Do() *cli.Command {
 						}
 					}
 				})))
-				opts = append(opts, task.WithDefaultTools(llmTools...))
 			}
-
-			taskAgent := agent.New(
-				task.NewHandler(
-					client,
-					opts...,
-				),
-			)
-
-			// Start running the agent
-			if _, _, err := taskAgent.Start(ctx); err != nil {
-				return errors.Wrap(err, "could not start agent")
-			}
-
-			defer taskAgent.Stop()
 
 			taskPrompt, err := common.GetPrompt(cliCtx, "task", "task-data")
 			if err != nil {
 				return errors.Wrap(err, "failed to process task prompt")
-			}
-
-			taskCtx := ctx
-
-			responseSchema, err := common.GetResponseSchema(cliCtx, "schema")
-			if err != nil {
-				return errors.WithStack(err)
-			}
-			if responseSchema != nil {
-				taskCtx = task.WithContextSchema(ctx, responseSchema)
 			}
 
 			additionalContext, err := common.GetPrompt(cliCtx, "additional-context", "additional-context-data")
@@ -153,31 +133,134 @@ func Do() *cli.Command {
 				return errors.WithStack(err)
 			}
 
-			if additionalContext != "" {
-				taskCtx = task.WithAdditionalContext(ctx, additionalContext)
+			// Process attachments
+			attachmentPaths := cliCtx.StringSlice("attachment")
+			attachments, err := processAttachments(attachmentPaths)
+			if err != nil {
+				return errors.Wrap(err, "failed to process attachments")
 			}
 
-			maxToolIterations := cliCtx.Int("tool-max-iterations")
-			taskCtx = task.WithContextMaxToolIterations(taskCtx, maxToolIterations)
+			// Build system prompt
+			toolInfos := make([]loop.ToolInfo, len(llmTools))
+			for i, t := range llmTools {
+				toolInfos[i] = loop.ToolInfo{
+					Name:        t.Name(),
+					Description: t.Description(),
+				}
+			}
 
-			maxIterations := cliCtx.Int("max-iterations")
-			taskCtx = task.WithContextMaxIterations(taskCtx, maxIterations)
+			systemPrompt, err := loop.DefaultSystemPrompt(toolInfos, additionalContext)
+			if err != nil {
+				return errors.Wrap(err, "failed to render system prompt")
+			}
 
-			result, err := task.Do(taskCtx, taskAgent, taskPrompt,
-				task.WithOnThought(func(evt task.ThoughtEvent) error {
-					slog.InfoContext(ctx, "agent thought", slog.String("thought", evt.Thought()), slog.Int("iteration", evt.Iteration()))
-					return nil
-				}),
+			// Create loop handler
+			handler, err := loop.NewHandler(
+				loop.WithClient(client),
+				loop.WithTools(llmTools...),
+				loop.WithSystemPrompt(systemPrompt),
+				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
 			)
+			if err != nil {
+				return errors.Wrap(err, "failed to create handler")
+			}
+
+			// Create runner
+			runner := agent.NewRunner(handler)
+
+			// Run the agent
+			var result string
+			err = runner.Run(ctx, agent.NewInput(taskPrompt, attachments...), func(evt agent.Event) error {
+				switch evt.Type() {
+				case agent.EventTypeComplete:
+					data := evt.Data().(*agent.CompleteData)
+					result = data.Message
+					slog.InfoContext(ctx, "agent completed", slog.String("message", data.Message))
+				case agent.EventTypeToolCallStart:
+					data := evt.Data().(*agent.ToolCallStartData)
+					slog.DebugContext(ctx, "tool call started", slog.String("name", data.Name), slog.Any("params", data.Parameters))
+				case agent.EventTypeToolCallDone:
+					data := evt.Data().(*agent.ToolCallDoneData)
+					slog.DebugContext(ctx, "tool call completed", slog.String("name", data.Name), slog.String("result", data.Result))
+				case agent.EventTypeTodoUpdated:
+					data := evt.Data().(*agent.TodoUpdatedData)
+					slog.InfoContext(ctx, "todo list updated", slog.Any("items", data.Items))
+				case agent.EventTypeError:
+					data := evt.Data().(*agent.ErrorData)
+					slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))
+				}
+				return nil
+			})
+
 			if err != nil {
 				log.Fatalf("%+v", errors.WithStack(err))
 			}
 
-			if err := common.WriteToOutput(*cliCtx, "output", result.Result()); err != nil {
+			if err := common.WriteToOutput(*cliCtx, "output", result); err != nil {
 				return errors.Wrap(err, "failed to write to output")
 			}
 
 			return nil
 		},
 	}
+}
+
+// processAttachments reads files and converts them to llm.Attachment
+func processAttachments(paths []string) ([]llm.Attachment, error) {
+	attachments := make([]llm.Attachment, 0, len(paths))
+
+	for _, path := range paths {
+		attachment, err := fileToAttachment(path)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to process attachment '%s'", path)
+		}
+		attachments = append(attachments, attachment)
+	}
+
+	return attachments, nil
+}
+
+// fileToAttachment reads a file and creates an llm.Attachment
+func fileToAttachment(path string) (llm.Attachment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	mimeType := detectMimeType(path)
+	attachmentType := detectAttachmentType(mimeType)
+
+	base64Data := base64.StdEncoding.EncodeToString(data)
+
+	attachment, err := llm.NewBase64Attachment(attachmentType, mimeType, base64Data)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return attachment, nil
+}
+
+// detectMimeType returns the MIME type based on file extension
+func detectMimeType(path string) string {
+	ext := filepath.Ext(path)
+	mimeType := mime.TypeByExtension(ext)
+	if mimeType == "" {
+		// Default to octet-stream for unknown types
+		return "application/octet-stream"
+	}
+	return strings.SplitN(mimeType, ";", 2)[0]
+}
+
+// detectAttachmentType returns the attachment type based on MIME type
+func detectAttachmentType(mimeType string) llm.AttachmentType {
+	if strings.HasPrefix(mimeType, "image/") {
+		return llm.AttachmentTypeImage
+	}
+	if strings.HasPrefix(mimeType, "audio/") {
+		return llm.AttachmentTypeAudio
+	}
+	if strings.HasPrefix(mimeType, "video/") {
+		return llm.AttachmentTypeVideo
+	}
+	return llm.AttachmentTypeDocument
 }
