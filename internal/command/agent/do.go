@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"log/slog"
 	"mime"
@@ -9,7 +11,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/bornholm/genai/a2a"
+	"github.com/bornholm/genai/a2a/discovery"
 	"github.com/bornholm/genai/agent"
 	"github.com/bornholm/genai/agent/loop"
 	"github.com/bornholm/genai/internal/command/common"
@@ -94,6 +99,18 @@ func Do() *cli.Command {
 				EnvVars:   []string{"GENAI_ATTACHMENTS"},
 				TakesFile: true,
 			},
+			&cli.BoolFlag{
+				Name:    "a2a",
+				Usage:   "Enable A2A agent discovery to use discovered agents as tools",
+				EnvVars: []string{"GENAI_A2A"},
+				Value:   false,
+			},
+			&cli.DurationFlag{
+				Name:    "a2a-discovery-delay",
+				Usage:   "Duration to wait for A2A agent discovery before starting the task",
+				EnvVars: []string{"GENAI_A2A_DISCOVERY_DELAY"},
+				Value:   5 * time.Second,
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
@@ -113,9 +130,49 @@ func Do() *cli.Command {
 
 			defer close()
 
-			if len(llmTools) > 0 {
+			// Create dynamic tool registry for A2A discovered agents
+			dynamicRegistry := a2a.NewDynamicToolRegistry()
+
+			// Start A2A discovery if enabled
+			if cliCtx.Bool("a2a") {
+				discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
+				defer cancelDiscovery()
+
+				watcher := discovery.NewWatcher(&discovery.AgentEventHandlerFunc{
+					OnDiscovered: func(agent *discovery.DiscoveredAgent) {
+						tool := a2a.NewRemoteAgentTool(
+							sanitizeToolName(agent.Name),
+							fmt.Sprintf("Delegate tasks to the '%s' agent. %s", agent.Name, getAgentDescription(agent)),
+							agent.URL,
+						)
+						dynamicRegistry.AddTool(tool)
+						slog.Info("registered tool for discovered A2A agent", "name", agent.Name, "url", agent.URL)
+					},
+					OnRemoved: func(agent *discovery.DiscoveredAgent) {
+						toolName := sanitizeToolName(agent.Name)
+						dynamicRegistry.RemoveTool(toolName)
+						slog.Info("unregistered tool for removed A2A agent", "name", agent.Name)
+					},
+				})
+
+				go func() {
+					if err := watcher.Watch(discoveryCtx); err != nil && discoveryCtx.Err() == nil {
+						slog.Error("A2A discovery watcher error", "error", err)
+					}
+				}()
+
+				// Wait for discovery to find agents
+				discoveryDelay := cliCtx.Duration("a2a-discovery-delay")
+				slog.Info("waiting for A2A agent discovery", "delay", discoveryDelay)
+				time.Sleep(discoveryDelay)
+			}
+
+			// Combine MCP tools with discovered A2A agent tools
+			allTools := append(llmTools, dynamicRegistry.ListTools()...)
+
+			if len(allTools) > 0 {
 				slog.DebugContext(ctx, "providing tools to agent", slog.Any("tools", slices.Collect(func(yield func(string) bool) {
-					for _, t := range llmTools {
+					for _, t := range allTools {
 						if !yield(t.Name()) {
 							return
 						}
@@ -141,8 +198,8 @@ func Do() *cli.Command {
 			}
 
 			// Build system prompt
-			toolInfos := make([]loop.ToolInfo, len(llmTools))
-			for i, t := range llmTools {
+			toolInfos := make([]loop.ToolInfo, len(allTools))
+			for i, t := range allTools {
 				toolInfos[i] = loop.ToolInfo{
 					Name:        t.Name(),
 					Description: t.Description(),
@@ -157,7 +214,7 @@ func Do() *cli.Command {
 			// Create loop handler
 			handler, err := loop.NewHandler(
 				loop.WithClient(client),
-				loop.WithTools(llmTools...),
+				loop.WithTools(allTools...),
 				loop.WithSystemPrompt(systemPrompt),
 				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
 			)
