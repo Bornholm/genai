@@ -299,12 +299,13 @@ func TestHandler_ContextCancellation(t *testing.T) {
 }
 
 func TestHandler_IterationBudget(t *testing.T) {
-	// Test: Set maxIterations to 2, LLM always returns tool calls → handler returns ErrIterationBudgetExceeded
+	// Test: Set maxIterations to 2, LLM always returns tool calls → handler emits Complete with summary
 	client := &MockChatCompletionClient{
 		responses: []MockResponse{
 			{ToolCalls: []llm.ToolCall{&MockToolCall{id: "1", name: "test_tool", parameters: map[string]any{}}}},
 			{ToolCalls: []llm.ToolCall{&MockToolCall{id: "2", name: "test_tool", parameters: map[string]any{}}}},
-			{ToolCalls: []llm.ToolCall{&MockToolCall{id: "3", name: "test_tool", parameters: map[string]any{}}}},
+			// Summary call returns text
+			{Message: llm.NewMessage(llm.RoleAssistant, "Summary of work done")},
 		},
 	}
 
@@ -326,12 +327,30 @@ func TestHandler_IterationBudget(t *testing.T) {
 		t.Fatalf("failed to create handler: %v", err)
 	}
 
+	var events []agent.Event
 	err = handler.Handle(context.Background(), agent.NewInput("Test"), func(evt agent.Event) error {
+		events = append(events, evt)
 		return nil
 	})
 
-	if !errors.Is(err, ErrIterationBudgetExceeded) {
-		t.Errorf("expected ErrIterationBudgetExceeded, got: %v", err)
+	// Should return nil (not error) and emit Complete with summary
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	// Should have emitted Complete event with summary
+	if len(events) == 0 {
+		t.Error("expected at least one event")
+	}
+
+	lastEvent := events[len(events)-1]
+	if lastEvent.Type() != agent.EventTypeComplete {
+		t.Errorf("expected EventTypeComplete, got %s", lastEvent.Type())
+	}
+
+	data := lastEvent.Data().(*agent.CompleteData)
+	if data.Message == "" {
+		t.Error("expected non-empty summary message")
 	}
 }
 

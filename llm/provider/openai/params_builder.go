@@ -195,6 +195,9 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 			if len(m.Attachments()) > 0 {
 				return errors.Errorf("assistant messages cannot have attachments")
 			}
+			// ReasoningMessage is handled transparently: the content is passed through
+			// while the reasoning tokens are silently discarded. OpenAI o-series models
+			// do not return reasoning tokens in responses, so there is nothing to preserve.
 			messages = append(messages, openai.AssistantMessage(m.Content()))
 		case llm.RoleTool:
 			if len(m.Attachments()) > 0 {
@@ -228,6 +231,10 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 				})
 			}
 			message.ToolCalls = toolCalls
+
+			// Note: OpenAI's API does not currently accept reasoning_details in
+			// tool calls messages, so we simply pass through the tool calls.
+			// If the model is changed to support this in future, add reasoning here.
 
 			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &message})
 		}

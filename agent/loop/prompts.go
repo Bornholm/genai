@@ -21,10 +21,32 @@ func RenderSystemPromptFromFS(filename string, data map[string]any) (string, err
 	return prompt.FromFS(&prompts, "prompts/"+filename, data)
 }
 
-// DefaultSystemPrompt returns the default system prompt
+// builtinToolInfos returns the ToolInfo entries for tools that are always
+// injected by the loop handler (TodoWrite, TodoRead). These must appear in
+// the system prompt's tool listing even though the caller never adds them to
+// the tool slice it passes to NewHandler.
+func builtinToolInfos() []ToolInfo {
+	return []ToolInfo{
+		{
+			Name:        "TodoWrite",
+			Description: "Replace the entire todo list. Use this to create and update your task list. Provide a full JSON array of items (id, content, status). This is a full replacement, not a patch.",
+		},
+		{
+			Name:        "TodoRead",
+			Description: "Returns the current todo list as JSON. Use this to check your progress and remaining tasks.",
+		},
+	}
+}
+
+// DefaultSystemPrompt returns the default system prompt.
+// The built-in TodoWrite and TodoRead tools are automatically prepended to the
+// tool list so they appear in the "Available Tools" section even when the caller
+// only passes MCP / user-defined tools.
 func DefaultSystemPrompt(tools []ToolInfo, additionalContext string) (string, error) {
+	// Prepend built-in tools so the model always sees them in the listing.
+	allTools := append(builtinToolInfos(), tools...)
 	return RenderSystemPromptFromFS("system.gotmpl", map[string]any{
-		"Tools":             tools,
+		"Tools":             allTools,
 		"AdditionalContext": additionalContext,
 	})
 }

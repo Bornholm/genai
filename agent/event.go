@@ -10,6 +10,10 @@ const (
 	EventTypeTodoUpdated   EventType = "todo_updated"
 	EventTypeError         EventType = "error"
 	EventTypeComplete      EventType = "complete"
+	// EventTypeReasoning is emitted when the model returns reasoning tokens.
+	// It is fired once per LLM turn, immediately after the response is received
+	// and before any tool calls are dispatched.
+	EventTypeReasoning EventType = "reasoning"
 )
 
 // Event represents an event emitted during agent execution.
@@ -93,4 +97,29 @@ type ErrorData struct {
 // CompleteData represents the data for a EventTypeComplete event
 type CompleteData struct {
 	Message string
+}
+
+// ReasoningData represents the data for a EventTypeReasoning event.
+// Reasoning is only present when the underlying model returns thinking tokens
+// (e.g. Claude with extended thinking, GPT-5 with reasoning effort > none).
+type ReasoningData struct {
+	// Reasoning is the plain-text reasoning string returned by the model.
+	Reasoning string
+	// ReasoningDetails contains the structured reasoning blocks returned by the model.
+	// These are needed for multi-turn preservation with models that use encrypted or
+	// summarised reasoning blocks (pass them back unmodified in assistant messages).
+	ReasoningDetails []ReasoningDetail
+}
+
+// ReasoningDetail mirrors llm.ReasoningDetail but lives in the agent package
+// so callers of the agent API do not need to import the llm package just for events.
+type ReasoningDetail struct {
+	ID        string
+	Type      string
+	Text      string
+	Summary   string
+	Data      string
+	Format    string
+	Index     int
+	Signature string
 }

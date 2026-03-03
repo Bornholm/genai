@@ -33,6 +33,7 @@ type ChatCompletionOptions struct {
 	ResponseSchema      ResponseSchema
 	Seed                *int
 	MaxCompletionTokens *int
+	Reasoning           *ReasoningOptions
 }
 
 // Validate checks if the ChatCompletionOptions are valid
@@ -108,6 +109,12 @@ func WithSeed(seed int) ChatCompletionOptionFunc {
 func WithMaxCompletionTokens(maxTokens int) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		opts.MaxCompletionTokens = &maxTokens
+	}
+}
+
+func WithReasoning(opts *ReasoningOptions) ChatCompletionOptionFunc {
+	return func(o *ChatCompletionOptions) {
+		o.Reasoning = opts
 	}
 }
 
@@ -303,11 +310,23 @@ type ToolCallsMessage interface {
 
 type BaseToolCallsMessage struct {
 	BaseMessage
-	toolCalls []ToolCall
+	toolCalls        []ToolCall
+	reasoning        string
+	reasoningDetails []ReasoningDetail
 }
 
 func (b *BaseToolCallsMessage) ToolCalls() []ToolCall {
 	return b.toolCalls
+}
+
+// Reasoning implements ReasoningMessage.
+func (b *BaseToolCallsMessage) Reasoning() string {
+	return b.reasoning
+}
+
+// ReasoningDetails implements ReasoningMessage.
+func (b *BaseToolCallsMessage) ReasoningDetails() []ReasoningDetail {
+	return b.reasoningDetails
 }
 
 // Attachments implements Message (inherited from BaseMessage, but explicit for clarity).
@@ -316,6 +335,7 @@ func (b *BaseToolCallsMessage) Attachments() []Attachment {
 }
 
 var _ ToolCallsMessage = &BaseToolCallsMessage{}
+var _ ReasoningMessage = &BaseToolCallsMessage{}
 
 func NewToolCallsMessage(toolCalls ...ToolCall) *BaseToolCallsMessage {
 	return &BaseToolCallsMessage{
@@ -327,11 +347,34 @@ func NewToolCallsMessage(toolCalls ...ToolCall) *BaseToolCallsMessage {
 	}
 }
 
+// NewReasoningToolCallsMessage creates a tool calls message that also carries the
+// reasoning content from the model's response. This is required for multi-turn
+// conversations with reasoning models (e.g. Claude, GPT-5) that involve tool use,
+// as the reasoning context must be preserved across API calls.
+func NewReasoningToolCallsMessage(reasoning string, reasoningDetails []ReasoningDetail, toolCalls ...ToolCall) *BaseToolCallsMessage {
+	return &BaseToolCallsMessage{
+		BaseMessage: BaseMessage{
+			role:    RoleToolCalls,
+			content: "",
+		},
+		toolCalls:        toolCalls,
+		reasoning:        reasoning,
+		reasoningDetails: reasoningDetails,
+	}
+}
+
 type ChatCompletionResponse interface {
 	Message() Message
 	ToolCalls() []ToolCall
 	Usage() ChatCompletionUsage
 }
+
+// ReasoningChatCompletionResponse is satisfied by responses from providers that
+// support reasoning tokens. Callers can type-assert ChatCompletionResponse to
+// this interface to access reasoning data for multi-turn preservation.
+//
+// Note: this interface is defined in reasoning.go; see that file for the full
+// declaration. It is referenced here for documentation proximity.
 
 type ChatCompletionUsage interface {
 	TotalTokens() int64
@@ -340,9 +383,11 @@ type ChatCompletionUsage interface {
 }
 
 type BaseChatCompletionResponse struct {
-	message   Message
-	toolCalls []ToolCall
-	usage     ChatCompletionUsage
+	message          Message
+	toolCalls        []ToolCall
+	usage            ChatCompletionUsage
+	reasoning        string
+	reasoningDetails []ReasoningDetail
 }
 
 // Usage implements ChatCompletionResponse.
@@ -350,14 +395,24 @@ func (b *BaseChatCompletionResponse) Usage() ChatCompletionUsage {
 	return b.usage
 }
 
-// Content implements CompletionResponse.
+// Message implements ChatCompletionResponse.
 func (b *BaseChatCompletionResponse) Message() Message {
 	return b.message
 }
 
-// ToolCalls implements CompletionResponse.
+// ToolCalls implements ChatCompletionResponse.
 func (b *BaseChatCompletionResponse) ToolCalls() []ToolCall {
 	return b.toolCalls
+}
+
+// Reasoning implements ReasoningChatCompletionResponse.
+func (b *BaseChatCompletionResponse) Reasoning() string {
+	return b.reasoning
+}
+
+// ReasoningDetails implements ReasoningChatCompletionResponse.
+func (b *BaseChatCompletionResponse) ReasoningDetails() []ReasoningDetail {
+	return b.reasoningDetails
 }
 
 func NewChatCompletionResponse(message Message, usage ChatCompletionUsage, toolCalls ...ToolCall) *BaseChatCompletionResponse {
@@ -368,7 +423,21 @@ func NewChatCompletionResponse(message Message, usage ChatCompletionUsage, toolC
 	}
 }
 
+// NewChatCompletionResponseWithReasoning creates a response that also carries reasoning
+// tokens for multi-turn preservation. Use this when the underlying provider returns
+// reasoning content in its response.
+func NewChatCompletionResponseWithReasoning(message Message, usage ChatCompletionUsage, reasoning string, reasoningDetails []ReasoningDetail, toolCalls ...ToolCall) *BaseChatCompletionResponse {
+	return &BaseChatCompletionResponse{
+		usage:            usage,
+		message:          message,
+		toolCalls:        toolCalls,
+		reasoning:        reasoning,
+		reasoningDetails: reasoningDetails,
+	}
+}
+
 var _ ChatCompletionResponse = &BaseChatCompletionResponse{}
+var _ ReasoningChatCompletionResponse = &BaseChatCompletionResponse{}
 
 type BaseChatCompletionUsage struct {
 	totalTokens      int64

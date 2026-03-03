@@ -24,6 +24,7 @@ import (
 
 	// Import all provider implementations
 	_ "github.com/bornholm/genai/llm/provider/all"
+	"github.com/bornholm/genai/llm/provider/openrouter"
 )
 
 func Do() *cli.Command {
@@ -105,11 +106,29 @@ func Do() *cli.Command {
 				EnvVars: []string{"GENAI_A2A"},
 				Value:   false,
 			},
+			&cli.BoolFlag{
+				Name:    "no-planning",
+				Usage:   "Disable the forced TodoWrite planning step at the start of the task (planning is enabled by default)",
+				EnvVars: []string{"GENAI_NO_PLANNING"},
+				Value:   false,
+			},
 			&cli.DurationFlag{
 				Name:    "a2a-discovery-delay",
 				Usage:   "Duration to wait for A2A agent discovery before starting the task",
 				EnvVars: []string{"GENAI_A2A_DISCOVERY_DELAY"},
 				Value:   5 * time.Second,
+			},
+			&cli.StringFlag{
+				Name:    "reasoning-effort",
+				Usage:   "Reasoning effort level: xhigh, high, medium, low, minimal, none (mutually exclusive with --reasoning-max-tokens)",
+				EnvVars: []string{"GENAI_REASONING_EFFORT"},
+				Value:   string(llm.ReasoningEffortMedium),
+			},
+			&cli.IntFlag{
+				Name:    "reasoning-max-tokens",
+				Usage:   "Maximum number of tokens to use for reasoning (mutually exclusive with --reasoning-effort)",
+				EnvVars: []string{"GENAI_REASONING_MAX_TOKENS"},
+				Value:   0,
 			},
 		},
 		Action: func(cliCtx *cli.Context) error {
@@ -171,7 +190,7 @@ func Do() *cli.Command {
 			allTools := append(llmTools, dynamicRegistry.ListTools()...)
 
 			if len(allTools) > 0 {
-				slog.DebugContext(ctx, "providing tools to agent", slog.Any("tools", slices.Collect(func(yield func(string) bool) {
+				slog.DebugContext(ctx, "providing mcp tools to agent", slog.Any("tools", slices.Collect(func(yield func(string) bool) {
 					for _, t := range allTools {
 						if !yield(t.Name()) {
 							return
@@ -211,19 +230,30 @@ func Do() *cli.Command {
 				return errors.Wrap(err, "failed to render system prompt")
 			}
 
+			// Parse reasoning options
+			reasoningOpts := common.GetReasoningOptions(cliCtx)
+
 			// Create loop handler
-			handler, err := loop.NewHandler(
+			loopOpts := []loop.OptionFunc{
 				loop.WithClient(client),
 				loop.WithTools(allTools...),
 				loop.WithSystemPrompt(systemPrompt),
 				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
-			)
+				loop.WithForcePlanningStep(!cliCtx.Bool("no-planning")),
+			}
+			if reasoningOpts != nil {
+				loopOpts = append(loopOpts, loop.WithReasoningOptions(reasoningOpts))
+			}
+
+			handler, err := loop.NewHandler(loopOpts...)
 			if err != nil {
 				return errors.Wrap(err, "failed to create handler")
 			}
 
 			// Create runner
 			runner := agent.NewRunner(handler)
+
+			ctx = openrouter.WithTransforms(ctx, []string{openrouter.TransformMiddleOut})
 
 			// Run the agent
 			var result string
@@ -235,13 +265,19 @@ func Do() *cli.Command {
 					slog.InfoContext(ctx, "agent completed", slog.String("message", data.Message))
 				case agent.EventTypeToolCallStart:
 					data := evt.Data().(*agent.ToolCallStartData)
-					slog.DebugContext(ctx, "tool call started", slog.String("name", data.Name), slog.Any("params", data.Parameters))
+					slog.InfoContext(ctx, "tool call started", slog.String("name", data.Name), slog.Any("params", data.Parameters))
 				case agent.EventTypeToolCallDone:
 					data := evt.Data().(*agent.ToolCallDoneData)
 					slog.DebugContext(ctx, "tool call completed", slog.String("name", data.Name), slog.String("result", data.Result))
 				case agent.EventTypeTodoUpdated:
 					data := evt.Data().(*agent.TodoUpdatedData)
 					slog.InfoContext(ctx, "todo list updated", slog.Any("items", data.Items))
+				case agent.EventTypeReasoning:
+					data := evt.Data().(*agent.ReasoningData)
+					slog.InfoContext(ctx, "reasoning tokens received",
+						slog.String("reasoning", data.Reasoning),
+						slog.Int("details", len(data.ReasoningDetails)),
+					)
 				case agent.EventTypeError:
 					data := evt.Data().(*agent.ErrorData)
 					slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))

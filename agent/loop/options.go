@@ -4,6 +4,14 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
+// WithReasoningOptions enables reasoning tokens for each LLM call in the loop.
+// When set, reasoning is preserved across tool-call turns automatically.
+func WithReasoningOptions(opts *llm.ReasoningOptions) OptionFunc {
+	return func(o *Options) {
+		o.Reasoning = opts
+	}
+}
+
 const (
 	DefaultMaxIterations = 100
 	DefaultMaxTokens     = 120000
@@ -24,6 +32,12 @@ type Options struct {
 	ApprovalFunc        ApprovalFunc
 	ApprovalRequired    map[string]bool
 	ApprovalRequiredAll bool
+	Reasoning           *llm.ReasoningOptions
+	// ForcePlanningStep controls whether the handler makes a dedicated first API
+	// call with only the TodoWrite tool exposed (and tool_choice=required).
+	// This guarantees the model writes a structured plan before taking any action.
+	// Defaults to true when tools are present. Set to false to disable.
+	ForcePlanningStep bool
 }
 
 // OptionFunc is a function that configures the loop handler
@@ -104,14 +118,25 @@ func WithApprovalRequiredTools(tools ...string) OptionFunc {
 	}
 }
 
+// WithForcePlanningStep enables or disables the dedicated forced TodoWrite planning
+// step at the start of each agent task. When enabled (the default), the handler
+// makes one extra LLM call before the main loop that exposes only the TodoWrite
+// tool with tool_choice=required, guaranteeing the model writes a plan first.
+func WithForcePlanningStep(enabled bool) OptionFunc {
+	return func(o *Options) {
+		o.ForcePlanningStep = enabled
+	}
+}
+
 // NewOptions creates a new Options with defaults
 func NewOptions(funcs ...OptionFunc) *Options {
 	opts := &Options{
-		MaxIterations:    DefaultMaxIterations,
-		MaxTokens:        DefaultMaxTokens,
-		Tools:            []llm.Tool{},
-		TokenEstimator:   defaultTokenEstimator,
-		ApprovalRequired: make(map[string]bool),
+		MaxIterations:     DefaultMaxIterations,
+		MaxTokens:         DefaultMaxTokens,
+		Tools:             []llm.Tool{},
+		TokenEstimator:    defaultTokenEstimator,
+		ApprovalRequired:  make(map[string]bool),
+		ForcePlanningStep: false,
 	}
 	for _, fn := range funcs {
 		fn(opts)

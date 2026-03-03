@@ -62,6 +62,17 @@ func Chat() *cli.Command {
 				Usage:   "MCP server auth token",
 				EnvVars: []string{"GENAI_MCP_AUTH_TOKEN"},
 			},
+			&cli.StringFlag{
+				Name:    "reasoning-effort",
+				Usage:   "Reasoning effort level: xhigh, high, medium, low, minimal, none (mutually exclusive with --reasoning-max-tokens)",
+				EnvVars: []string{"GENAI_REASONING_EFFORT"},
+			},
+			&cli.IntFlag{
+				Name:    "reasoning-max-tokens",
+				Usage:   "Maximum number of tokens to use for reasoning (mutually exclusive with --reasoning-effort)",
+				EnvVars: []string{"GENAI_REASONING_MAX_TOKENS"},
+				Value:   0,
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
@@ -106,6 +117,9 @@ func Chat() *cli.Command {
 			// Get provider and model from environment
 			providerName, modelName := getProviderAndModel(envPrefix)
 
+			// Parse reasoning options
+			reasoningOpts := common.GetReasoningOptions(cliCtx)
+
 			// Create chat session
 			chatSession := NewChatSession(
 				client,
@@ -113,6 +127,7 @@ func Chat() *cli.Command {
 				WithTemperature(temperature),
 				WithTools(llmTools),
 				WithProviderModel(providerName, modelName),
+				WithReasoningOptions(reasoningOpts),
 			)
 
 			// Create and run UI
@@ -151,6 +166,7 @@ type ChatSession struct {
 	tools         []llm.Tool
 	provider      string
 	model         string
+	reasoning     *llm.ReasoningOptions
 	onStreamChunk func(chunk string)
 	onToolCall    func(name string, params map[string]any)
 	onToolResult  func(name string, result string)
@@ -187,6 +203,15 @@ func WithProviderModel(provider, model string) ChatSessionOptionFunc {
 	return func(s *ChatSession) {
 		s.provider = provider
 		s.model = model
+	}
+}
+
+// WithReasoningOptions sets the reasoning options for the chat session.
+// When set, reasoning tokens are requested from the model and preserved
+// across multi-turn tool-call conversations.
+func WithReasoningOptions(opts *llm.ReasoningOptions) ChatSessionOptionFunc {
+	return func(s *ChatSession) {
+		s.reasoning = opts
 	}
 }
 
@@ -251,17 +276,21 @@ func (s *ChatSession) SendMessage(ctx context.Context, content string) error {
 	}
 
 	// Build options
-	opts := []llm.ChatCompletionOptionFunc{
+	completionOpts := []llm.ChatCompletionOptionFunc{
 		llm.WithMessages(s.getMessages()...),
 		llm.WithTemperature(s.temperature),
 	}
 
 	if len(s.tools) > 0 {
-		opts = append(opts, llm.WithTools(s.tools...), llm.WithToolChoice(llm.ToolChoiceAuto))
+		completionOpts = append(completionOpts, llm.WithTools(s.tools...), llm.WithToolChoice(llm.ToolChoiceAuto))
+	}
+
+	if s.reasoning != nil {
+		completionOpts = append(completionOpts, llm.WithReasoning(s.reasoning))
 	}
 
 	// Use streaming API for text content
-	stream, err := s.client.ChatCompletionStream(ctx, opts...)
+	stream, err := s.client.ChatCompletionStream(ctx, completionOpts...)
 	if err != nil {
 		if s.onError != nil {
 			s.onError(err)
@@ -396,17 +425,21 @@ func (s *ChatSession) SendMessage(ctx context.Context, content string) error {
 // sendMessageWithToolsLoop handles the tool execution loop using non-streaming API
 func (s *ChatSession) sendMessageWithToolsLoop(ctx context.Context) error {
 	// Build options
-	opts := []llm.ChatCompletionOptionFunc{
+	completionOpts := []llm.ChatCompletionOptionFunc{
 		llm.WithMessages(s.getMessages()...),
 		llm.WithTemperature(s.temperature),
 	}
 
 	if len(s.tools) > 0 {
-		opts = append(opts, llm.WithTools(s.tools...), llm.WithToolChoice(llm.ToolChoiceAuto))
+		completionOpts = append(completionOpts, llm.WithTools(s.tools...), llm.WithToolChoice(llm.ToolChoiceAuto))
+	}
+
+	if s.reasoning != nil {
+		completionOpts = append(completionOpts, llm.WithReasoning(s.reasoning))
 	}
 
 	// Use non-streaming API for tool execution loop
-	res, err := s.client.ChatCompletion(ctx, opts...)
+	res, err := s.client.ChatCompletion(ctx, completionOpts...)
 	if err != nil {
 		if s.onError != nil {
 			s.onError(err)
@@ -435,8 +468,16 @@ func (s *ChatSession) sendMessageWithToolsLoop(ctx context.Context) error {
 			}
 		}
 
-		// Add assistant message with tool calls
-		s.messages = append(s.messages, llm.NewToolCallsMessage(toolCalls...))
+		// Add assistant message with tool calls, preserving reasoning if present.
+		if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
+			if r := rr.Reasoning(); r != "" || len(rr.ReasoningDetails()) > 0 {
+				s.messages = append(s.messages, llm.NewReasoningToolCallsMessage(r, rr.ReasoningDetails(), toolCalls...))
+			} else {
+				s.messages = append(s.messages, llm.NewToolCallsMessage(toolCalls...))
+			}
+		} else {
+			s.messages = append(s.messages, llm.NewToolCallsMessage(toolCalls...))
+		}
 
 		// Execute tool calls
 		for _, tc := range toolCalls {

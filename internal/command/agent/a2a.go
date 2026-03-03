@@ -96,6 +96,23 @@ func A2A() *cli.Command {
 				Value:   100,
 				EnvVars: []string{"GENAI_MAX_ITERATIONS"},
 			},
+			&cli.BoolFlag{
+				Name:    "no-planning",
+				Usage:   "Disable the forced TodoWrite planning step at the start of each task",
+				EnvVars: []string{"GENAI_NO_PLANNING"},
+				Value:   false,
+			},
+			&cli.StringFlag{
+				Name:    "reasoning-effort",
+				Usage:   "Reasoning effort level: xhigh, high, medium, low, minimal, none (mutually exclusive with --reasoning-max-tokens)",
+				EnvVars: []string{"GENAI_REASONING_EFFORT"},
+			},
+			&cli.IntFlag{
+				Name:    "reasoning-max-tokens",
+				Usage:   "Maximum number of tokens to use for reasoning (mutually exclusive with --reasoning-effort)",
+				EnvVars: []string{"GENAI_REASONING_MAX_TOKENS"},
+				Value:   0,
+			},
 			&cli.StringFlag{
 				Name:    "uuid",
 				Usage:   "Agent UUID (defaults to randomly generated)",
@@ -156,14 +173,24 @@ func A2A() *cli.Command {
 				return append(tools, dynamicRegistry.ListTools()...)
 			}
 
+			// Parse reasoning options
+			reasoningOpts := common.GetReasoningOptions(cliCtx)
+
+			// Build loop options
+			loopOpts := []loop.OptionFunc{
+				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
+				loop.WithForcePlanningStep(!cliCtx.Bool("no-planning")),
+			}
+			if reasoningOpts != nil {
+				loopOpts = append(loopOpts, loop.WithReasoningOptions(reasoningOpts))
+			}
+
 			// Create the task handler backed by the agent loop
 			handler := a2a.NewAgentTaskHandler(
 				llmClient,
 				a2a.WithToolsProvider(allToolsProvider),
 				a2a.WithSystemPrompt(systemPrompt),
-				a2a.WithLoopOptions(
-					loop.WithMaxIterations(cliCtx.Int("max-iterations")),
-				),
+				a2a.WithLoopOptions(loopOpts...),
 			)
 
 			// Listen first so we know the actual port

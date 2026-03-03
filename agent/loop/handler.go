@@ -34,6 +34,15 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 	// Create context manager
 	contextManager := NewContextManager(h.options.MaxTokens, h.options.TokenEstimator, h.options.TruncationStrategy)
 
+	// 1b. Forced planning step: expose only TodoWrite with tool_choice=required so
+	// the model MUST write a structured plan before taking any action.
+	// This is skipped when ForcePlanningStep is false or when no tools exist.
+	if h.options.ForcePlanningStep && len(allTools) > 0 {
+		if err := h.runPlanningStep(ctx, allTools, &messages, emit); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
 	// 2. Enter the loop
 	for iteration := 0; iteration < h.options.MaxIterations; iteration++ {
 		// 2a. Check ctx.Err()
@@ -44,29 +53,72 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 		// Apply context window management
 		messages = contextManager.Manage(messages)
 
-		// 2b. Call the LLM
-		slog.DebugContext(ctx, "calling LLM", slog.Int("iteration", iteration))
+		// 2b. Build iteration budget message
+		remainingIterations := h.options.MaxIterations - iteration
+		budgetMessage := llm.NewMessage(llm.RoleSystem, fmt.Sprintf(
+			"You have %d iteration%s remaining to complete your task.",
+			remainingIterations,
+			map[bool]string{true: "", false: "s"}[remainingIterations == 1],
+		))
 
-		res, err := h.options.Client.ChatCompletion(ctx,
+		// 2c. Call the LLM with the budget message prepended
+		slog.DebugContext(ctx, "calling LLM", slog.Int("iteration", iteration), slog.Int("remaining", remainingIterations))
+
+		completionOpts := []llm.ChatCompletionOptionFunc{
+			llm.WithMessages(budgetMessage),
 			llm.WithMessages(messages...),
 			llm.WithTools(allTools...),
 			llm.WithToolChoice(llm.ToolChoiceAuto),
-		)
+		}
+		if h.options.Reasoning != nil {
+			completionOpts = append(completionOpts, llm.WithReasoning(h.options.Reasoning))
+		}
+
+		res, err := h.options.Client.ChatCompletion(ctx, completionOpts...)
 		if err != nil {
-			// 2c. Return the error (retry is delegated to llm client middleware)
+			// 2d. Return the error (retry is delegated to llm client middleware)
 			return errors.WithStack(err)
 		}
 
-		// 2d. Append the assistant message to the history
+		// 2e. Emit a reasoning event if the response carries reasoning tokens.
+		if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
+			if reasoning := rr.Reasoning(); reasoning != "" || len(rr.ReasoningDetails()) > 0 {
+				agentDetails := make([]agent.ReasoningDetail, 0, len(rr.ReasoningDetails()))
+				for _, d := range rr.ReasoningDetails() {
+					agentDetails = append(agentDetails, agent.ReasoningDetail{
+						ID:        d.ID,
+						Type:      string(d.Type),
+						Text:      d.Text,
+						Summary:   d.Summary,
+						Data:      d.Data,
+						Format:    d.Format,
+						Index:     d.Index,
+						Signature: d.Signature,
+					})
+				}
+				if err := emit(agent.NewEvent(agent.EventTypeReasoning, &agent.ReasoningData{
+					Reasoning:        reasoning,
+					ReasoningDetails: agentDetails,
+				})); err != nil {
+					return errors.WithStack(err)
+				}
+				slog.DebugContext(ctx, "reasoning tokens received",
+					slog.Int("iteration", iteration),
+					slog.Int("details", len(agentDetails)),
+				)
+			}
+		}
+
+		// 2f. Append the assistant message to the history
 		// Only append if there's content and no tool calls
 		if res.Message() != nil && res.Message().Content() != "" && len(res.ToolCalls()) == 0 {
 			messages = append(messages, res.Message())
 		}
 
-		// 2e. Extract tool calls from the response
+		// 2g. Extract tool calls from the response
 		toolCalls := res.ToolCalls()
 
-		// 2f. If there are NO tool calls
+		// 2h. If there are NO tool calls
 		if len(toolCalls) == 0 {
 			// Emit a Complete event with the assistant message content
 			if err := emit(agent.NewEvent(agent.EventTypeComplete, &agent.CompleteData{
@@ -78,10 +130,23 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 			return nil
 		}
 
-		// 2g. If there ARE tool calls
-		// Create a tool calls message
-		messages = append(messages, llm.NewToolCallsMessage(toolCalls...))
+		// 2i. If there ARE tool calls
+		// Create a tool calls message, preserving reasoning if the response carries it.
+		// Reasoning models (e.g. Claude, GPT-5) require reasoning blocks to be passed
+		// back alongside tool calls so the model can continue its chain-of-thought.
+		if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
+			reasoning := rr.Reasoning()
+			reasoningDetails := rr.ReasoningDetails()
+			if reasoning != "" || len(reasoningDetails) > 0 {
+				messages = append(messages, llm.NewReasoningToolCallsMessage(reasoning, reasoningDetails, toolCalls...))
+			} else {
+				messages = append(messages, llm.NewToolCallsMessage(toolCalls...))
+			}
+		} else {
+			messages = append(messages, llm.NewToolCallsMessage(toolCalls...))
+		}
 
+		// 2j. Execute each tool call
 		for _, tc := range toolCalls {
 			// Emit a ToolCallStart event
 			if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
@@ -134,17 +199,158 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 			}
 		}
 
-		// 2h. Continue the loop
+		// 2k. Continue the loop
 	}
 
-	// 3. If the loop exits because maxIterations was reached
-	if err := emit(agent.NewEvent(agent.EventTypeError, &agent.ErrorData{
-		Message: fmt.Sprintf("Exceeded maximum iterations (%d)", h.options.MaxIterations),
+	// 3. If the loop exits because maxIterations was reached, generate a summary
+	return h.generateBudgetExceededSummary(ctx, messages, emit)
+}
+
+// generateBudgetExceededSummary makes a final LLM call to summarize what was accomplished
+// within the iteration budget when the agent exceeds its maximum iterations.
+func (h *Handler) generateBudgetExceededSummary(ctx context.Context, messages []llm.Message, emit agent.EmitFunc) error {
+	slog.DebugContext(ctx, "generating budget exceeded summary")
+
+	summaryPrompt := `You have exceeded your iteration budget and cannot continue using tools.
+Please provide a summary of what you accomplished during this session and what remains unfinished.
+Be specific about progress made, any obstacles encountered, and recommendations for completing the remaining work.`
+
+	summaryMessage := llm.NewMessage(llm.RoleUser, summaryPrompt)
+	summaryMessages := append(messages, summaryMessage)
+
+	res, err := h.options.Client.ChatCompletion(ctx,
+		llm.WithMessages(summaryMessages...),
+		llm.WithTools(), // No tools for summary
+	)
+	if err != nil {
+		// If summary call fails, emit a basic error event
+		if emitErr := emit(agent.NewEvent(agent.EventTypeError, &agent.ErrorData{
+			Message: fmt.Sprintf("Iteration budget exceeded (%d). Failed to generate summary: %v", h.options.MaxIterations, err),
+		})); emitErr != nil {
+			return errors.WithStack(emitErr)
+		}
+		return ErrIterationBudgetExceeded
+	}
+
+	// Emit the summary as a Complete event
+	summary := res.Message().Content()
+	if summary == "" {
+		summary = fmt.Sprintf("Iteration budget exceeded (%d). Unable to generate summary.", h.options.MaxIterations)
+	}
+
+	if err := emit(agent.NewEvent(agent.EventTypeComplete, &agent.CompleteData{
+		Message: summary,
 	})); err != nil {
 		return errors.WithStack(err)
 	}
 
-	return ErrIterationBudgetExceeded
+	return nil
+}
+
+// runPlanningStep makes one dedicated LLM call with only the TodoWrite tool exposed
+// and tool_choice=required, guaranteeing the model writes a plan before acting.
+func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, messages *[]llm.Message, emit agent.EmitFunc) error {
+	// Find the TodoWrite tool that was injected by the loop
+	var todoWriteTool llm.Tool
+	for _, t := range allTools {
+		if t.Name() == "TodoWrite" {
+			todoWriteTool = t
+			break
+		}
+	}
+	if todoWriteTool == nil {
+		// TodoWrite not present — nothing to force
+		return nil
+	}
+
+	slog.DebugContext(ctx, "running forced planning step")
+
+	planOpts := []llm.ChatCompletionOptionFunc{
+		llm.WithMessages(*messages...),
+		llm.WithTools(todoWriteTool),
+		llm.WithToolChoice(llm.ToolChoiceRequired),
+	}
+	if h.options.Reasoning != nil {
+		planOpts = append(planOpts, llm.WithReasoning(h.options.Reasoning))
+	}
+
+	res, err := h.options.Client.ChatCompletion(ctx, planOpts...)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	// Emit reasoning event if present
+	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
+		if reasoning := rr.Reasoning(); reasoning != "" || len(rr.ReasoningDetails()) > 0 {
+			agentDetails := make([]agent.ReasoningDetail, 0, len(rr.ReasoningDetails()))
+			for _, d := range rr.ReasoningDetails() {
+				agentDetails = append(agentDetails, agent.ReasoningDetail{
+					ID:        d.ID,
+					Type:      string(d.Type),
+					Text:      d.Text,
+					Summary:   d.Summary,
+					Data:      d.Data,
+					Format:    d.Format,
+					Index:     d.Index,
+					Signature: d.Signature,
+				})
+			}
+			if err := emit(agent.NewEvent(agent.EventTypeReasoning, &agent.ReasoningData{
+				Reasoning:        reasoning,
+				ReasoningDetails: agentDetails,
+			})); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+	}
+
+	// Execute the TodoWrite tool call(s) returned by the planning step
+	toolCalls := res.ToolCalls()
+	if len(toolCalls) == 0 {
+		// Model produced no tool call despite required — skip quietly
+		return nil
+	}
+
+	// Build the tool calls message, preserving reasoning for models that need it
+	var tcMsg llm.Message
+	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
+		if r := rr.Reasoning(); r != "" || len(rr.ReasoningDetails()) > 0 {
+			tcMsg = llm.NewReasoningToolCallsMessage(r, rr.ReasoningDetails(), toolCalls...)
+		}
+	}
+	if tcMsg == nil {
+		tcMsg = llm.NewToolCallsMessage(toolCalls...)
+	}
+	*messages = append(*messages, tcMsg)
+
+	for _, tc := range toolCalls {
+		if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
+			ID:         tc.ID(),
+			Name:       tc.Name(),
+			Parameters: tc.Parameters(),
+		})); err != nil {
+			return errors.WithStack(err)
+		}
+
+		result, execErr := executeTool(ctx, allTools, tc)
+		if execErr != nil {
+			result = execErr.Error()
+		}
+
+		toolResult := llm.NewToolResult(result)
+		toolMessage := llm.NewToolMessage(tc.ID(), toolResult)
+		*messages = append(*messages, toolMessage)
+
+		if err := emit(agent.NewEvent(agent.EventTypeToolCallDone, &agent.ToolCallDoneData{
+			ID:     tc.ID(),
+			Name:   tc.Name(),
+			Result: result,
+		})); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	return nil
 }
 
 // requiresApproval checks if a tool requires approval

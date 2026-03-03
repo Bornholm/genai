@@ -35,6 +35,17 @@ type StreamDelta interface {
 	ToolCalls() []ToolCallDelta
 }
 
+// ReasoningStreamDelta extends StreamDelta with reasoning content.
+// Callers can type-assert a StreamDelta to this interface to access
+// incremental reasoning tokens emitted during streaming.
+type ReasoningStreamDelta interface {
+	StreamDelta
+	// Reasoning returns the incremental reasoning text in this chunk.
+	Reasoning() string
+	// ReasoningDetails returns incremental reasoning detail blocks in this chunk.
+	ReasoningDetails() []ReasoningDetail
+}
+
 // ToolCallDelta represents incremental tool call data in streaming
 type ToolCallDelta interface {
 	Index() int
@@ -79,11 +90,13 @@ func (c *BaseStreamChunk) IsComplete() bool {
 
 var _ StreamChunk = &BaseStreamChunk{}
 
-// BaseStreamDelta provides a base implementation of StreamDelta
+// BaseStreamDelta provides a base implementation of StreamDelta and ReasoningStreamDelta
 type BaseStreamDelta struct {
-	role      Role
-	content   string
-	toolCalls []ToolCallDelta
+	role             Role
+	content          string
+	toolCalls        []ToolCallDelta
+	reasoning        string
+	reasoningDetails []ReasoningDetail
 }
 
 // Role implements StreamDelta
@@ -101,7 +114,18 @@ func (d *BaseStreamDelta) ToolCalls() []ToolCallDelta {
 	return d.toolCalls
 }
 
+// Reasoning implements ReasoningStreamDelta
+func (d *BaseStreamDelta) Reasoning() string {
+	return d.reasoning
+}
+
+// ReasoningDetails implements ReasoningStreamDelta
+func (d *BaseStreamDelta) ReasoningDetails() []ReasoningDetail {
+	return d.reasoningDetails
+}
+
 var _ StreamDelta = &BaseStreamDelta{}
+var _ ReasoningStreamDelta = &BaseStreamDelta{}
 
 // BaseToolCallDelta provides a base implementation of ToolCallDelta
 type BaseToolCallDelta struct {
@@ -166,6 +190,18 @@ func NewStreamDelta(role Role, content string, toolCalls ...ToolCallDelta) *Base
 		role:      role,
 		content:   content,
 		toolCalls: toolCalls,
+	}
+}
+
+// NewReasoningStreamDelta creates a new stream delta that also carries incremental
+// reasoning content. Use this when the provider returns reasoning tokens during streaming.
+func NewReasoningStreamDelta(role Role, content string, reasoning string, reasoningDetails []ReasoningDetail, toolCalls ...ToolCallDelta) *BaseStreamDelta {
+	return &BaseStreamDelta{
+		role:             role,
+		content:          content,
+		toolCalls:        toolCalls,
+		reasoning:        reasoning,
+		reasoningDetails: reasoningDetails,
 	}
 }
 

@@ -48,12 +48,25 @@ func main() {
 		log.Fatalf("%+v", errors.WithStack(err))
 	}
 
-	// Create a loop handler with tools
+	// Optional: enable reasoning tokens to improve multi-step tool-use quality.
+	// The model will think through the problem before each tool call, and that
+	// reasoning is automatically preserved across turns so it can pick up where
+	// it left off after receiving tool results.
+	//
+	// Use llm.ReasoningEffortHigh / llm.ReasoningEffortMedium / etc. to tune cost vs quality,
+	// or set MaxTokens directly for providers like Anthropic Claude:
+	//
+	//   reasoningOpts := &llm.ReasoningOptions{MaxTokens: llm.Ptr(8000)}
+	//
+	reasoningOpts := llm.NewReasoningOptions(llm.ReasoningEffortMedium)
+
+	// Create a loop handler with tools and reasoning enabled
 	handler, err := loop.NewHandler(
 		loop.WithClient(client),
 		loop.WithTools(tools...),
 		loop.WithSystemPrompt(systemPrompt),
-		loop.WithMaxIterations(10),
+		loop.WithMaxIterations(5),
+		loop.WithReasoningOptions(reasoningOpts),
 	)
 	if err != nil {
 		log.Fatalf("%+v", errors.WithStack(err))
@@ -81,6 +94,14 @@ func main() {
 		case agent.EventTypeTodoUpdated:
 			data := evt.Data().(*agent.TodoUpdatedData)
 			fmt.Printf("--- Todo Updated: %v\n", data.Items)
+		case agent.EventTypeReasoning:
+			data := evt.Data().(*agent.ReasoningData)
+			// Truncate for display — reasoning can be very long
+			preview := data.Reasoning
+			if len(preview) > 200 {
+				preview = preview[:200] + "…"
+			}
+			fmt.Printf("--- Reasoning (%d detail blocks): %s\n", len(data.ReasoningDetails), preview)
 		case agent.EventTypeError:
 			data := evt.Data().(*agent.ErrorData)
 			fmt.Printf("--- Error: %s\n", data.Message)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+
+	"github.com/bornholm/genai/llm/provider/openrouter"
 )
 
 // Server implements the A2A HTTP server
@@ -87,7 +89,9 @@ func (s *Server) handleTasksSend(w http.ResponseWriter, r *http.Request, req JSO
 		return
 	}
 
-	task, err := s.handler.HandleTask(r.Context(), params)
+	ctx := openrouter.WithTransforms(r.Context(), []string{openrouter.TransformMiddleOut})
+
+	task, err := s.handler.HandleTask(ctx, params)
 	if err != nil {
 		writeJSONRPCError(w, req.ID, NewInternalError(err.Error()))
 		return
@@ -117,7 +121,9 @@ func (s *Server) handleTasksSendSubscribe(w http.ResponseWriter, r *http.Request
 	events := make(chan any, 32)
 
 	go func() {
-		if err := s.handler.HandleTaskSubscribe(r.Context(), params, events); err != nil {
+		ctx := openrouter.WithTransforms(r.Context(), []string{openrouter.TransformMiddleOut})
+
+		if err := s.handler.HandleTaskSubscribe(ctx, params, events); err != nil {
 			slog.Error("HandleTaskSubscribe failed", "error", err)
 		}
 	}()
