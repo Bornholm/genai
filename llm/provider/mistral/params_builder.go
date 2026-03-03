@@ -24,9 +24,10 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 		genai.ConfigureTools,
 		genai.ConfigureTemperature,
 		genai.ConfigureResponseFormat,
-		genai.ConfigureMessages,
+		ConfigureMistralMessages,
 		genai.ConfigureMaxCompletionTokens,
 		configureRandomSeed,
+		configurePromptMode,
 	)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -47,5 +48,29 @@ func configureRandomSeed(ctx context.Context, opts *llm.ChatCompletionOptions, p
 	params.WithExtraFields(map[string]any{
 		"random_seed": *opts.Seed,
 	})
+	return nil
+}
+
+// promptMode represents the Mistral prompt_mode parameter
+type promptMode string
+
+const (
+	promptModeReasoning promptMode = "reasoning"
+)
+
+// configurePromptMode adds the prompt_mode parameter for Mistral reasoning models.
+// This controls whether the default reasoning system prompt is used.
+// By default, reasoning models use the "reasoning" prompt_mode.
+// Set prompt_mode to "null" to opt out of the default system prompt.
+func configurePromptMode(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
+	// Check if reasoning options are set - if so, use reasoning prompt_mode
+	// If users want to opt out, they would need to set extra_fields manually
+	// For now, we default to "reasoning" for reasoning models
+	if opts.Reasoning != nil {
+		params.WithExtraFields(map[string]any{
+			"prompt_mode": string(promptModeReasoning),
+		})
+	}
+
 	return nil
 }

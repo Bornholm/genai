@@ -65,7 +65,7 @@ func main() {
 		loop.WithClient(client),
 		loop.WithTools(tools...),
 		loop.WithSystemPrompt(systemPrompt),
-		loop.WithMaxIterations(5),
+		loop.WithMaxIterations(10),
 		loop.WithReasoningOptions(reasoningOpts),
 	)
 	if err != nil {
@@ -96,12 +96,7 @@ func main() {
 			fmt.Printf("--- Todo Updated: %v\n", data.Items)
 		case agent.EventTypeReasoning:
 			data := evt.Data().(*agent.ReasoningData)
-			// Truncate for display — reasoning can be very long
-			preview := data.Reasoning
-			if len(preview) > 200 {
-				preview = preview[:200] + "…"
-			}
-			fmt.Printf("--- Reasoning (%d detail blocks): %s\n", len(data.ReasoningDetails), preview)
+			fmt.Printf("--- Reasoning: %s\n", data.Reasoning)
 		case agent.EventTypeError:
 			data := evt.Data().(*agent.ErrorData)
 			fmt.Printf("--- Error: %s\n", data.Message)

@@ -27,7 +27,7 @@ func init() {
 			options...,
 		)
 
-		return genai.NewChatCompletionClient(client, &paramsBuilder{
+		return NewChatCompletionClient(client, &paramsBuilder{
 			model: opts.Model,
 		}), nil
 	})
