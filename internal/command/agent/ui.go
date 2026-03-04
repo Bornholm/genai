@@ -175,7 +175,7 @@ func renderReasoning(data *agent.ReasoningData) string {
 
 	timestamp := timeStyle.Render(formatTime(time.Now()))
 	header := reasoningStyle.Render("🤔 Reasoning")
-	reasoning := data.Reasoning
+	reasoning := strings.TrimSpace(data.Reasoning)
 
 	return fmt.Sprintf("\n%s %s\n\n%s\n", timestamp, header, reasoningStyle.Render(reasoning))
 }

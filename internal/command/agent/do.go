@@ -31,154 +31,15 @@ func Do() *cli.Command {
 	return &cli.Command{
 		Name:  "do",
 		Usage: "Execute the given task with an agent",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:     "task",
-				Usage:    "Description of the task to execute (text format, or @file to load from file)",
-				EnvVars:  []string{"GENAI_TASK"},
-				Required: true,
-			},
-			&cli.StringFlag{
-				Name:    "task-data",
-				Usage:   "Data to inject in the task prompt (JSON format, or @file to load from file)",
-				EnvVars: []string{"GENAI_TASK_DATA"},
-			},
-			&cli.StringFlag{
-				Name:    "additional-context",
-				Usage:   "Additional context to pass to the agent (text format, or @file to load from file)",
-				EnvVars: []string{"GENAI_ADDITIONAL_CONTEXT"},
-			},
-			&cli.StringFlag{
-				Name:    "additional-context-data",
-				Usage:   "Data to inject in the additional context (text format, or @file to load from file)",
-				EnvVars: []string{"GENAI_ADDITIONAL_CONTEXT_DATA"},
-			},
-			&cli.StringFlag{
-				Name:    "schema",
-				Usage:   "JSON schema file path for structured response",
-				EnvVars: []string{"GENAI_SCHEMA"},
-			},
-			&cli.StringFlag{
-				Name:      "env-file",
-				Usage:     "Environment file path",
-				EnvVars:   []string{"GENAI_LLM_ENV_FILE"},
-				Value:     ".env",
-				TakesFile: true,
-			},
-			&cli.StringFlag{
-				Name:    "env-prefix",
-				Usage:   "Environment llm variables prefix",
-				EnvVars: []string{"GENAI_LLM_ENV_PREFIX"},
-				Value:   "GENAI_",
-			},
-			&cli.StringSliceFlag{
-				Name:    "mcp",
-				Usage:   "MCP server URL",
-				EnvVars: []string{"GENAI_MCP"},
-			},
-			&cli.StringSliceFlag{
-				Name:    "mcp-auth-token",
-				Usage:   "MCP server auth token",
-				EnvVars: []string{"GENAI_MCP_AUTH_TOKEN"},
-			},
-			&cli.StringFlag{
-				Name:    "output",
-				Aliases: []string{"o"},
-				Usage:   "Output file path (default: stdout)",
-				EnvVars: []string{"GENAI_OUTPUT"},
-			},
-			&cli.IntFlag{
-				Name:    "max-iterations",
-				Usage:   "Define the maximum number of iterations for the agent to make",
-				Value:   100,
-				EnvVars: []string{"GENAI_MAX_ITERATIONS"},
-			},
-			&cli.StringSliceFlag{
-				Name:      "attachment",
-				Aliases:   []string{"a"},
-				Usage:     "File attachments to pass to the agent (supports images, documents, etc.)",
-				EnvVars:   []string{"GENAI_ATTACHMENTS"},
-				TakesFile: true,
-			},
-			&cli.BoolFlag{
-				Name:    "a2a",
-				Usage:   "Enable A2A agent discovery to use discovered agents as tools",
-				EnvVars: []string{"GENAI_A2A"},
-				Value:   false,
-			},
-			&cli.BoolFlag{
-				Name:    "no-planning",
-				Usage:   "Disable the forced TodoWrite planning step at the start of the task (planning is enabled by default)",
-				EnvVars: []string{"GENAI_NO_PLANNING"},
-				Value:   false,
-			},
-			&cli.DurationFlag{
-				Name:    "a2a-discovery-delay",
-				Usage:   "Duration to wait for A2A agent discovery before starting the task",
-				EnvVars: []string{"GENAI_A2A_DISCOVERY_DELAY"},
-				Value:   5 * time.Second,
-			},
-			&cli.StringFlag{
-				Name:    "reasoning-effort",
-				Usage:   "Reasoning effort level: xhigh, high, medium, low, minimal, none (mutually exclusive with --reasoning-max-tokens)",
-				EnvVars: []string{"GENAI_REASONING_EFFORT"},
-				Value:   string(llm.ReasoningEffortMedium),
-			},
-			&cli.IntFlag{
-				Name:    "reasoning-max-tokens",
-				Usage:   "Maximum number of tokens to use for reasoning (mutually exclusive with --reasoning-effort)",
-				EnvVars: []string{"GENAI_REASONING_MAX_TOKENS"},
-				Value:   0,
-			},
-			&cli.BoolFlag{
-				Name:    "unattended",
-				Usage:   "Disable interactive UI output, fall back to slog for logging",
-				EnvVars: []string{"GENAI_UNATTENDED"},
-				Value:   false,
-			},
-			&cli.IntFlag{
-				Name:    "max-tokens",
-				Usage:   "Maximum number of tokens for context window management (use 0 for default: 80000)",
-				EnvVars: []string{"GENAI_MAX_TOKENS"},
-				Value:   0,
-			},
-			&cli.IntFlag{
-				Name:    "max-tool-result-tokens",
-				Usage:   "Maximum tokens per tool result to prevent context overflow (use 0 for default: 10000)",
-				EnvVars: []string{"GENAI_MAX_TOOL_RESULT_TOKENS"},
-				Value:   0,
-			},
-			&cli.IntFlag{
-				Name:    "token-limit-chat-completion",
-				Usage:   "Maximum tokens per minute for chat completion (0 to disable)",
-				EnvVars: []string{"GENAI_TOKEN_LIMIT_CHAT_COMPLETION"},
-				Value:   500000,
-			},
-			&cli.IntFlag{
-				Name:    "token-limit-embeddings",
-				Usage:   "Maximum tokens per minute for embeddings (0 to disable)",
-				EnvVars: []string{"GENAI_TOKEN_LIMIT_EMBEDDINGS"},
-				Value:   20000000,
-			},
-		},
+		Flags: common.DoFlags,
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
 
 			envPrefix := cliCtx.String("env-prefix")
 			envFile := cliCtx.String("env-file")
 
-			// Build token limit options
-			var tokenLimitOpts *common.TokenLimitOptions
-			chatCompletionLimit := cliCtx.Int("token-limit-chat-completion")
-			embeddingsLimit := cliCtx.Int("token-limit-embeddings")
-			if chatCompletionLimit > 0 || embeddingsLimit > 0 {
-				tokenLimitOpts = &common.TokenLimitOptions{
-					ChatCompletionTokens:   chatCompletionLimit,
-					ChatCompletionInterval: time.Minute,
-					EmbeddingsTokens:       embeddingsLimit,
-					EmbeddingsInterval:     time.Minute,
-				}
-			}
+			// Build token limit options using shared helper
+			tokenLimitOpts := common.TokenLimitOptionsFromContext(cliCtx)
 
 			client, err := common.NewResilientClient(ctx, envPrefix, envFile, tokenLimitOpts)
 			if err != nil {
