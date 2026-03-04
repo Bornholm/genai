@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/bornholm/genai/llm"
-	"github.com/davecgh/go-spew/spew"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/pkg/errors"
@@ -43,8 +42,6 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
 	if err != nil {
 		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
-			spew.Dump(httpRes.Header)
-
 			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
 		}
 

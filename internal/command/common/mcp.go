@@ -3,6 +3,7 @@ package common
 import (
 	"log/slog"
 	"net/url"
+	"strings"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/mcp"
@@ -30,10 +31,10 @@ func GetMCPTools(ctx *cli.Context, mcpURLParam string, mcpAuthParam string) ([]l
 
 	for i, u := range mcpURLs {
 		var c mcp.Client
-		if _, err := url.ParseRequestURI(u); err == nil {
+		if url, err := url.ParseRequestURI(u); err == nil && strings.HasPrefix(url.Scheme, "http") {
 			opts := []http.OptionFunc{}
 
-			if len(mcpAuths) >= i {
+			if len(mcpAuths) > i {
 				opts = append(opts, http.WithAuthToken(mcpAuths[i]))
 			}
 

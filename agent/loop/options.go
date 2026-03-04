@@ -14,7 +14,12 @@ func WithReasoningOptions(opts *llm.ReasoningOptions) OptionFunc {
 
 const (
 	DefaultMaxIterations = 100
-	DefaultMaxTokens     = 120000
+	// DefaultMaxTokens is set to 80000 to leave a safety margin for:
+	// - Models with smaller context windows (e.g., Mistral's 131072)
+	// - Token estimation errors (rough heuristic)
+	// - Budget message overhead (~50 tokens per iteration)
+	// - Response generation tokens
+	DefaultMaxTokens = 80000
 )
 
 // TruncationStrategy is a function that takes messages and returns a truncated list or an error
@@ -22,11 +27,14 @@ type TruncationStrategy func(messages []llm.Message) ([]llm.Message, error)
 
 // Options contains configuration for the loop handler
 type Options struct {
-	Client              llm.ChatCompletionClient
-	Tools               []llm.Tool
-	SystemPrompt        string
-	MaxIterations       int
-	MaxTokens           int
+	Client        llm.ChatCompletionClient
+	Tools         []llm.Tool
+	SystemPrompt  string
+	MaxIterations int
+	MaxTokens     int
+	// MaxToolResultTokens limits the size of tool results to prevent context overflow.
+	// If 0, defaults to 10000 tokens (~40000 chars).
+	MaxToolResultTokens int
 	TokenEstimator      func(string) int
 	TruncationStrategy  TruncationStrategy
 	ApprovalFunc        ApprovalFunc
@@ -75,6 +83,13 @@ func WithMaxIterations(max int) OptionFunc {
 func WithMaxTokens(max int) OptionFunc {
 	return func(o *Options) {
 		o.MaxTokens = max
+	}
+}
+
+// WithMaxToolResultTokens sets the maximum number of tokens for tool results
+func WithMaxToolResultTokens(max int) OptionFunc {
+	return func(o *Options) {
+		o.MaxToolResultTokens = max
 	}
 }
 
@@ -131,12 +146,13 @@ func WithForcePlanningStep(enabled bool) OptionFunc {
 // NewOptions creates a new Options with defaults
 func NewOptions(funcs ...OptionFunc) *Options {
 	opts := &Options{
-		MaxIterations:     DefaultMaxIterations,
-		MaxTokens:         DefaultMaxTokens,
-		Tools:             []llm.Tool{},
-		TokenEstimator:    defaultTokenEstimator,
-		ApprovalRequired:  make(map[string]bool),
-		ForcePlanningStep: false,
+		MaxIterations:       DefaultMaxIterations,
+		MaxTokens:           DefaultMaxTokens,
+		MaxToolResultTokens: 10000, // Default to 10K tokens per tool result
+		Tools:               []llm.Tool{},
+		TokenEstimator:      defaultTokenEstimator,
+		ApprovalRequired:    make(map[string]bool),
+		ForcePlanningStep:   false,
 	}
 	for _, fn := range funcs {
 		fn(opts)

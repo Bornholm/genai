@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bornholm/genai/internal/command/common"
 	"github.com/bornholm/genai/llm"
@@ -81,6 +82,18 @@ func Generate() *cli.Command {
 				Usage:   "Output file path (default: stdout)",
 				EnvVars: []string{"GENAI_OUTPUT"},
 			},
+			&cli.IntFlag{
+				Name:    "token-limit-chat-completion",
+				Usage:   "Maximum tokens per minute for chat completion (0 to disable)",
+				EnvVars: []string{"GENAI_TOKEN_LIMIT_CHAT_COMPLETION"},
+				Value:   500000,
+			},
+			&cli.IntFlag{
+				Name:    "token-limit-embeddings",
+				Usage:   "Maximum tokens per minute for embeddings (0 to disable)",
+				EnvVars: []string{"GENAI_TOKEN_LIMIT_EMBEDDINGS"},
+				Value:   20000000,
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
@@ -88,7 +101,20 @@ func Generate() *cli.Command {
 			envPrefix := cliCtx.String("env-prefix")
 			envFile := cliCtx.String("env-file")
 
-			client, err := common.NewResilientClient(ctx, envPrefix, envFile)
+			// Build token limit options
+			var tokenLimitOpts *common.TokenLimitOptions
+			chatCompletionLimit := cliCtx.Int("token-limit-chat-completion")
+			embeddingsLimit := cliCtx.Int("token-limit-embeddings")
+			if chatCompletionLimit > 0 || embeddingsLimit > 0 {
+				tokenLimitOpts = &common.TokenLimitOptions{
+					ChatCompletionTokens:   chatCompletionLimit,
+					ChatCompletionInterval: time.Minute,
+					EmbeddingsTokens:       embeddingsLimit,
+					EmbeddingsInterval:     time.Minute,
+				}
+			}
+
+			client, err := common.NewResilientClient(ctx, envPrefix, envFile, tokenLimitOpts)
 			if err != nil {
 				return errors.Wrap(err, "failed to create llm client")
 			}

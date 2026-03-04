@@ -130,6 +130,36 @@ func Do() *cli.Command {
 				EnvVars: []string{"GENAI_REASONING_MAX_TOKENS"},
 				Value:   0,
 			},
+			&cli.BoolFlag{
+				Name:    "unattended",
+				Usage:   "Disable interactive UI output, fall back to slog for logging",
+				EnvVars: []string{"GENAI_UNATTENDED"},
+				Value:   false,
+			},
+			&cli.IntFlag{
+				Name:    "max-tokens",
+				Usage:   "Maximum number of tokens for context window management (use 0 for default: 80000)",
+				EnvVars: []string{"GENAI_MAX_TOKENS"},
+				Value:   0,
+			},
+			&cli.IntFlag{
+				Name:    "max-tool-result-tokens",
+				Usage:   "Maximum tokens per tool result to prevent context overflow (use 0 for default: 10000)",
+				EnvVars: []string{"GENAI_MAX_TOOL_RESULT_TOKENS"},
+				Value:   0,
+			},
+			&cli.IntFlag{
+				Name:    "token-limit-chat-completion",
+				Usage:   "Maximum tokens per minute for chat completion (0 to disable)",
+				EnvVars: []string{"GENAI_TOKEN_LIMIT_CHAT_COMPLETION"},
+				Value:   500000,
+			},
+			&cli.IntFlag{
+				Name:    "token-limit-embeddings",
+				Usage:   "Maximum tokens per minute for embeddings (0 to disable)",
+				EnvVars: []string{"GENAI_TOKEN_LIMIT_EMBEDDINGS"},
+				Value:   20000000,
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
@@ -137,7 +167,20 @@ func Do() *cli.Command {
 			envPrefix := cliCtx.String("env-prefix")
 			envFile := cliCtx.String("env-file")
 
-			client, err := common.NewResilientClient(ctx, envPrefix, envFile)
+			// Build token limit options
+			var tokenLimitOpts *common.TokenLimitOptions
+			chatCompletionLimit := cliCtx.Int("token-limit-chat-completion")
+			embeddingsLimit := cliCtx.Int("token-limit-embeddings")
+			if chatCompletionLimit > 0 || embeddingsLimit > 0 {
+				tokenLimitOpts = &common.TokenLimitOptions{
+					ChatCompletionTokens:   chatCompletionLimit,
+					ChatCompletionInterval: time.Minute,
+					EmbeddingsTokens:       embeddingsLimit,
+					EmbeddingsInterval:     time.Minute,
+				}
+			}
+
+			client, err := common.NewResilientClient(ctx, envPrefix, envFile, tokenLimitOpts)
 			if err != nil {
 				return errors.Wrap(err, "failed to create llm client")
 			}
@@ -241,6 +284,18 @@ func Do() *cli.Command {
 				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
 				loop.WithForcePlanningStep(!cliCtx.Bool("no-planning")),
 			}
+
+			// Apply max-tokens if specified (0 means use default)
+			maxTokens := cliCtx.Int("max-tokens")
+			if maxTokens > 0 {
+				loopOpts = append(loopOpts, loop.WithMaxTokens(maxTokens))
+			}
+
+			// Apply max-tool-result-tokens if specified (0 means use default)
+			maxToolResultTokens := cliCtx.Int("max-tool-result-tokens")
+			if maxToolResultTokens > 0 {
+				loopOpts = append(loopOpts, loop.WithMaxToolResultTokens(maxToolResultTokens))
+			}
 			if reasoningOpts != nil {
 				loopOpts = append(loopOpts, loop.WithReasoningOptions(reasoningOpts))
 			}
@@ -255,32 +310,50 @@ func Do() *cli.Command {
 
 			ctx = openrouter.WithTransforms(ctx, []string{openrouter.TransformMiddleOut})
 
+			// Determine if we should use UI mode
+			unattended := cliCtx.Bool("unattended")
+
 			// Run the agent
 			var result string
 			err = runner.Run(ctx, agent.NewInput(taskPrompt, attachments...), func(evt agent.Event) error {
-				switch evt.Type() {
-				case agent.EventTypeComplete:
-					data := evt.Data().(*agent.CompleteData)
-					result = data.Message
-					slog.InfoContext(ctx, "agent completed", slog.String("message", data.Message))
-				case agent.EventTypeToolCallStart:
-					data := evt.Data().(*agent.ToolCallStartData)
-					slog.InfoContext(ctx, "tool call started", slog.String("name", data.Name), slog.Any("params", data.Parameters))
-				case agent.EventTypeToolCallDone:
-					data := evt.Data().(*agent.ToolCallDoneData)
-					slog.DebugContext(ctx, "tool call completed", slog.String("name", data.Name), slog.String("result", data.Result))
-				case agent.EventTypeTodoUpdated:
-					data := evt.Data().(*agent.TodoUpdatedData)
-					slog.InfoContext(ctx, "todo list updated", slog.Any("items", data.Items))
-				case agent.EventTypeReasoning:
-					data := evt.Data().(*agent.ReasoningData)
-					slog.InfoContext(ctx, "reasoning tokens received",
-						slog.String("reasoning", data.Reasoning),
-						slog.Int("details", len(data.ReasoningDetails)),
-					)
-				case agent.EventTypeError:
-					data := evt.Data().(*agent.ErrorData)
-					slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))
+				if unattended {
+					// Use slog for logging in unattended mode
+					switch evt.Type() {
+					case agent.EventTypeComplete:
+						data := evt.Data().(*agent.CompleteData)
+						result = data.Message
+						slog.InfoContext(ctx, "agent completed", slog.String("message", data.Message))
+					case agent.EventTypeToolCallStart:
+						data := evt.Data().(*agent.ToolCallStartData)
+						slog.InfoContext(ctx, "tool call started", slog.String("name", data.Name), slog.Any("params", data.Parameters))
+					case agent.EventTypeToolCallDone:
+						data := evt.Data().(*agent.ToolCallDoneData)
+						slog.DebugContext(ctx, "tool call completed", slog.String("name", data.Name), slog.String("result", data.Result))
+					case agent.EventTypeTodoUpdated:
+						data := evt.Data().(*agent.TodoUpdatedData)
+						slog.InfoContext(ctx, "todo list updated", slog.Any("items", data.Items))
+					case agent.EventTypeReasoning:
+						data := evt.Data().(*agent.ReasoningData)
+						slog.InfoContext(ctx, "reasoning tokens received",
+							slog.String("reasoning", data.Reasoning),
+							slog.Int("details", len(data.ReasoningDetails)),
+						)
+					case agent.EventTypeError:
+						data := evt.Data().(*agent.ErrorData)
+						slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))
+					}
+				} else {
+					// Use lipgloss UI for output in interactive mode
+					output := RenderEvent(evt)
+					if output != "" {
+						fmt.Println(output)
+					}
+
+					// Store result when complete
+					if evt.Type() == agent.EventTypeComplete {
+						data := evt.Data().(*agent.CompleteData)
+						result = data.Message
+					}
 				}
 				return nil
 			})

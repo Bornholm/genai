@@ -184,6 +184,9 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 				}
 			}
 
+			// Truncate tool result if too large to prevent context overflow
+			result = h.truncateToolResult(result)
+
 			// Create tool result and append to messages
 			toolResult := llm.NewToolResult(result)
 			toolMessage := llm.NewToolMessage(tc.ID(), toolResult)
@@ -404,6 +407,39 @@ func MustNewHandler(funcs ...OptionFunc) *Handler {
 		panic(err)
 	}
 	return h
+}
+
+// truncateToolResult truncates the tool result if it exceeds the max tool result tokens
+func (h *Handler) truncateToolResult(result string) string {
+	maxTokens := h.options.MaxToolResultTokens
+	if maxTokens <= 0 {
+		return result
+	}
+
+	// Estimate tokens using the token estimator
+	estimatedTokens := h.options.TokenEstimator(result)
+	if estimatedTokens <= maxTokens {
+		return result
+	}
+
+	// Calculate the max characters based on the token estimator ratio
+	// If we estimate 1 token per 4 chars, then maxChars = maxTokens * 4
+	maxChars := maxTokens * 4
+
+	// Ensure we have enough room for the truncation notice
+	truncationNotice := "\n\n[Output truncated due to size. Showing first %d characters.]"
+	noticeLen := len(fmt.Sprintf(truncationNotice, maxChars))
+	if maxChars > noticeLen+10 {
+		maxChars -= noticeLen
+	} else {
+		maxChars = 1000 // Minimum
+	}
+
+	if len(result) > maxChars {
+		result = result[:maxChars] + fmt.Sprintf(truncationNotice, maxChars)
+	}
+
+	return result
 }
 
 var _ agent.Handler = &Handler{}

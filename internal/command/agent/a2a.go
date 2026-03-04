@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/bornholm/genai/a2a"
 	"github.com/bornholm/genai/a2a/discovery"
@@ -123,6 +124,18 @@ func A2A() *cli.Command {
 				Usage:   "UUIDs of agents to ignore (can be specified multiple times)",
 				EnvVars: []string{"A2A_IGNORE"},
 			},
+			&cli.IntFlag{
+				Name:    "token-limit-chat-completion",
+				Usage:   "Maximum tokens per minute for chat completion (0 to disable)",
+				EnvVars: []string{"GENAI_TOKEN_LIMIT_CHAT_COMPLETION"},
+				Value:   500000,
+			},
+			&cli.IntFlag{
+				Name:    "token-limit-embeddings",
+				Usage:   "Maximum tokens per minute for embeddings (0 to disable)",
+				EnvVars: []string{"GENAI_TOKEN_LIMIT_EMBEDDINGS"},
+				Value:   20000000,
+			},
 		},
 		Action: func(cliCtx *cli.Context) error {
 			ctx, cancel := signal.NotifyContext(cliCtx.Context, os.Interrupt, syscall.SIGTERM)
@@ -131,8 +144,21 @@ func A2A() *cli.Command {
 			envPrefix := cliCtx.String("env-prefix")
 			envFile := cliCtx.String("env-file")
 
+			// Build token limit options
+			var tokenLimitOpts *common.TokenLimitOptions
+			chatCompletionLimit := cliCtx.Int("token-limit-chat-completion")
+			embeddingsLimit := cliCtx.Int("token-limit-embeddings")
+			if chatCompletionLimit > 0 || embeddingsLimit > 0 {
+				tokenLimitOpts = &common.TokenLimitOptions{
+					ChatCompletionTokens:   chatCompletionLimit,
+					ChatCompletionInterval: time.Minute,
+					EmbeddingsTokens:       embeddingsLimit,
+					EmbeddingsInterval:     time.Minute,
+				}
+			}
+
 			// Build LLM client using the same infrastructure as "agent do"
-			llmClient, err := common.NewResilientClient(ctx, envPrefix, envFile)
+			llmClient, err := common.NewResilientClient(ctx, envPrefix, envFile, tokenLimitOpts)
 			if err != nil {
 				return errors.Wrap(err, "failed to create LLM client")
 			}
