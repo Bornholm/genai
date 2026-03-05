@@ -8,14 +8,14 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-func WriteToOutput(ctx cli.Context, param string, content string) error {
+func WriteToOutput(ctx *cli.Context, param string, content string, unattended bool) error {
 	// Output the response
 	if outputPath := ctx.String(param); outputPath != "" {
 		err := os.WriteFile(outputPath, []byte(content), 0644)
 		if err != nil {
 			return errors.Wrap(err, "failed to write output file")
 		}
-	} else {
+	} else if !unattended {
 		fmt.Print(content)
 	}
 

@@ -146,7 +146,7 @@ func Generate() *cli.Command {
 				return errors.Wrap(err, "failed to generate completion")
 			}
 
-			if err := common.WriteToOutput(*cliCtx, "output", response.Message().Content()); err != nil {
+			if err := common.WriteToOutput(cliCtx, "output", response.Message().Content(), false); err != nil {
 				return errors.Wrap(err, "failed to write to output")
 			}
 

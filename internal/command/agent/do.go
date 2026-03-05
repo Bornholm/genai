@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"log/slog"
 	"mime"
 	"os"
@@ -220,10 +219,10 @@ func Do() *cli.Command {
 			})
 
 			if err != nil {
-				log.Fatalf("%+v", errors.WithStack(err))
+				return errors.WithStack(err)
 			}
 
-			if err := common.WriteToOutput(*cliCtx, "output", result); err != nil {
+			if err := common.WriteToOutput(cliCtx, "output", result, unattended); err != nil {
 				return errors.Wrap(err, "failed to write to output")
 			}
 
