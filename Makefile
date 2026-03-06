@@ -17,6 +17,9 @@ run-with-env: .env
 release:
 	goreleaser $(GORELEASER_ARGS)
 
+test:
+	$(MAKE) run-with-env CMD="go test -v ./..."
+
 tools/modd/bin/modd:
 	mkdir -p tools/modd/bin
 	GOBIN=$(PWD)/tools/modd/bin go install github.com/cortesi/modd/cmd/modd@latest
