@@ -41,17 +41,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
 	if err != nil {
-		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
-			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
-		}
-
-		if httpRes != nil && httpRes.Body != nil {
-			body, readdErr := io.ReadAll(httpRes.Body)
-			if readdErr != nil {
-				return nil, errors.WithStack(err)
-			}
-
-			return nil, errors.Wrapf(err, "%s", body)
+		if httpRes != nil {
+			body, _ := io.ReadAll(httpRes.Body)
+			return nil, errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body)))
 		}
 
 		return nil, errors.WithStack(err)
@@ -158,8 +150,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		if err := stream.Err(); err != nil {
-			if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
-				chunks <- llm.NewErrorStreamChunk(errors.Wrap(llm.ErrRateLimit, err.Error()))
+			if httpRes != nil {
+				body, _ := io.ReadAll(httpRes.Body)
+				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body))))
 			} else {
 				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
 			}

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"sync/atomic"
@@ -35,18 +36,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	completion, err := c.client.Chat.Completions.New(ctx, *params, option.WithResponseInto(&httpRes))
 	if err != nil {
-		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
-			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
-		}
-
-		if httpRes != nil && httpRes.Body != nil {
-
-			body, readdErr := io.ReadAll(httpRes.Body)
-			if readdErr != nil {
-				return nil, errors.WithStack(err)
-			}
-
-			return nil, errors.Wrapf(err, "%s", body)
+		if httpRes != nil {
+			body, _ := io.ReadAll(httpRes.Body)
+			return nil, errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body)))
 		}
 
 		return nil, errors.WithStack(err)
@@ -58,7 +50,17 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	openaiMessage := completion.Choices[0].Message
 
-	var message llm.Message = llm.NewMessage(llm.RoleAssistant, openaiMessage.Content)
+	var reasoning string
+	if rf, ok := openaiMessage.JSON.ExtraFields["reasoning_content"]; ok {
+		_ = json.Unmarshal([]byte(rf.Raw()), &reasoning)
+	}
+
+	var message llm.Message
+	if reasoning != "" {
+		message = llm.NewAssistantReasoningMessage(openaiMessage.Content, reasoning, nil)
+	} else {
+		message = llm.NewMessage(llm.RoleAssistant, openaiMessage.Content)
+	}
 
 	toolCalls := make([]llm.ToolCall, 0)
 
@@ -68,6 +70,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	usage := llm.NewChatCompletionUsage(completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
 
+	if reasoning != "" {
+		return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, nil, toolCalls...), nil
+	}
 	return llm.NewChatCompletionResponse(message, usage, toolCalls...), nil
 }
 
@@ -145,18 +150,35 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				))
 			}
 
-			streamDelta := llm.NewStreamDelta(
-				llm.RoleAssistant,
-				delta.Content,
-				toolCallDeltas...,
-			)
+			var reasoning string
+			if rf, ok := delta.JSON.ExtraFields["reasoning_content"]; ok {
+				_ = json.Unmarshal([]byte(rf.Raw()), &reasoning)
+			}
+
+			var streamDelta llm.StreamDelta
+			if reasoning != "" {
+				streamDelta = llm.NewReasoningStreamDelta(
+					llm.RoleAssistant,
+					delta.Content,
+					reasoning,
+					nil,
+					toolCallDeltas...,
+				)
+			} else {
+				streamDelta = llm.NewStreamDelta(
+					llm.RoleAssistant,
+					delta.Content,
+					toolCallDeltas...,
+				)
+			}
 
 			chunks <- llm.NewStreamChunk(streamDelta)
 		}
 
 		if err := stream.Err(); err != nil {
-			if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
-				chunks <- llm.NewErrorStreamChunk(errors.Wrap(llm.ErrRateLimit, err.Error()))
+			if httpRes != nil {
+				body, _ := io.ReadAll(httpRes.Body)
+				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body))))
 			} else {
 				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
 			}

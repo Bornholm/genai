@@ -2,7 +2,6 @@ package openrouter
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 	"sync/atomic"
 
@@ -396,9 +395,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	if err != nil {
 		var reqErr *openrouter.RequestError
 		if errors.As(err, &reqErr) {
-			if reqErr.HTTPStatusCode == http.StatusTooManyRequests {
-				return nil, errors.WithStack(llm.ErrRateLimit)
-			}
+			return nil, errors.WithStack(llm.NewHTTPError(reqErr.HTTPStatusCode, reqErr.Error()))
 		}
 
 		return nil, errors.WithStack(err)
@@ -551,10 +548,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err != nil {
 			var reqErr *openrouter.RequestError
 			if errors.As(err, &reqErr) {
-				if reqErr.HTTPStatusCode == http.StatusTooManyRequests {
-					chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.ErrRateLimit))
-					return
-				}
+				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.NewHTTPError(reqErr.HTTPStatusCode, reqErr.Error())))
+				return
 			}
 			chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
 			return

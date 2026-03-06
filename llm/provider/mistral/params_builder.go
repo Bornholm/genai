@@ -27,6 +27,7 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 		ConfigureMistralMessages,
 		genai.ConfigureMaxCompletionTokens,
 		configureRandomSeed,
+		genai.ConfigureReasoning,
 		configurePromptMode,
 	)
 	if err != nil {

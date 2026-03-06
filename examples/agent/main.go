@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -19,12 +20,22 @@ import (
 	"github.com/bornholm/genai/llm/provider/env"
 )
 
+var (
+	envFile string = ".env"
+)
+
+func init() {
+	flag.StringVar(&envFile, "env-file", envFile, "client configuration environment file")
+}
+
 func main() {
+	flag.Parse()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	// Create a LLM chat completion client
-	client, err := provider.Create(ctx, env.With("GENAI_", ".env"))
+	client, err := provider.Create(ctx, env.With("GENAI_", envFile))
 	if err != nil {
 		log.Fatalf("%+v", errors.WithStack(err))
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"time"
 
@@ -18,11 +19,20 @@ import (
 	"github.com/bornholm/genai/llm/provider/env"
 )
 
+var (
+	envFile string = ".env"
+)
+
+func init() {
+	flag.StringVar(&envFile, "env-file", envFile, "client configuration environment file")
+}
+
 func main() {
+	flag.Parse()
 	ctx := context.Background()
 
 	// Create a basic client
-	baseClient, err := provider.Create(ctx, env.With("GENAI_", ".env"))
+	baseClient, err := provider.Create(ctx, env.With("GENAI_", envFile))
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)
 	}

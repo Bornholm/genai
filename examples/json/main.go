@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 
 	"github.com/bornholm/genai/llm"
@@ -36,11 +37,20 @@ type Response struct {
 	TaskPlan TaskPlan `json:"taskPlan" jsonschema:"required,description=The task plan"`
 }
 
+var (
+	envFile string = ".env"
+)
+
+func init() {
+	flag.StringVar(&envFile, "env-file", envFile, "client configuration environment file")
+}
+
 func main() {
+	flag.Parse()
 	ctx := context.Background()
 
 	// Create a client with chat completion implementation
-	client, err := provider.Create(ctx, env.With("GENAI_", ".env"))
+	client, err := provider.Create(ctx, env.With("GENAI_", envFile))
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)
 	}

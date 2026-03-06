@@ -28,7 +28,7 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 				return nil, errors.WithStack(err)
 			}
 
-			if errors.Is(err, llm.ErrRateLimit) {
+			if llm.IsRetryable(err) {
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
@@ -57,7 +57,7 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 				return nil, errors.WithStack(err)
 			}
 
-			if errors.Is(err, llm.ErrRateLimit) {
+			if llm.IsRetryable(err) {
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
@@ -86,7 +86,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 				return nil, errors.WithStack(err)
 			}
 
-			if errors.Is(err, llm.ErrRateLimit) {
+			if llm.IsRetryable(err) {
 				slog.DebugContext(ctx, "stream request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++

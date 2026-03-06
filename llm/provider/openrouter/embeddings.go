@@ -3,7 +3,6 @@ package openrouter
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/bornholm/genai/llm"
@@ -41,9 +40,7 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, func
 	if err != nil {
 		var reqErr *openrouter.RequestError
 		if errors.As(err, &reqErr) {
-			if reqErr.HTTPStatusCode == http.StatusTooManyRequests {
-				return nil, errors.WithStack(llm.ErrRateLimit)
-			}
+			return nil, errors.WithStack(llm.NewHTTPError(reqErr.HTTPStatusCode, reqErr.Error()))
 		}
 
 		return nil, errors.WithStack(err)

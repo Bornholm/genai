@@ -36,6 +36,7 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 		ConfigureMessages,
 		ConfigureMaxCompletionTokens,
 		ConfigureSeed,
+		ConfigureReasoning,
 	)
 	if err != nil {
 		return nil, errors.WithStack(llm.ErrUnavailable)
@@ -106,6 +107,24 @@ func ConfigureSeed(ctx context.Context, opts *llm.ChatCompletionOptions, params 
 	}
 
 	params.Seed = openai.Int(int64(*opts.Seed))
+	return nil
+}
+
+// ConfigureReasoning adds the reasoning_effort field for models that support it
+// (OpenAI o-series, and any OpenAI-compatible endpoint such as the genai proxy).
+// The effort string is passed through verbatim so values like "low", "medium",
+// "high" work with both OpenAI-native models and proxy-side mappings.
+func ConfigureReasoning(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
+	if opts.Reasoning == nil {
+		return nil
+	}
+
+	if opts.Reasoning.Effort != nil {
+		params.WithExtraFields(map[string]any{
+			"reasoning_effort": string(*opts.Reasoning.Effort),
+		})
+	}
+
 	return nil
 }
 

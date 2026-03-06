@@ -45,17 +45,9 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, func
 	slog.DebugContext(ctx, "embeddings completed", slog.Duration("duration", time.Since(before)))
 
 	if err != nil {
-		if httpRes != nil && httpRes.StatusCode == http.StatusTooManyRequests {
-			return nil, errors.Wrap(llm.ErrRateLimit, err.Error())
-		}
-
-		if httpRes != nil && httpRes.Body != nil {
-			body, readdErr := io.ReadAll(httpRes.Body)
-			if readdErr != nil {
-				return nil, errors.WithStack(err)
-			}
-
-			return nil, errors.Wrapf(err, "%s", body)
+		if httpRes != nil {
+			body, _ := io.ReadAll(httpRes.Body)
+			return nil, errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body)))
 		}
 
 		return nil, errors.WithStack(err)

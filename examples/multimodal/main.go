@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"log"
 
@@ -19,10 +20,20 @@ import (
 //go:embed duck.jpg
 var duck []byte
 
+var (
+	envFile string = ".env"
+)
+
+func init() {
+	flag.StringVar(&envFile, "env-file", envFile, "client configuration environment file")
+}
+
 func main() {
+	flag.Parse()
+
 	ctx := context.Background()
 
-	client, err := provider.Create(ctx, env.With("GENAI_", ".env"))
+	client, err := provider.Create(ctx, env.With("GENAI_", envFile))
 	if err != nil {
 		log.Fatalf("[FATAL] %s", err)
 	}
