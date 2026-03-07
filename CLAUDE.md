@@ -1,1 +1,1 @@
-/home/wpetit/workspace/genai/AGENT.md
+AGENT.md
