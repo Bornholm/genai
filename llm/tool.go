@@ -159,7 +159,7 @@ func NewJSONSchema() JSONSchema {
 		"type":                  "object",
 		"properties":            map[string]any{},
 		"required":              []string{},
-		"additionnalProperties": false,
+		"additionalProperties": false,
 	}
 }
 

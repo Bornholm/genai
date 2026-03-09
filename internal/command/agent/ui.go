@@ -66,6 +66,9 @@ var (
 // RenderEvent renders an agent event with lipgloss styling
 func RenderEvent(evt agent.Event) string {
 	switch evt.Type() {
+	case agent.EventTypeTextDelta:
+		data := evt.Data().(*agent.TextDeltaData)
+		return data.Delta
 	case agent.EventTypeComplete:
 		data := evt.Data().(*agent.CompleteData)
 		return renderComplete(data)

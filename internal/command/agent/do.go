@@ -179,10 +179,18 @@ func Do() *cli.Command {
 				if unattended {
 					// Use slog for logging in unattended mode
 					switch evt.Type() {
+					case agent.EventTypeTextDelta:
+						// Accumulate streamed text deltas so the final output is
+						// complete even when EventTypeComplete arrives with an empty
+						// message (already streamed token by token).
+						data := evt.Data().(*agent.TextDeltaData)
+						result += data.Delta
 					case agent.EventTypeComplete:
 						data := evt.Data().(*agent.CompleteData)
-						result = data.Message
-						slog.InfoContext(ctx, "agent completed", slog.String("message", data.Message))
+						if data.Message != "" {
+							result = data.Message
+						}
+						slog.InfoContext(ctx, "agent completed", slog.String("message", result))
 					case agent.EventTypeToolCallStart:
 						data := evt.Data().(*agent.ToolCallStartData)
 						slog.InfoContext(ctx, "tool call started", slog.String("name", data.Name), slog.Any("params", data.Parameters))
@@ -203,16 +211,28 @@ func Do() *cli.Command {
 						slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))
 					}
 				} else {
-					// Use lipgloss UI for output in interactive mode
-					output := RenderEvent(evt)
-					if output != "" {
-						fmt.Println(output)
+					// Use lipgloss UI for output in interactive mode.
+					// TextDelta events are printed inline (no newline) so tokens
+					// appear as they stream; all other events use Println.
+					if evt.Type() == agent.EventTypeTextDelta {
+						fmt.Print(RenderEvent(evt))
+					} else {
+						output := RenderEvent(evt)
+						if output != "" {
+							fmt.Println(output)
+						}
 					}
 
 					// Store result when complete
-					if evt.Type() == agent.EventTypeComplete {
+					switch evt.Type() {
+					case agent.EventTypeTextDelta:
+						data := evt.Data().(*agent.TextDeltaData)
+						result += data.Delta
+					case agent.EventTypeComplete:
 						data := evt.Data().(*agent.CompleteData)
-						result = data.Message
+						if data.Message != "" {
+							result = data.Message
+						}
 					}
 				}
 				return nil

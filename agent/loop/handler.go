@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
+	"sync"
 
 	"github.com/bornholm/genai/agent"
 	"github.com/bornholm/genai/agent/todo"
@@ -61,7 +64,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 			map[bool]string{true: "", false: "s"}[remainingIterations == 1],
 		))
 
-		// 2c. Call the LLM with the budget message prepended
+		// 2c. Call the LLM (streaming when supported, non-streaming otherwise)
 		slog.DebugContext(ctx, "calling LLM", slog.Int("iteration", iteration), slog.Int("remaining", remainingIterations))
 
 		completionOpts := []llm.ChatCompletionOptionFunc{
@@ -74,81 +77,31 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 			completionOpts = append(completionOpts, llm.WithReasoning(h.options.Reasoning))
 		}
 
-		res, err := h.options.Client.ChatCompletion(ctx, completionOpts...)
+		result, err := h.doLLMCall(ctx, completionOpts, emit)
 		if err != nil {
-			// 2d. Return the error (retry is delegated to llm client middleware)
 			return errors.WithStack(err)
 		}
 
-		// 2e. Emit a reasoning event if the response carries reasoning tokens.
-		if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
-			if reasoning := rr.Reasoning(); reasoning != "" || len(rr.ReasoningDetails()) > 0 {
-				agentDetails := make([]agent.ReasoningDetail, 0, len(rr.ReasoningDetails()))
-				for _, d := range rr.ReasoningDetails() {
-					agentDetails = append(agentDetails, agent.ReasoningDetail{
-						ID:        d.ID,
-						Type:      string(d.Type),
-						Text:      d.Text,
-						Summary:   d.Summary,
-						Data:      d.Data,
-						Format:    d.Format,
-						Index:     d.Index,
-						Signature: d.Signature,
-					})
-				}
-				if err := emit(agent.NewEvent(agent.EventTypeReasoning, &agent.ReasoningData{
-					Reasoning:        reasoning,
-					ReasoningDetails: agentDetails,
-				})); err != nil {
-					return errors.WithStack(err)
-				}
-				slog.DebugContext(ctx, "reasoning tokens received",
-					slog.Int("iteration", iteration),
-					slog.Int("details", len(agentDetails)),
-				)
-			}
+		// 2d. Append the assistant message to the history only when there are no tool calls.
+		if result.content != "" && len(result.toolCalls) == 0 {
+			messages = append(messages, llm.NewMessage(llm.RoleAssistant, result.content))
 		}
 
-		// 2f. Append the assistant message to the history
-		// Only append if there's content and no tool calls
-		if res.Message() != nil && res.Message().Content() != "" && len(res.ToolCalls()) == 0 {
-			messages = append(messages, res.Message())
-		}
-
-		// 2g. Extract tool calls from the response
-		toolCalls := res.ToolCalls()
-
-		// 2h. If there are NO tool calls
-		if len(toolCalls) == 0 {
-			// Emit a Complete event with the assistant message content
+		// 2e. If there are NO tool calls, emit Complete and finish.
+		if len(result.toolCalls) == 0 {
 			if err := emit(agent.NewEvent(agent.EventTypeComplete, &agent.CompleteData{
-				Message: res.Message().Content(),
+				Message: result.content,
 			})); err != nil {
 				return errors.WithStack(err)
 			}
-			// Return nil. The loop is done.
 			return nil
 		}
 
-		// 2i. If there ARE tool calls
-		// Create a tool calls message, preserving reasoning if the response carries it.
-		// Reasoning models (e.g. Claude, GPT-5) require reasoning blocks to be passed
-		// back alongside tool calls so the model can continue its chain-of-thought.
-		if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
-			reasoning := rr.Reasoning()
-			reasoningDetails := rr.ReasoningDetails()
-			if reasoning != "" || len(reasoningDetails) > 0 {
-				messages = append(messages, llm.NewReasoningToolCallsMessage(reasoning, reasoningDetails, toolCalls...))
-			} else {
-				messages = append(messages, llm.NewToolCallsMessage(toolCalls...))
-			}
-		} else {
-			messages = append(messages, llm.NewToolCallsMessage(toolCalls...))
-		}
+		// 2f. Append the tool calls message (preserving reasoning blocks for models that need them).
+		messages = append(messages, h.makeToolCallsMessage(result))
 
-		// 2j. Execute each tool call
-		for _, tc := range toolCalls {
-			// Emit a ToolCallStart event
+		// 2g. Emit ToolCallStart for every tool call (sequential to preserve ordering).
+		for _, tc := range result.toolCalls {
 			if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
 				ID:         tc.ID(),
 				Name:       tc.Name(),
@@ -156,47 +109,48 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 			})); err != nil {
 				return errors.WithStack(err)
 			}
+		}
 
-			var result string
-
-			// Check if approval is required
-			if h.requiresApproval(tc.Name()) {
-				if h.options.ApprovalFunc != nil {
-					argsJSON, _ := json.Marshal(tc.Parameters())
-					approved, err := h.options.ApprovalFunc(ctx, tc.Name(), string(argsJSON))
-					if err != nil {
-						// Return the error - this is a real system failure
-						return errors.WithStack(err)
-					}
-					if !approved {
-						result = "The user denied this tool call. Adjust your approach or ask the user for guidance."
-					}
+		// 2h. Check approval sequentially (may be interactive/blocking).
+		toolResults := make([]string, len(result.toolCalls))
+		for i, tc := range result.toolCalls {
+			if h.requiresApproval(tc.Name()) && h.options.ApprovalFunc != nil {
+				argsJSON, _ := json.Marshal(tc.Parameters())
+				approved, approvalErr := h.options.ApprovalFunc(ctx, tc.Name(), string(argsJSON))
+				if approvalErr != nil {
+					return errors.WithStack(approvalErr)
+				}
+				if !approved {
+					toolResults[i] = "The user denied this tool call. Adjust your approach or ask the user for guidance."
 				}
 			}
+		}
 
-			// If not denied, execute the tool
-			if result == "" {
-				var execErr error
-				result, execErr = executeTool(ctx, allTools, tc)
+		// 2i. Execute approved tools in parallel.
+		var wg sync.WaitGroup
+		for i, tc := range result.toolCalls {
+			if toolResults[i] != "" {
+				continue // already set (denied)
+			}
+			wg.Add(1)
+			go func(i int, tc llm.ToolCall) {
+				defer wg.Done()
+				r, execErr := executeTool(ctx, allTools, tc)
 				if execErr != nil {
-					// Tool errors are converted to result messages
-					result = execErr.Error()
+					r = execErr.Error()
 				}
-			}
+				toolResults[i] = h.truncateToolResult(r)
+			}(i, tc)
+		}
+		wg.Wait()
 
-			// Truncate tool result if too large to prevent context overflow
-			result = h.truncateToolResult(result)
-
-			// Create tool result and append to messages
-			toolResult := llm.NewToolResult(result)
-			toolMessage := llm.NewToolMessage(tc.ID(), toolResult)
-			messages = append(messages, toolMessage)
-
-			// Emit a ToolCallDone event
+		// 2j. Append tool results and emit ToolCallDone events in order.
+		for i, tc := range result.toolCalls {
+			messages = append(messages, llm.NewToolMessage(tc.ID(), llm.NewToolResult(toolResults[i])))
 			if err := emit(agent.NewEvent(agent.EventTypeToolCallDone, &agent.ToolCallDoneData{
 				ID:     tc.ID(),
 				Name:   tc.Name(),
-				Result: result,
+				Result: toolResults[i],
 			})); err != nil {
 				return errors.WithStack(err)
 			}
@@ -253,7 +207,6 @@ Be specific about progress made, any obstacles encountered, and recommendations 
 // runPlanningStep makes one dedicated LLM call with only the TodoWrite tool exposed
 // and tool_choice=required, guaranteeing the model writes a plan before acting.
 func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, messages *[]llm.Message, emit agent.EmitFunc) error {
-	// Find the TodoWrite tool that was injected by the loop
 	var todoWriteTool llm.Tool
 	for _, t := range allTools {
 		if t.Name() == "TodoWrite" {
@@ -262,7 +215,6 @@ func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, mess
 		}
 	}
 	if todoWriteTool == nil {
-		// TodoWrite not present — nothing to force
 		return nil
 	}
 
@@ -277,56 +229,18 @@ func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, mess
 		planOpts = append(planOpts, llm.WithReasoning(h.options.Reasoning))
 	}
 
-	res, err := h.options.Client.ChatCompletion(ctx, planOpts...)
+	result, err := h.doLLMCall(ctx, planOpts, emit)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	// Emit reasoning event if present
-	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
-		if reasoning := rr.Reasoning(); reasoning != "" || len(rr.ReasoningDetails()) > 0 {
-			agentDetails := make([]agent.ReasoningDetail, 0, len(rr.ReasoningDetails()))
-			for _, d := range rr.ReasoningDetails() {
-				agentDetails = append(agentDetails, agent.ReasoningDetail{
-					ID:        d.ID,
-					Type:      string(d.Type),
-					Text:      d.Text,
-					Summary:   d.Summary,
-					Data:      d.Data,
-					Format:    d.Format,
-					Index:     d.Index,
-					Signature: d.Signature,
-				})
-			}
-			if err := emit(agent.NewEvent(agent.EventTypeReasoning, &agent.ReasoningData{
-				Reasoning:        reasoning,
-				ReasoningDetails: agentDetails,
-			})); err != nil {
-				return errors.WithStack(err)
-			}
-		}
-	}
-
-	// Execute the TodoWrite tool call(s) returned by the planning step
-	toolCalls := res.ToolCalls()
-	if len(toolCalls) == 0 {
-		// Model produced no tool call despite required — skip quietly
+	if len(result.toolCalls) == 0 {
 		return nil
 	}
 
-	// Build the tool calls message, preserving reasoning for models that need it
-	var tcMsg llm.Message
-	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
-		if r := rr.Reasoning(); r != "" || len(rr.ReasoningDetails()) > 0 {
-			tcMsg = llm.NewReasoningToolCallsMessage(r, rr.ReasoningDetails(), toolCalls...)
-		}
-	}
-	if tcMsg == nil {
-		tcMsg = llm.NewToolCallsMessage(toolCalls...)
-	}
-	*messages = append(*messages, tcMsg)
+	*messages = append(*messages, h.makeToolCallsMessage(result))
 
-	for _, tc := range toolCalls {
+	for _, tc := range result.toolCalls {
 		if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
 			ID:         tc.ID(),
 			Name:       tc.Name(),
@@ -335,19 +249,17 @@ func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, mess
 			return errors.WithStack(err)
 		}
 
-		result, execErr := executeTool(ctx, allTools, tc)
+		r, execErr := executeTool(ctx, allTools, tc)
 		if execErr != nil {
-			result = execErr.Error()
+			r = execErr.Error()
 		}
 
-		toolResult := llm.NewToolResult(result)
-		toolMessage := llm.NewToolMessage(tc.ID(), toolResult)
-		*messages = append(*messages, toolMessage)
+		*messages = append(*messages, llm.NewToolMessage(tc.ID(), llm.NewToolResult(r)))
 
 		if err := emit(agent.NewEvent(agent.EventTypeToolCallDone, &agent.ToolCallDoneData{
 			ID:     tc.ID(),
 			Name:   tc.Name(),
-			Result: result,
+			Result: r,
 		})); err != nil {
 			return errors.WithStack(err)
 		}
@@ -443,3 +355,179 @@ func (h *Handler) truncateToolResult(result string) string {
 }
 
 var _ agent.Handler = &Handler{}
+
+// llmTurnResult holds the accumulated result of one LLM call, whether streamed or not.
+type llmTurnResult struct {
+	content          string
+	toolCalls        []llm.ToolCall
+	reasoning        string
+	reasoningDetails []llm.ReasoningDetail
+}
+
+// streamToolCallAcc accumulates incremental tool call data from streaming chunks.
+type streamToolCallAcc struct {
+	id     string
+	name   string
+	params strings.Builder
+}
+
+// doLLMCall performs one LLM call, using streaming when the client supports it.
+// In streaming mode, text deltas are emitted as EventTypeTextDelta events.
+// Reasoning events are emitted in both modes via emitReasoningIfPresent.
+func (h *Handler) doLLMCall(ctx context.Context, completionOpts []llm.ChatCompletionOptionFunc, emit agent.EmitFunc) (*llmTurnResult, error) {
+	if sc, ok := h.options.Client.(llm.ChatCompletionStreamingClient); ok {
+		return h.doStreamingLLMCall(ctx, sc, completionOpts, emit)
+	}
+	return h.doNonStreamingLLMCall(ctx, completionOpts, emit)
+}
+
+// doNonStreamingLLMCall calls ChatCompletion and extracts the result.
+func (h *Handler) doNonStreamingLLMCall(ctx context.Context, completionOpts []llm.ChatCompletionOptionFunc, emit agent.EmitFunc) (*llmTurnResult, error) {
+	res, err := h.options.Client.ChatCompletion(ctx, completionOpts...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	result := &llmTurnResult{
+		toolCalls: res.ToolCalls(),
+	}
+	if res.Message() != nil {
+		result.content = res.Message().Content()
+	}
+	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
+		result.reasoning = rr.Reasoning()
+		result.reasoningDetails = rr.ReasoningDetails()
+	}
+
+	if err := h.emitReasoningIfPresent(result, emit); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return result, nil
+}
+
+// doStreamingLLMCall streams a response, emitting EventTypeTextDelta for each text chunk.
+// Tool call deltas are accumulated and reconstructed in index order.
+func (h *Handler) doStreamingLLMCall(ctx context.Context, sc llm.ChatCompletionStreamingClient, completionOpts []llm.ChatCompletionOptionFunc, emit agent.EmitFunc) (*llmTurnResult, error) {
+	ch, err := sc.ChatCompletionStream(ctx, completionOpts...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	var (
+		contentBuf    strings.Builder
+		reasoningBuf  strings.Builder
+		reasoningDets []llm.ReasoningDetail
+		toolCallAccs  = make(map[int]*streamToolCallAcc)
+		// Once a tool call delta is received, stop emitting text deltas to avoid
+		// displaying raw JSON arguments that some providers stream via content.
+		seenToolCallDelta bool
+	)
+
+	for chunk := range ch {
+		if chunk.Error() != nil {
+			return nil, errors.WithStack(chunk.Error())
+		}
+		if chunk.IsComplete() {
+			break
+		}
+		delta := chunk.Delta()
+		if delta == nil {
+			continue
+		}
+
+		// Tool call deltas — accumulate by index (processed before text so we
+		// can stop text emission as soon as a tool call delta is seen).
+		for _, tc := range delta.ToolCalls() {
+			seenToolCallDelta = true
+			idx := tc.Index()
+			if _, exists := toolCallAccs[idx]; !exists {
+				toolCallAccs[idx] = &streamToolCallAcc{}
+			}
+			acc := toolCallAccs[idx]
+			if tc.ID() != "" {
+				acc.id = tc.ID()
+			}
+			if tc.Name() != "" {
+				acc.name = tc.Name()
+			}
+			acc.params.WriteString(tc.ParametersDelta())
+		}
+
+		// Text content → emit delta event only when no tool call deltas have
+		// been seen yet (prevents streaming raw JSON tool-call arguments).
+		if text := delta.Content(); text != "" {
+			contentBuf.WriteString(text)
+			if !seenToolCallDelta {
+				if err := emit(agent.NewEvent(agent.EventTypeTextDelta, &agent.TextDeltaData{Delta: text})); err != nil {
+					return nil, errors.WithStack(err)
+				}
+			}
+		}
+
+		// Reasoning tokens
+		if rsd, ok := delta.(llm.ReasoningStreamDelta); ok {
+			if r := rsd.Reasoning(); r != "" {
+				reasoningBuf.WriteString(r)
+			}
+			reasoningDets = append(reasoningDets, rsd.ReasoningDetails()...)
+		}
+	}
+
+	// Reconstruct tool calls in index order.
+	indices := make([]int, 0, len(toolCallAccs))
+	for idx := range toolCallAccs {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+
+	toolCalls := make([]llm.ToolCall, 0, len(indices))
+	for _, idx := range indices {
+		acc := toolCallAccs[idx]
+		toolCalls = append(toolCalls, llm.NewToolCall(acc.id, acc.name, acc.params.String()))
+	}
+
+	result := &llmTurnResult{
+		content:          contentBuf.String(),
+		toolCalls:        toolCalls,
+		reasoning:        reasoningBuf.String(),
+		reasoningDetails: reasoningDets,
+	}
+
+	if err := h.emitReasoningIfPresent(result, emit); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return result, nil
+}
+
+// emitReasoningIfPresent emits an EventTypeReasoning event when the result carries reasoning tokens.
+func (h *Handler) emitReasoningIfPresent(result *llmTurnResult, emit agent.EmitFunc) error {
+	if result.reasoning == "" && len(result.reasoningDetails) == 0 {
+		return nil
+	}
+	agentDetails := make([]agent.ReasoningDetail, 0, len(result.reasoningDetails))
+	for _, d := range result.reasoningDetails {
+		agentDetails = append(agentDetails, agent.ReasoningDetail{
+			ID:        d.ID,
+			Type:      string(d.Type),
+			Text:      d.Text,
+			Summary:   d.Summary,
+			Data:      d.Data,
+			Format:    d.Format,
+			Index:     d.Index,
+			Signature: d.Signature,
+		})
+	}
+	return emit(agent.NewEvent(agent.EventTypeReasoning, &agent.ReasoningData{
+		Reasoning:        result.reasoning,
+		ReasoningDetails: agentDetails,
+	}))
+}
+
+// makeToolCallsMessage builds the assistant tool calls message, preserving reasoning
+// blocks for models (e.g. Claude) that require them across turns.
+func (h *Handler) makeToolCallsMessage(result *llmTurnResult) llm.Message {
+	if result.reasoning != "" || len(result.reasoningDetails) > 0 {
+		return llm.NewReasoningToolCallsMessage(result.reasoning, result.reasoningDetails, result.toolCalls...)
+	}
+	return llm.NewToolCallsMessage(result.toolCalls...)
+}

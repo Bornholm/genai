@@ -36,8 +36,47 @@ func (cm *ContextManager) Manage(messages []llm.Message) []llm.Message {
 	return result
 }
 
+// messageGroup is an atomic unit of messages that must not be split during truncation.
+// A ToolCallsMessage and all its following RoleTool messages form one group;
+// any other message is a group of one.
+type messageGroup []llm.Message
+
+func (g messageGroup) tokens(estimator func(string) int) int {
+	total := 0
+	for _, m := range g {
+		total += estimateMessageTokens(m, estimator)
+	}
+	return total
+}
+
+// groupMessages partitions messages into atomic groups so that a tool_calls
+// message is never separated from its tool result messages.
+func groupMessages(messages []llm.Message) []messageGroup {
+	groups := make([]messageGroup, 0, len(messages))
+	i := 0
+	for i < len(messages) {
+		msg := messages[i]
+		if _, ok := msg.(llm.ToolCallsMessage); ok {
+			// Gather the tool_calls message plus all immediately following tool results.
+			group := messageGroup{msg}
+			i++
+			for i < len(messages) && messages[i].Role() == llm.RoleTool {
+				group = append(group, messages[i])
+				i++
+			}
+			groups = append(groups, group)
+		} else {
+			groups = append(groups, messageGroup{msg})
+			i++
+		}
+	}
+	return groups
+}
+
 // DefaultMiddleOutTruncationStrategy creates a middle-out truncation strategy
-// that keeps the system message, first user message, and most recent messages
+// that keeps the system message, first user message, and most recent messages.
+// It removes complete atomic groups (tool_calls + tool_results) from the middle
+// so that API invariants are never violated.
 func DefaultMiddleOutTruncationStrategy(maxTokens int, tokenEstimator func(string) int) TruncationStrategy {
 	return func(messages []llm.Message) ([]llm.Message, error) {
 		if len(messages) <= 2 {
@@ -52,53 +91,39 @@ func DefaultMiddleOutTruncationStrategy(maxTokens int, tokenEstimator func(strin
 			return messages, nil
 		}
 
-		// Apply middle-out truncation
-		// Keep: system message, first user message, last N messages
-		// Replace middle with truncation notice
+		// Always keep messages[0] (system) and messages[1] (first user) as anchors.
+		// The rest is divided into atomic groups; we remove groups from the front of
+		// the middle section until we are under budget.
+		anchors := messages[:2]
+		middle := messages[2:]
 
-		// Always keep the first message (system) and second message (first user)
-		if len(messages) < 3 {
-			return messages, nil
-		}
+		groups := groupMessages(middle)
 
-		// Calculate how many tokens we need to remove
+		// Drop groups from the front until we are within budget.
 		excessTokens := totalTokens - maxTokens
-
-		// Start removing from the middle
-		// We keep messages[0] (system), messages[1] (first user), and work backwards from the end
-
-		// Find the middle point
-		middleStart := 2
-		middleEnd := len(messages) - 1
-
-		// Keep removing from the middle until we're under budget
-		for middleStart < middleEnd && excessTokens > 0 {
-			// Remove from the start of the middle section
-			tokens := estimateMessageTokens(messages[middleStart], tokenEstimator)
-			excessTokens -= tokens
-			middleStart++
+		firstKept := 0
+		for firstKept < len(groups) && excessTokens > 0 {
+			removed := groups[firstKept].tokens(tokenEstimator)
+			excessTokens -= removed
+			firstKept++
 		}
 
-		// If we've removed everything in the middle, just return what we have
-		if middleStart >= middleEnd {
-			return messages[:2], nil
+		// If everything in the middle was dropped, return only the anchors.
+		if firstKept >= len(groups) {
+			return anchors, nil
 		}
 
-		// Build the truncated message list
-		result := make([]llm.Message, 0, middleEnd-middleStart+3)
+		// Flatten remaining groups back into a message slice.
+		remaining := make([]llm.Message, 0, len(middle))
+		for _, g := range groups[firstKept:] {
+			remaining = append(remaining, g...)
+		}
 
-		// Add system message
-		result = append(result, messages[0])
-
-		// Add first user message
-		result = append(result, messages[1])
-
-		// Add truncation notice
+		result := make([]llm.Message, 0, 2+1+len(remaining))
+		result = append(result, anchors...)
 		result = append(result, llm.NewMessage(llm.RoleSystem,
 			"[Earlier conversation truncated for context limits. The conversation continued from here.]"))
-
-		// Add remaining messages from the end
-		result = append(result, messages[middleStart:]...)
+		result = append(result, remaining...)
 
 		return result, nil
 	}

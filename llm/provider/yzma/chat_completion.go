@@ -568,10 +568,16 @@ func (c *ChatCompletionClient) convertToYzmaMessages(messages []llm.Message) []m
 					args = p
 				}
 
-				// Convert to string map for yzma
+				// Serialize each value as JSON to preserve types (arrays, booleans, numbers).
+				// parseToolCalls will unmarshal these back to their original types.
 				strArgs := make(map[string]string)
 				for k, v := range args {
-					strArgs[k] = fmt.Sprintf("%v", v)
+					b, err := json.Marshal(v)
+					if err != nil {
+						strArgs[k] = fmt.Sprintf("%v", v)
+					} else {
+						strArgs[k] = string(b)
+					}
 				}
 
 				toolCalls[i] = message.ToolCall{

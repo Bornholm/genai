@@ -204,6 +204,9 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 }
 
 func mustMarshalRaw(v any) json.RawMessage {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("mustMarshalRaw: unexpected marshal error: %v", err))
+	}
 	return b
 }

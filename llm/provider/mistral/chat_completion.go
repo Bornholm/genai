@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
@@ -84,6 +85,13 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 }
 
 // ChatCompletionStream implements llm.ChatCompletionStreamingClient.
+//
+// Mistral may send its content as a raw JSON array containing thinking blocks
+// (e.g. [{"type":"thinking",...},{"type":"text","text":"..."}]). To avoid
+// leaking that raw JSON to callers, we buffer all delta.Content chunks and
+// process them through extractThinkingFromResponse at the end of the stream,
+// emitting a single properly-typed delta. Tool call deltas are forwarded
+// individually as they arrive so accumulators in the caller stay correct.
 func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
 
@@ -107,6 +115,13 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		defer close(chunks)
 		defer stream.Close()
 
+		var (
+			textBuf        strings.Builder
+			reasoningBuf   strings.Builder
+			reasoningDets  []llm.ReasoningDetail
+			finalUsage     llm.ChatCompletionUsage
+		)
+
 		for stream.Next() {
 			chunk := stream.Current()
 
@@ -114,12 +129,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				chunk.Usage.PromptTokens == 0 &&
 				chunk.Usage.TotalTokens == 0
 
+			// Save usage for later — emitting CompleteStreamChunk here would cause
+			// doStreamingLLMCall to break before the content chunk is sent below.
 			if !isNullUsage {
-				chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsage(
+				finalUsage = llm.NewChatCompletionUsage(
 					int64(chunk.Usage.PromptTokens),
 					int64(chunk.Usage.CompletionTokens),
 					int64(chunk.Usage.TotalTokens),
-				))
+				)
 			}
 
 			if len(chunk.Choices) == 0 {
@@ -129,24 +146,33 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			choice := chunk.Choices[0]
 			delta := choice.Delta
 
-			// Create stream delta
-			var toolCallDeltas []llm.ToolCallDelta
-			for i, tc := range delta.ToolCalls {
-				toolCallDeltas = append(toolCallDeltas, llm.NewToolCallDelta(
-					i,
-					tc.ID,
-					tc.Function.Name,
-					tc.Function.Arguments,
-				))
+			// Each delta.Content from Mistral is either a plain string or a
+			// self-contained JSON array like [{"type":"thinking",...}].
+			// Process each chunk individually so thinking blocks are stripped.
+			if delta.Content != "" {
+				chunkText, chunkDetails, chunkReasoning := extractThinkingFromResponse(delta.Content)
+				if chunkReasoning != "" || len(chunkDetails) > 0 {
+					reasoningBuf.WriteString(chunkReasoning)
+					reasoningDets = append(reasoningDets, chunkDetails...)
+				}
+				if chunkText != "" {
+					textBuf.WriteString(chunkText)
+				}
 			}
 
-			streamDelta := llm.NewStreamDelta(
-				llm.RoleAssistant,
-				delta.Content,
-				toolCallDeltas...,
-			)
-
-			chunks <- llm.NewStreamChunk(streamDelta)
+			// Tool call deltas are structured and safe to forward immediately.
+			if len(delta.ToolCalls) > 0 {
+				var toolCallDeltas []llm.ToolCallDelta
+				for i, tc := range delta.ToolCalls {
+					toolCallDeltas = append(toolCallDeltas, llm.NewToolCallDelta(
+						i,
+						tc.ID,
+						tc.Function.Name,
+						tc.Function.Arguments,
+					))
+				}
+				chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "", toolCallDeltas...))
+			}
 		}
 
 		if err := stream.Err(); err != nil {
@@ -157,6 +183,27 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
 			}
 			return
+		}
+
+		// Emit accumulated content/reasoning before the CompleteStreamChunk so
+		// the handler does not break out of its receive loop before seeing content.
+		reasoning := reasoningBuf.String()
+		textContent := textBuf.String()
+		if reasoning != "" || len(reasoningDets) > 0 {
+			chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(
+				llm.RoleAssistant,
+				textContent,
+				reasoning,
+				reasoningDets,
+			))
+		} else if textContent != "" {
+			chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, textContent))
+		}
+
+		// Emit the complete (usage) chunk last so the handler breaks only after
+		// all content and tool call deltas have been consumed.
+		if finalUsage != nil {
+			chunks <- llm.NewCompleteStreamChunk(finalUsage)
 		}
 	}()
 
