@@ -457,9 +457,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	temperature := float32(opts.Temperature)
 
 	req := openrouter.ChatCompletionRequest{
-		Model:       c.model,
-		Temperature: temperature,
-		Stream:      true, // Enable streaming
+		Model:         c.model,
+		Temperature:   temperature,
+		Stream:        true, // Enable streaming
+		StreamOptions: &openrouter.StreamOptions{IncludeUsage: true},
 	}
 
 	// Configure reasoning if requested
@@ -567,14 +568,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				return
 			}
 
-			if len(response.Choices) == 0 {
-				continue
-			}
-
 			if response.Usage != nil {
 				promptTokens.Store(int64(response.Usage.PromptTokens))
 				completionTokens.Store(int64(response.Usage.CompletionTokens))
 				totalTokens.Store(int64(response.Usage.TotalTokens))
+			}
+
+			if len(response.Choices) == 0 {
+				continue
 			}
 
 			choice := response.Choices[0]

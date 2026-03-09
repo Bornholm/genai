@@ -26,9 +26,9 @@ func NewServer(funcs ...OptionFunc) *Server {
 		mux:     http.NewServeMux(),
 	}
 
-	s.mux.HandleFunc("POST /api/v1/chat/completions", s.handleChatCompletions)
-	s.mux.HandleFunc("POST /api/v1/embeddings", s.handleEmbeddings)
-	s.mux.HandleFunc("GET /api/v1/models", s.handleModels)
+	s.mux.HandleFunc("POST /chat/completions", s.handleChatCompletions)
+	s.mux.HandleFunc("POST /embeddings", s.handleEmbeddings)
+	s.mux.HandleFunc("GET /models", s.handleModels)
 
 	return s
 }

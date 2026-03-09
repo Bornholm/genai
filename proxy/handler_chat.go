@@ -142,7 +142,26 @@ func (s *Server) handleChatCompletionsStream(
 		return
 	}
 
-	// Set SSE headers
+	// Peek at the first chunk before committing to SSE headers.
+	// This lets us return a proper HTTP error status when the backend
+	// immediately rejects the request (e.g. invalid model parameters).
+	firstChunk, ok := <-chunks
+	if !ok {
+		writeAPIError(w, NewInternalError("stream closed with no data"))
+		return
+	}
+	if firstChunk.Error() != nil {
+		slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", firstChunk.Error()))
+		errRes, _ := s.chain.RunOnError(ctx, req, firstChunk.Error())
+		if errRes != nil {
+			writeProxyResponse(w, errRes)
+		} else {
+			writeAPIError(w, apiErrorFromErr(firstChunk.Error()))
+		}
+		return
+	}
+
+	// First chunk is good — commit to SSE.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -153,10 +172,29 @@ func (s *Server) handleChatCompletionsStream(
 
 	streamID := "chatcmpl-" + uuid.New().String()
 	tracker := llm.NewStreamingUsageTracker()
+	hadStreamError := false
+
+	// Emit the first chunk we already received.
+	tracker.Update(firstChunk)
+	if payload, merr := json.Marshal(FormatStreamChunk(firstChunk, streamID, resolvedModel)); merr == nil {
+		fmt.Fprintf(w, "data: %s\n\n", payload)
+		if canFlush {
+			flusher.Flush()
+		}
+	}
 
 	for chunk := range chunks {
 		if chunk.Error() != nil {
 			slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
+			// Headers already sent; forward the error as a data event.
+			apiErr := apiErrorFromErr(chunk.Error())
+			if errData, jsonErr := json.Marshal(ErrorResponse{Error: *apiErr}); jsonErr == nil {
+				fmt.Fprintf(w, "data: %s\n\n", errData)
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+			hadStreamError = true
 			break
 		}
 
@@ -182,6 +220,11 @@ func (s *Server) handleChatCompletionsStream(
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	if canFlush {
 		flusher.Flush()
+	}
+
+	// Skip post-response hooks on stream error — nothing useful to record.
+	if hadStreamError {
+		return
 	}
 
 	// Post-response hook with accumulated usage
