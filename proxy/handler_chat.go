@@ -173,10 +173,18 @@ func (s *Server) handleChatCompletionsStream(
 	streamID := "chatcmpl-" + uuid.New().String()
 	tracker := llm.NewStreamingUsageTracker()
 	hadStreamError := false
+	sawToolCalls := false
+
+	chunkHasToolCalls := func(c llm.StreamChunk) bool {
+		return !c.IsComplete() && c.Delta() != nil && len(c.Delta().ToolCalls()) > 0
+	}
 
 	// Emit the first chunk we already received.
 	tracker.Update(firstChunk)
-	if payload, merr := json.Marshal(FormatStreamChunk(firstChunk, streamID, resolvedModel)); merr == nil {
+	if chunkHasToolCalls(firstChunk) {
+		sawToolCalls = true
+	}
+	if payload, merr := json.Marshal(FormatStreamChunk(firstChunk, streamID, resolvedModel, sawToolCalls)); merr == nil {
 		fmt.Fprintf(w, "data: %s\n\n", payload)
 		if canFlush {
 			flusher.Flush()
@@ -199,8 +207,11 @@ func (s *Server) handleChatCompletionsStream(
 		}
 
 		tracker.Update(chunk)
+		if chunkHasToolCalls(chunk) {
+			sawToolCalls = true
+		}
 
-		payload := FormatStreamChunk(chunk, streamID, resolvedModel)
+		payload := FormatStreamChunk(chunk, streamID, resolvedModel, sawToolCalls)
 		data, err := json.Marshal(payload)
 		if err != nil {
 			slog.ErrorContext(ctx, "could not marshal stream chunk", slog.Any("error", err))

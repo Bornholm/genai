@@ -102,10 +102,19 @@ type openAIStreamChoice struct {
 }
 
 type openAIStreamDelta struct {
-	Role             string           `json:"role,omitempty"`
-	Content          string           `json:"content,omitempty"`
-	ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
-	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	Role             string                 `json:"role,omitempty"`
+	Content          string                 `json:"content,omitempty"`
+	ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent string                 `json:"reasoning_content,omitempty"`
+}
+
+// openAIStreamToolCall is the tool call format used inside streaming deltas.
+// It includes an Index field required by OpenAI-compatible clients.
+type openAIStreamToolCall struct {
+	Index    int                `json:"index"`
+	ID       string             `json:"id,omitempty"`
+	Type     string             `json:"type,omitempty"`
+	Function openAIFunctionCall `json:"function"`
 }
 
 // ---- Embeddings wire types ----------------------------------------------
@@ -456,13 +465,42 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 }
 
 // FormatStreamChunk converts a llm.StreamChunk to an OpenAI SSE data payload.
-func FormatStreamChunk(chunk llm.StreamChunk, id, model string) any {
-	finishReason := (*string)(nil)
-
+//
+// sawToolCalls must be true if any prior chunk in the same stream carried tool
+// calls. It is used to decide the finish_reason on the terminal chunk:
+//   - tool_calls stream → empty choices, usage only (finish_reason already sent)
+//   - text stream       → finish_reason:"stop" so clients know the turn is done
+func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls bool) any {
 	if chunk.IsComplete() {
-		done := "stop"
-		finishReason = &done
+		c := openAIStreamChunk{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   model,
+		}
+		if sawToolCalls {
+			// finish_reason:"tool_calls" was already sent on the tool-call chunk;
+			// emit usage-only with empty choices to avoid overwriting it.
+			c.Choices = []openAIStreamChoice{}
+		} else {
+			// Text response: emit finish_reason:"stop" so the client knows the
+			// turn is complete.
+			stop := "stop"
+			c.Choices = []openAIStreamChoice{
+				{Index: 0, Delta: openAIStreamDelta{}, FinishReason: &stop},
+			}
+		}
+		if usage := chunk.Usage(); usage != nil {
+			c.Usage = &openAIUsage{
+				PromptTokens:     usage.PromptTokens(),
+				CompletionTokens: usage.CompletionTokens(),
+				TotalTokens:      usage.TotalTokens(),
+			}
+		}
+		return c
 	}
+
+	finishReason := (*string)(nil)
 
 	delta := openAIStreamDelta{}
 	if d := chunk.Delta(); d != nil {
@@ -476,11 +514,12 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string) any {
 		}
 
 		if len(d.ToolCalls()) > 0 {
-			tcs := make([]openAIToolCall, 0, len(d.ToolCalls()))
-			for _, tc := range d.ToolCalls() {
-				tcs = append(tcs, openAIToolCall{
-					ID:   tc.ID(),
-					Type: "function",
+			tcs := make([]openAIStreamToolCall, 0, len(d.ToolCalls()))
+			for i, tc := range d.ToolCalls() {
+				tcs = append(tcs, openAIStreamToolCall{
+					Index: i,
+					ID:    tc.ID(),
+					Type:  "function",
 					Function: openAIFunctionCall{
 						Name:      tc.Name(),
 						Arguments: tc.ParametersDelta(),
@@ -488,10 +527,8 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string) any {
 				})
 			}
 			delta.ToolCalls = tcs
-			if finishReason == nil {
-				fr := "tool_calls"
-				finishReason = &fr
-			}
+			fr := "tool_calls"
+			finishReason = &fr
 		}
 	}
 

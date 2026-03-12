@@ -25,7 +25,7 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 		genai.ConfigureTemperature,
 		genai.ConfigureResponseFormat,
 		ConfigureMistralMessages,
-		genai.ConfigureMaxCompletionTokens,
+		configureMistralMaxTokens,
 		configureRandomSeed,
 		genai.ConfigureReasoning,
 		configurePromptMode,
@@ -40,6 +40,19 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 }
 
 var _ genai.ParamsBuilder = &paramsBuilder{}
+
+// configureMistralMaxTokens maps the internal MaxCompletionTokens option to the
+// Mistral-specific "max_tokens" field. Mistral does not accept "max_completion_tokens"
+// (the OpenAI o1 field name) and returns a 422 error when it is present.
+func configureMistralMaxTokens(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
+	if opts.MaxCompletionTokens == nil {
+		return nil
+	}
+	params.WithExtraFields(map[string]any{
+		"max_tokens": *opts.MaxCompletionTokens,
+	})
+	return nil
+}
 
 func configureRandomSeed(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
 	if opts.Seed == nil {
