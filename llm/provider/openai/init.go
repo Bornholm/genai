@@ -5,44 +5,40 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
-	"github.com/openai/openai-go"
+	openaisdk "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
 
 const Name provider.Name = "openai"
 
 func init() {
-	provider.RegisterChatCompletion(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.ChatCompletionClient, error) {
-		options := []option.RequestOption{
-			option.WithBaseURL(opts.BaseURL),
-		}
+	provider.RegisterChatCompletion(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
+			options := []option.RequestOption{
+				option.WithBaseURL(opts.BaseURL),
+			}
+			if opts.APIKey != "" {
+				options = append(options, option.WithAPIKey(opts.APIKey))
+			}
+			client := openaisdk.NewClient(options...)
+			return NewChatCompletionClient(client, &paramsBuilder{model: opts.Model}), nil
+		},
+	)
 
-		if opts.APIKey != "" {
-			options = append(options, option.WithAPIKey(opts.APIKey))
-		}
-
-		client := openai.NewClient(
-			options...,
-		)
-
-		return NewChatCompletionClient(client, &paramsBuilder{
-			model: opts.Model,
-		}), nil
-	})
-
-	provider.RegisterEmbeddings(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.EmbeddingsClient, error) {
-		options := []option.RequestOption{
-			option.WithBaseURL(opts.BaseURL),
-		}
-
-		if opts.APIKey != "" {
-			options = append(options, option.WithAPIKey(opts.APIKey))
-		}
-
-		client := openai.NewClient(
-			options...,
-		)
-
-		return NewEmbeddingsClient(client, opts.Model), nil
-	})
+	provider.RegisterEmbeddings(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.EmbeddingsClient, error) {
+			options := []option.RequestOption{
+				option.WithBaseURL(opts.BaseURL),
+			}
+			if opts.APIKey != "" {
+				options = append(options, option.WithAPIKey(opts.APIKey))
+			}
+			client := openaisdk.NewClient(options...)
+			return NewEmbeddingsClient(client, opts.Model), nil
+		},
+	)
 }

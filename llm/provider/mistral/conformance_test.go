@@ -7,7 +7,7 @@ import (
 
 	"github.com/bornholm/genai/llm/conformance"
 	"github.com/bornholm/genai/llm/provider"
-	_ "github.com/bornholm/genai/llm/provider/mistral"
+	mistralProvider "github.com/bornholm/genai/llm/provider/mistral"
 )
 
 func TestConformance(t *testing.T) {
@@ -28,18 +28,29 @@ func TestConformance(t *testing.T) {
 
 	ctx := context.Background()
 	client, err := provider.Create(ctx,
-		provider.WithChatCompletionOptions(provider.ClientOptions{
-			Provider: "mistral",
-			BaseURL:  "https://api.mistral.ai/v1",
-			APIKey:   apiKey,
-			Model:    chatModel,
-		}),
-		provider.WithEmbeddingsOptions(provider.ClientOptions{
-			Provider: "mistral",
-			BaseURL:  "https://api.mistral.ai/v1",
-			APIKey:   apiKey,
-			Model:    embeddingModel,
-		}),
+		func(opts *provider.Options) error {
+			opts.ChatCompletion = &provider.ResolvedClientOptions{
+				Provider: mistralProvider.Name,
+				Specific: &mistralProvider.Options{
+					CommonOptions: provider.CommonOptions{
+						BaseURL: "https://api.mistral.ai/v1",
+						APIKey:  apiKey,
+						Model:   chatModel,
+					},
+				},
+			}
+			opts.Embeddings = &provider.ResolvedClientOptions{
+				Provider: mistralProvider.Name,
+				Specific: &mistralProvider.Options{
+					CommonOptions: provider.CommonOptions{
+						BaseURL: "https://api.mistral.ai/v1",
+						APIKey:  apiKey,
+						Model:   embeddingModel,
+					},
+				},
+			}
+			return nil
+		},
 	)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)

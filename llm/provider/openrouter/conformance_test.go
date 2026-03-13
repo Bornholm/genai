@@ -7,7 +7,7 @@ import (
 
 	"github.com/bornholm/genai/llm/conformance"
 	"github.com/bornholm/genai/llm/provider"
-	_ "github.com/bornholm/genai/llm/provider/openrouter"
+	openrouterProvider "github.com/bornholm/genai/llm/provider/openrouter"
 )
 
 func TestConformance(t *testing.T) {
@@ -23,12 +23,18 @@ func TestConformance(t *testing.T) {
 
 	ctx := context.Background()
 	client, err := provider.Create(ctx,
-		provider.WithChatCompletionOptions(provider.ClientOptions{
-			Provider: "openrouter",
-			BaseURL:  "https://openrouter.ai/api/v1",
-			APIKey:   apiKey,
-			Model:    chatModel,
-		}),
+		func(opts *provider.Options) error {
+			opts.ChatCompletion = &provider.ResolvedClientOptions{
+				Provider: openrouterProvider.Name,
+				Specific: &openrouterProvider.Options{
+					CommonOptions: provider.CommonOptions{
+						APIKey: apiKey,
+						Model:  chatModel,
+					},
+				},
+			}
+			return nil
+		},
 	)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)

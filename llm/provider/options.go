@@ -1,49 +1,43 @@
 package provider
 
-import (
-	"github.com/bornholm/genai/llm"
-	"github.com/pkg/errors"
-)
+import "github.com/pkg/errors"
 
-type Options struct {
-	ChatCompletion *ClientOptions `envPrefix:"CHAT_COMPLETION_"`
-	Embeddings     *ClientOptions `envPrefix:"EMBEDDINGS_"`
-}
-
+// ClientOptions sert uniquement à identifier le provider actif (passe 1 de env.With).
 type ClientOptions struct {
-	Provider Name   `env:"PROVIDER"`
-	BaseURL  string `env:"BASE_URL"`
-	APIKey   string `env:"API_KEY"`
-	Model    string `env:"MODEL"`
+	Provider Name `env:"PROVIDER"`
 }
 
-// Validate checks if the ClientOptions are valid
-func (opts *ClientOptions) Validate() error {
-	if opts.Provider == "" {
-		return llm.NewValidationError("provider", "provider is required")
-	}
-	if opts.Model == "" {
-		return llm.NewValidationError("model", "model is required")
-	}
-	return nil
+// CommonOptions contient les options HTTP communes embeddables dans les structs provider.
+// Avec caarlos0/env, les champs d'une struct embeddée héritent du préfixe courant.
+type CommonOptions struct {
+	Model   string `env:"MODEL"`
+	BaseURL string `env:"BASE_URL"`
+	APIKey  string `env:"API_KEY"`
 }
 
+// ResolvedClientOptions transporte le provider identifié et ses options spécifiques
+// entre env.With et Registry.Create.
+type ResolvedClientOptions struct {
+	Provider Name
+	Specific any // *T : pointeur vers struct d'options du provider
+}
+
+// Options regroupe les options résolues pour chat completion et embeddings.
+type Options struct {
+	ChatCompletion *ResolvedClientOptions
+	Embeddings     *ResolvedClientOptions
+}
+
+// Validator est une interface optionnelle que les structs d'options peuvent implémenter.
+// Registry.Create appelle Validate() avant de passer les options à la factory.
+type Validator interface {
+	Validate() error
+}
+
+// OptionFunc est une fonction qui configure Options.
 type OptionFunc func(opts *Options) error
 
-func WithChatCompletionOptions(clientOpts ClientOptions) OptionFunc {
-	return func(opts *Options) error {
-		opts.ChatCompletion = &clientOpts
-		return nil
-	}
-}
-
-func WithEmbeddingsOptions(clientOpts ClientOptions) OptionFunc {
-	return func(opts *Options) error {
-		opts.Embeddings = &clientOpts
-		return nil
-	}
-}
-
+// NewOptions applique les OptionFunc et retourne les options résultantes.
 func NewOptions(funcs ...OptionFunc) (*Options, error) {
 	opts := &Options{}
 	for _, fn := range funcs {

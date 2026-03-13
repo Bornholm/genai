@@ -5,47 +5,63 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
+	"github.com/hybridgroup/yzma/pkg/llama"
 	"github.com/pkg/errors"
 )
 
 const Name provider.Name = "yzma"
 
 func init() {
-	provider.RegisterChatCompletion(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.ChatCompletionClient, error) {
-		// Extract model path from Model field
-		modelPath := opts.Model
-		if modelPath == "" {
-			return nil, errors.New("model path is required for yzma provider")
-		}
+	provider.RegisterChatCompletion(
+		Name,
+		defaultChatCompletionOptions,
+		func(ctx context.Context, opts *ChatCompletionOptions) (llm.ChatCompletionClient, error) {
+			client, err := NewChatCompletionClient(
+				WithModelPath(opts.ModelPath),
+				WithModelURL(opts.ModelURL),
+				WithLibPath(opts.LibPath),
+				WithProcessor(opts.Processor),
+				WithVersion(opts.Version),
+				WithContextSize(opts.ContextSize),
+				WithBatchSize(opts.BatchSize),
+				WithUBatchSize(opts.UBatchSize),
+				WithTemperature(opts.Temperature),
+				WithTopK(opts.TopK),
+				WithTopP(opts.TopP),
+				WithMinP(opts.MinP),
+				WithPresencePenalty(opts.PresencePenalty),
+				WithPenaltyLastN(opts.PenaltyLastN),
+				WithPredictSize(opts.PredictSize),
+				WithTemplate(opts.Template),
+				WithVerbose(opts.Verbose),
+			)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+			return client, nil
+		},
+	)
 
-		// Create client with options
-		client, err := NewChatCompletionClient(
-			WithModelPath(modelPath),
-			WithLibPath(opts.BaseURL), // Use BaseURL field for lib path
-		)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		return client, nil
-	})
-
-	provider.RegisterEmbeddings(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.EmbeddingsClient, error) {
-		// Extract model path from Model field
-		modelPath := opts.Model
-		if modelPath == "" {
-			return nil, errors.New("model path is required for yzma provider")
-		}
-
-		// Create client with options
-		client, err := NewEmbeddingsClient(
-			WithEmbeddingsModelPath(modelPath),
-			WithEmbeddingsLibPath(opts.BaseURL), // Use BaseURL field for lib path
-		)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-
-		return client, nil
-	})
+	provider.RegisterEmbeddings(
+		Name,
+		defaultEmbeddingsOptions,
+		func(ctx context.Context, opts *EmbeddingsOptions) (llm.EmbeddingsClient, error) {
+			client, err := NewEmbeddingsClient(
+				WithEmbeddingsModelPath(opts.ModelPath),
+				WithEmbeddingsModelURL(opts.ModelURL),
+				WithEmbeddingsLibPath(opts.LibPath),
+				WithEmbeddingsProcessor(opts.Processor),
+				WithEmbeddingsVersion(opts.Version),
+				WithEmbeddingsContextSize(opts.ContextSize),
+				WithEmbeddingsBatchSize(opts.BatchSize),
+				WithEmbeddingsPoolingType(llama.PoolingType(opts.PoolingType)),
+				WithEmbeddingsNormalize(opts.Normalize),
+				WithEmbeddingsVerbose(opts.Verbose),
+			)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+			return client, nil
+		},
+	)
 }

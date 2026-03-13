@@ -11,13 +11,21 @@ import (
 const Name provider.Name = "openrouter"
 
 func init() {
-	provider.RegisterChatCompletion(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.ChatCompletionClient, error) {
-		client := openrouter.NewClient(opts.APIKey)
-		return NewChatCompletionClient(client, opts.Model), nil
-	})
+	provider.RegisterChatCompletion(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
+			client := openrouter.NewClient(opts.APIKey)
+			return NewChatCompletionClient(client, opts.Model), nil
+		},
+	)
 
-	provider.RegisterEmbeddings(Name, func(ctx context.Context, opts provider.ClientOptions) (llm.EmbeddingsClient, error) {
-		client := openrouter.NewClient(opts.APIKey)
-		return NewEmbeddingsClient(client, opts.Model), nil
-	})
+	provider.RegisterEmbeddings(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.EmbeddingsClient, error) {
+			client := openrouter.NewClient(opts.APIKey)
+			return NewEmbeddingsClient(client, opts.Model), nil
+		},
+	)
 }
