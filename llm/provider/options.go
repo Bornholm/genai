@@ -47,3 +47,46 @@ func NewOptions(funcs ...OptionFunc) (*Options, error) {
 	}
 	return opts, nil
 }
+
+// WithChatCompletion returns an OptionFunc that configures chat completion
+// options for a specific provider. The opts value is copied to ensure
+// immutability of the original.
+//
+// Example:
+//
+//	client, err := provider.Create(ctx,
+//	    provider.WithChatCompletion("openai", openai.Options{
+//	        Model:  "gpt-4o",
+//	        APIKey: "sk-...",
+//	    }),
+//	)
+func WithChatCompletion[T any](name Name, opts T) OptionFunc {
+	return func(o *Options) error {
+		o.ChatCompletion = &ResolvedClientOptions{
+			Provider: name,
+			Specific: &opts,
+		}
+		return nil
+	}
+}
+
+// WithEmbeddings returns an OptionFunc that configures embeddings
+// options for a specific provider. The opts value is copied to ensure
+// immutability of the original.
+//
+// Example:
+//
+//	client, err := provider.Create(ctx,
+//	    provider.WithEmbeddings("openai", openai.Options{
+//	        Model: "text-embedding-3-small",
+//	    }),
+//	)
+func WithEmbeddings[T any](name Name, opts T) OptionFunc {
+	return func(o *Options) error {
+		o.Embeddings = &ResolvedClientOptions{
+			Provider: name,
+			Specific: &opts,
+		}
+		return nil
+	}
+}

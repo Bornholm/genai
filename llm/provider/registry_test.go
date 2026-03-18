@@ -145,3 +145,145 @@ type dummyChatClient struct{}
 func (d *dummyChatClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	return nil, nil
 }
+
+func TestWithChatCompletion_SetsCorrectProvider(t *testing.T) {
+	optFunc := provider.WithChatCompletion("test-provider", testChatOptions{Model: "test-model"})
+
+	opts := &provider.Options{}
+	if err := optFunc(opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if opts.ChatCompletion == nil {
+		t.Fatal("expected ChatCompletion to be set")
+	}
+
+	if opts.ChatCompletion.Provider != "test-provider" {
+		t.Errorf("expected provider 'test-provider', got %q", opts.ChatCompletion.Provider)
+	}
+
+	specific, ok := opts.ChatCompletion.Specific.(*testChatOptions)
+	if !ok {
+		t.Fatalf("expected *testChatOptions, got %T", opts.ChatCompletion.Specific)
+	}
+
+	if specific.Model != "test-model" {
+		t.Errorf("expected model 'test-model', got %q", specific.Model)
+	}
+}
+
+func TestWithEmbeddings_SetsCorrectProvider(t *testing.T) {
+	optFunc := provider.WithEmbeddings("test-provider", testEmbeddingsOptions{Model: "test-embeddings-model"})
+
+	opts := &provider.Options{}
+	if err := optFunc(opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if opts.Embeddings == nil {
+		t.Fatal("expected Embeddings to be set")
+	}
+
+	if opts.Embeddings.Provider != "test-provider" {
+		t.Errorf("expected provider 'test-provider', got %q", opts.Embeddings.Provider)
+	}
+
+	specific, ok := opts.Embeddings.Specific.(*testEmbeddingsOptions)
+	if !ok {
+		t.Fatalf("expected *testEmbeddingsOptions, got %T", opts.Embeddings.Specific)
+	}
+
+	if specific.Model != "test-embeddings-model" {
+		t.Errorf("expected model 'test-embeddings-model', got %q", specific.Model)
+	}
+}
+
+func TestWithChatCompletion_CreatesClientSuccessfully(t *testing.T) {
+	const testProvider provider.Name = "test-with-chat-provider"
+
+	var receivedOpts *testChatOptions
+	provider.RegisterChatCompletion(
+		testProvider,
+		func() *testChatOptions { return &testChatOptions{Model: "default"} },
+		func(ctx context.Context, opts *testChatOptions) (llm.ChatCompletionClient, error) {
+			receivedOpts = opts
+			return &dummyChatClient{}, nil
+		},
+	)
+
+	ctx := context.Background()
+	client, err := provider.Create(ctx, provider.WithChatCompletion(testProvider, testChatOptions{
+		Model:   "gpt-4",
+		Timeout: 60,
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+
+	if receivedOpts.Model != "gpt-4" {
+		t.Errorf("expected model 'gpt-4', got %q", receivedOpts.Model)
+	}
+	if receivedOpts.Timeout != 60 {
+		t.Errorf("expected timeout 60, got %d", receivedOpts.Timeout)
+	}
+}
+
+func TestWithEmbeddings_CreatesClientSuccessfully(t *testing.T) {
+	const testProvider provider.Name = "test-with-embeddings-provider"
+
+	// Register embeddings provider (reusing testChatOptions for simplicity)
+	provider.RegisterEmbeddings(
+		testProvider,
+		func() *testChatOptions { return &testChatOptions{Model: "default"} },
+		func(ctx context.Context, opts *testChatOptions) (llm.EmbeddingsClient, error) {
+			return &dummyEmbeddingsClient{model: opts.Model}, nil
+		},
+	)
+
+	ctx := context.Background()
+	client, err := provider.Create(ctx, provider.WithEmbeddings(testProvider, testChatOptions{
+		Model: "text-embedding-3-small",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+// dummyEmbeddingsClient implements llm.EmbeddingsClient for tests.
+type dummyEmbeddingsClient struct {
+	model string
+}
+
+func (d *dummyEmbeddingsClient) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func TestWithChatCompletion_Immutability(t *testing.T) {
+	original := testChatOptions{Model: "original", Timeout: 30}
+	optFunc := provider.WithChatCompletion("test-provider", original)
+
+	// Modify the original
+	original.Model = "modified"
+	original.Timeout = 60
+
+	opts := &provider.Options{}
+	if err := optFunc(opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	specific := opts.ChatCompletion.Specific.(*testChatOptions)
+	if specific.Model != "original" {
+		t.Errorf("expected model 'original' (immutability), got %q", specific.Model)
+	}
+	if specific.Timeout != 30 {
+		t.Errorf("expected timeout 30 (immutability), got %d", specific.Timeout)
+	}
+}
