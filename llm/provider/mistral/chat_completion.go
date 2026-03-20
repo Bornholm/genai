@@ -116,10 +116,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		defer stream.Close()
 
 		var (
-			textBuf        strings.Builder
-			reasoningBuf   strings.Builder
-			reasoningDets  []llm.ReasoningDetail
-			finalUsage     llm.ChatCompletionUsage
+			reasoningBuf  strings.Builder
+			reasoningDets []llm.ReasoningDetail
+			finalUsage    llm.ChatCompletionUsage
 		)
 
 		for stream.Next() {
@@ -148,7 +147,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 			// Each delta.Content from Mistral is either a plain string or a
 			// self-contained JSON array like [{"type":"thinking",...}].
-			// Process each chunk individually so thinking blocks are stripped.
+			// Process each chunk individually so thinking blocks are stripped,
+			// then emit text deltas immediately for true streaming behaviour.
 			if delta.Content != "" {
 				chunkText, chunkDetails, chunkReasoning := extractThinkingFromResponse(delta.Content)
 				if chunkReasoning != "" || len(chunkDetails) > 0 {
@@ -156,7 +156,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					reasoningDets = append(reasoningDets, chunkDetails...)
 				}
 				if chunkText != "" {
-					textBuf.WriteString(chunkText)
+					chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, chunkText))
 				}
 			}
 
@@ -185,19 +185,16 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			return
 		}
 
-		// Emit accumulated content/reasoning before the CompleteStreamChunk so
-		// the handler does not break out of its receive loop before seeing content.
+		// Emit accumulated reasoning (without text — text was already streamed
+		// chunk by chunk above) before the CompleteStreamChunk.
 		reasoning := reasoningBuf.String()
-		textContent := textBuf.String()
 		if reasoning != "" || len(reasoningDets) > 0 {
 			chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(
 				llm.RoleAssistant,
-				textContent,
+				"",
 				reasoning,
 				reasoningDets,
 			))
-		} else if textContent != "" {
-			chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, textContent))
 		}
 
 		// Emit the complete (usage) chunk last so the handler breaks only after
