@@ -35,7 +35,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 	allTools := append(h.options.Tools, todoTools...)
 
 	// Create context manager
-	contextManager := NewContextManager(h.options.MaxTokens, h.options.TokenEstimator, h.options.TruncationStrategy)
+	contextManager := NewContextManager(h.options.MaxTokens, h.options.TokenEstimator, h.options.CompressionRatio, h.options.TruncationStrategy)
 
 	// 1b. Forced planning step: expose only TodoWrite with tool_choice=required so
 	// the model MUST write a structured plan before taking any action.

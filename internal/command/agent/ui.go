@@ -133,7 +133,12 @@ func renderToolCallDone(data *agent.ToolCallDoneData) string {
 		result = result[:500] + "\n... (truncated)"
 	}
 
-	return fmt.Sprintf("\n%s %s\n%s\n", timestamp, header, toolResultStyle.Render(result))
+	resultLines := strings.Split(result, "\n")
+	for i, line := range resultLines {
+		resultLines[i] = toolResultStyle.Render(line)
+	}
+
+	return fmt.Sprintf("\n%s %s\n%s", timestamp, header, strings.Join(resultLines, "\n"))
 }
 
 func renderTodoUpdated(data *agent.TodoUpdatedData) string {
@@ -180,7 +185,12 @@ func renderReasoning(data *agent.ReasoningData) string {
 	header := reasoningStyle.Render("🤔 Reasoning")
 	reasoning := strings.TrimSpace(data.Reasoning)
 
-	return fmt.Sprintf("\n%s %s\n\n%s\n", timestamp, header, reasoningStyle.Render(reasoning))
+	lines := strings.Split(reasoning, "\n")
+	for i, line := range lines {
+		lines[i] = reasoningStyle.Render(line)
+	}
+
+	return fmt.Sprintf("\n%s %s\n\n%s", timestamp, header, strings.Join(lines, "\n"))
 }
 
 func renderError(data *agent.ErrorData) string {

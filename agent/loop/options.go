@@ -20,6 +20,10 @@ const (
 	// - Budget message overhead (~50 tokens per iteration)
 	// - Response generation tokens
 	DefaultMaxTokens = 80000
+	// DefaultCompressionRatio is the fraction of MaxTokens used as the per-result
+	// token cap when compressing old tool results. 1/80 ≈ 0.0125, so with the
+	// default MaxTokens of 80000 each compressed result is capped at ~1000 tokens.
+	DefaultCompressionRatio = 1.0 / 80
 )
 
 // TruncationStrategy is a function that takes messages and returns a truncated list or an error
@@ -37,6 +41,12 @@ type Options struct {
 	MaxToolResultTokens int
 	TokenEstimator      func(string) int
 	TruncationStrategy  TruncationStrategy
+	// CompressionRatio controls how aggressively old tool results are compressed
+	// when the context approaches MaxTokens. Each compressed result is capped at
+	// max(200, MaxTokens * CompressionRatio) tokens.
+	// Example: ratio 0.01 with MaxTokens=16000 → 160 tokens per compressed result.
+	// Defaults to DefaultCompressionRatio.
+	CompressionRatio    float64
 	ApprovalFunc        ApprovalFunc
 	ApprovalRequired    map[string]bool
 	ApprovalRequiredAll bool
@@ -143,12 +153,22 @@ func WithForcePlanningStep(enabled bool) OptionFunc {
 	}
 }
 
+// WithCompressionRatio sets the fraction of MaxTokens used as the per-result
+// token cap when retroactively compressing old tool results.
+// See Options.CompressionRatio for details.
+func WithCompressionRatio(ratio float64) OptionFunc {
+	return func(o *Options) {
+		o.CompressionRatio = ratio
+	}
+}
+
 // NewOptions creates a new Options with defaults
 func NewOptions(funcs ...OptionFunc) *Options {
 	opts := &Options{
 		MaxIterations:       DefaultMaxIterations,
 		MaxTokens:           DefaultMaxTokens,
 		MaxToolResultTokens: 10000, // Default to 10K tokens per tool result
+		CompressionRatio:    DefaultCompressionRatio,
 		Tools:               []llm.Tool{},
 		TokenEstimator:      defaultTokenEstimator,
 		ApprovalRequired:    make(map[string]bool),

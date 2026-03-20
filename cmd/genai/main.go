@@ -4,7 +4,7 @@ import (
 	"github.com/bornholm/genai/internal/command"
 	"github.com/bornholm/genai/internal/command/agent"
 	"github.com/bornholm/genai/internal/command/llm"
-	cmdproxy "github.com/bornholm/genai/internal/command/proxy"
+	proxyCommand "github.com/bornholm/genai/internal/command/proxy"
 )
 
 var (
@@ -16,6 +16,6 @@ func main() {
 		"genai", version, "Generative AI command-line toolkit",
 		llm.Root(),
 		agent.Root(),
-		cmdproxy.Root(),
+		proxyCommand.Root(),
 	)
 }

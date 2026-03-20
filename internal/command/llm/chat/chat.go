@@ -175,9 +175,9 @@ func Chat() *cli.Command {
 func getProviderAndModel(envPrefix string) (provider, model string) {
 	// Try to get from environment with the given prefix
 	providerEnv := envPrefix + "CHAT_COMPLETION_PROVIDER"
-	modelEnv := envPrefix + "CHAT_COMPLETION_MODEL"
-
 	provider = os.Getenv(providerEnv)
+
+	modelEnv := envPrefix + "CHAT_COMPLETION_" + strings.ToUpper(provider) + "_MODEL"
 	model = os.Getenv(modelEnv)
 
 	return provider, model

@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"fmt"
+
 	"github.com/bornholm/genai/llm"
 )
 
@@ -12,9 +14,9 @@ type ContextManager struct {
 }
 
 // NewContextManager creates a new ContextManager
-func NewContextManager(maxTokens int, tokenEstimator func(string) int, truncationStrategy TruncationStrategy) *ContextManager {
+func NewContextManager(maxTokens int, tokenEstimator func(string) int, compressionRatio float64, truncationStrategy TruncationStrategy) *ContextManager {
 	if truncationStrategy == nil {
-		truncationStrategy = DefaultMiddleOutTruncationStrategy(maxTokens, tokenEstimator)
+		truncationStrategy = DefaultCompressingTruncationStrategy(maxTokens, tokenEstimator, compressionRatio)
 	}
 	return &ContextManager{
 		maxTokens:          maxTokens,
@@ -127,6 +129,119 @@ func DefaultMiddleOutTruncationStrategy(maxTokens int, tokenEstimator func(strin
 
 		return result, nil
 	}
+}
+
+// DefaultCompressingTruncationStrategy creates a two-pass truncation strategy:
+//
+//   - Pass 1: retroactively compress tool results in old message groups down to
+//     max(200, maxTokens*compressionRatio) tokens each, leaving the most recent
+//     groups untouched. This preserves the agent's "memory" of what it tried
+//     while freeing most tokens.
+//
+//   - Pass 2: if still over budget after compression, drop the oldest groups
+//     entirely (same behaviour as DefaultMiddleOutTruncationStrategy).
+//
+// compressionRatio is the fraction of maxTokens used as the per-result cap.
+// A ratio of 0.01 with maxTokens=16000 caps each compressed result at 160 tokens.
+// Use DefaultCompressionRatio if you don't have a specific value.
+func DefaultCompressingTruncationStrategy(maxTokens int, tokenEstimator func(string) int, compressionRatio float64) TruncationStrategy {
+	// Protect the last 3 groups from any modification so the model always has
+	// full detail on its most recent actions.
+	const protectedGroups = 3
+
+	// Each compressed tool result is trimmed to this many tokens.
+	// Clamped to a minimum of 200 to avoid empty-looking results.
+	compressedMax := max(200, int(float64(maxTokens)*compressionRatio))
+
+	return func(messages []llm.Message) ([]llm.Message, error) {
+		if len(messages) <= 2 {
+			return messages, nil
+		}
+
+		totalTokens := estimateMessagesTokens(messages, tokenEstimator)
+		if totalTokens <= maxTokens {
+			return messages, nil
+		}
+
+		anchors := messages[:2]
+		middle := messages[2:]
+		groups := groupMessages(middle)
+
+		excessTokens := totalTokens - maxTokens
+
+		// Pass 1 — compress tool results in compressible groups.
+		compressibleEnd := max(0, len(groups)-protectedGroups)
+		for i := 0; i < compressibleEnd && excessTokens > 0; i++ {
+			compressed, saved := compressGroupToolResults(groups[i], compressedMax, tokenEstimator)
+			if saved > 0 {
+				groups[i] = compressed
+				excessTokens -= saved
+			}
+		}
+
+		// Pass 2 — drop oldest groups if still over budget.
+		firstKept := 0
+		for firstKept < compressibleEnd && excessTokens > 0 {
+			excessTokens -= groups[firstKept].tokens(tokenEstimator)
+			firstKept++
+		}
+
+		if firstKept >= len(groups) {
+			return anchors, nil
+		}
+
+		remaining := make([]llm.Message, 0, len(middle))
+		for _, g := range groups[firstKept:] {
+			remaining = append(remaining, g...)
+		}
+
+		result := make([]llm.Message, 0, 2+1+len(remaining))
+		result = append(result, anchors...)
+		result = append(result, llm.NewMessage(llm.RoleSystem,
+			"[Earlier conversation truncated for context limits. The conversation continued from here.]"))
+		result = append(result, remaining...)
+
+		return result, nil
+	}
+}
+
+// compressGroupToolResults replaces oversized tool result messages in a group
+// with truncated versions. Returns the modified group and tokens saved.
+func compressGroupToolResults(group messageGroup, maxTokensPerResult int, tokenEstimator func(string) int) (messageGroup, int) {
+	maxChars := maxTokensPerResult * 4
+	result := make(messageGroup, len(group))
+	savedTokens := 0
+
+	for i, msg := range group {
+		if msg.Role() != llm.RoleTool {
+			result[i] = msg
+			continue
+		}
+
+		content := msg.Content()
+		currentTokens := tokenEstimator(content)
+		if currentTokens <= maxTokensPerResult {
+			result[i] = msg
+			continue
+		}
+
+		truncated := content
+		if len(content) > maxChars {
+			truncated = content[:maxChars] + fmt.Sprintf(
+				"\n[Result compressed: showing first %d of %d characters]",
+				maxChars, len(content),
+			)
+		}
+		savedTokens += currentTokens - tokenEstimator(truncated)
+
+		if tm, ok := msg.(llm.ToolMessage); ok {
+			result[i] = llm.NewToolMessage(tm.ID(), llm.NewToolResult(truncated))
+		} else {
+			result[i] = msg
+		}
+	}
+
+	return result, savedTokens
 }
 
 // NoTruncationStrategy returns a strategy that never truncates

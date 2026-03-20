@@ -11,6 +11,18 @@ import (
 func WriteToOutput(ctx *cli.Context, param string, content string, unattended bool) error {
 	// Output the response
 	if outputPath := ctx.String(param); outputPath != "" {
+		return WriteToOutputString(outputPath, content, unattended)
+	}
+
+	if !unattended {
+		fmt.Print(content)
+	}
+
+	return nil
+}
+
+func WriteToOutputString(outputPath string, content string, unattended bool) error {
+	if outputPath != "" {
 		err := os.WriteFile(outputPath, []byte(content), 0644)
 		if err != nil {
 			return errors.Wrap(err, "failed to write output file")

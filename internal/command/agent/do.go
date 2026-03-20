@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"mime"
@@ -17,6 +18,7 @@ import (
 	"github.com/bornholm/genai/agent"
 	"github.com/bornholm/genai/agent/loop"
 	"github.com/bornholm/genai/internal/command/common"
+	agentconfig "github.com/bornholm/genai/internal/command/config"
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
@@ -26,6 +28,127 @@ import (
 	"github.com/bornholm/genai/llm/provider/openrouter"
 )
 
+type doConfig struct {
+	baseConfig
+
+	a2aEnabled            bool
+	a2aDiscoveryDelay     time.Duration
+	task                  string
+	taskData              map[string]any
+	additionalContext     string
+	additionalContextData map[string]any
+	attachments           []string
+	maxTokens             int
+	maxToolResultTokens   int
+	schema                string
+	unattended            bool
+	output                string
+}
+
+func loadDoConfig(cliCtx *cli.Context) (*doConfig, error) {
+	if err := loadEnvFile(cliCtx); err != nil {
+		return nil, errors.Wrap(err, "failed to load env file")
+	}
+
+	var yamlCfg *agentconfig.Config
+	if configPath := cliCtx.String("config"); configPath != "" {
+		cfg, err := agentconfig.Load(configPath)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to load config file")
+		}
+		yamlCfg = cfg
+	}
+
+	r := &cfgResolver{cliCtx: cliCtx, yamlCfg: yamlCfg}
+	base := loadBaseConfig(r)
+
+	cfg := &doConfig{baseConfig: base}
+
+	cfg.task = r.string("task", func(c *agentconfig.Config) string {
+		if c.Do != nil {
+			return c.Do.Task
+		}
+		return ""
+	})
+
+	if yamlCfg != nil && yamlCfg.Do != nil && yamlCfg.Do.TaskData != nil {
+		cfg.taskData = yamlCfg.Do.TaskData
+	}
+
+	cfg.additionalContext = r.string("additional-context", func(c *agentconfig.Config) string {
+		if c.Do != nil {
+			return c.Do.AdditionalContext
+		}
+		return ""
+	})
+
+	if yamlCfg != nil && yamlCfg.Do != nil && yamlCfg.Do.AdditionalContextData != nil {
+		cfg.additionalContextData = yamlCfg.Do.AdditionalContextData
+	}
+
+	cfg.attachments = r.strings("attachment", func(c *agentconfig.Config) []string {
+		if c.Do != nil {
+			return c.Do.Attachments
+		}
+		return nil
+	})
+
+	cfg.maxTokens = r.int("max-tokens", func(c *agentconfig.Config) int {
+		if c.Do != nil {
+			return c.Do.MaxTokens
+		}
+		return 0
+	})
+
+	cfg.maxToolResultTokens = r.int("max-tool-result-tokens", func(c *agentconfig.Config) int {
+		if c.Do != nil {
+			return c.Do.MaxToolResultTokens
+		}
+		return 0
+	})
+
+	cfg.schema = r.string("schema", func(c *agentconfig.Config) string {
+		if c.Do != nil {
+			return c.Do.Schema
+		}
+		return ""
+	})
+
+	cfg.unattended = r.bool("unattended", func(c *agentconfig.Config) bool {
+		if c.Do != nil {
+			return c.Do.Unattended
+		}
+		return false
+	})
+
+	cfg.output = r.string("output", func(c *agentconfig.Config) string {
+		if c.Do != nil {
+			return c.Do.Output
+		}
+		return ""
+	})
+
+	if cliCtx.IsSet("a2a") {
+		cfg.a2aEnabled = cliCtx.Bool("a2a")
+	} else if yamlCfg != nil && yamlCfg.Do != nil && yamlCfg.Do.A2ADiscovery != nil {
+		cfg.a2aEnabled = yamlCfg.Do.A2ADiscovery.Enabled
+	} else {
+		cfg.a2aEnabled = cliCtx.Bool("a2a")
+	}
+
+	if cliCtx.IsSet("a2a-discovery-delay") {
+		cfg.a2aDiscoveryDelay = cliCtx.Duration("a2a-discovery-delay")
+	} else if yamlCfg != nil && yamlCfg.Do != nil && yamlCfg.Do.A2ADiscovery != nil && yamlCfg.Do.A2ADiscovery.Delay != "" {
+		if d, err := time.ParseDuration(yamlCfg.Do.A2ADiscovery.Delay); err == nil {
+			cfg.a2aDiscoveryDelay = d
+		}
+	} else {
+		cfg.a2aDiscoveryDelay = cliCtx.Duration("a2a-discovery-delay")
+	}
+
+	return cfg, nil
+}
+
 func Do() *cli.Command {
 	return &cli.Command{
 		Name:  "do",
@@ -34,29 +157,35 @@ func Do() *cli.Command {
 		Action: func(cliCtx *cli.Context) error {
 			ctx := cliCtx.Context
 
-			envPrefix := cliCtx.String("env-prefix")
-			envFile := cliCtx.String("env-file")
+			cfg, err := loadDoConfig(cliCtx)
+			if err != nil {
+				return errors.Wrap(err, "failed to load config")
+			}
 
-			// Build token limit options using shared helper
-			tokenLimitOpts := common.TokenLimitOptionsFromContext(cliCtx)
+			var tokenLimitOpts *common.TokenLimitOptions
+			if cfg.chatCompletionLimit > 0 || cfg.embeddingsLimit > 0 {
+				tokenLimitOpts = &common.TokenLimitOptions{
+					ChatCompletionTokens:   cfg.chatCompletionLimit,
+					ChatCompletionInterval: time.Minute,
+					EmbeddingsTokens:       cfg.embeddingsLimit,
+					EmbeddingsInterval:     time.Minute,
+				}
+			}
 
-			client, err := common.NewResilientClient(ctx, envPrefix, envFile, tokenLimitOpts)
+			client, err := common.NewResilientClient(ctx, cfg.envPrefix, cfg.envFile, tokenLimitOpts)
 			if err != nil {
 				return errors.Wrap(err, "failed to create llm client")
 			}
 
-			llmTools, close, err := common.GetMCPTools(cliCtx, "mcp", "mcp-auth-token")
+			llmTools, close, err := common.GetMCPToolsFromURLs(cliCtx.Context, cfg.mcpURLs, cfg.mcpAuthTokens)
 			if err != nil {
 				return errors.Wrap(err, "failed to get mcp tools")
 			}
-
 			defer close()
 
-			// Create dynamic tool registry for A2A discovered agents
 			dynamicRegistry := a2a.NewDynamicToolRegistry()
 
-			// Start A2A discovery if enabled
-			if cliCtx.Bool("a2a") {
+			if cfg.a2aEnabled {
 				discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
 				defer cancelDiscovery()
 
@@ -83,13 +212,10 @@ func Do() *cli.Command {
 					}
 				}()
 
-				// Wait for discovery to find agents
-				discoveryDelay := cliCtx.Duration("a2a-discovery-delay")
-				slog.Info("waiting for A2A agent discovery", "delay", discoveryDelay)
-				time.Sleep(discoveryDelay)
+				slog.Info("waiting for A2A agent discovery", "delay", cfg.a2aDiscoveryDelay)
+				time.Sleep(cfg.a2aDiscoveryDelay)
 			}
 
-			// Combine MCP tools with discovered A2A agent tools
 			allTools := append(llmTools, dynamicRegistry.ListTools()...)
 
 			if len(allTools) > 0 {
@@ -102,24 +228,21 @@ func Do() *cli.Command {
 				})))
 			}
 
-			taskPrompt, err := common.GetPrompt(cliCtx, "task", "task-data")
+			taskPrompt, err := getPrompt(cliCtx, cfg.task, cfg.taskData)
 			if err != nil {
 				return errors.Wrap(err, "failed to process task prompt")
 			}
 
-			additionalContext, err := common.GetPrompt(cliCtx, "additional-context", "additional-context-data")
+			additionalContext, err := getPrompt(cliCtx, cfg.additionalContext, cfg.additionalContextData)
 			if err != nil {
 				return errors.WithStack(err)
 			}
 
-			// Process attachments
-			attachmentPaths := cliCtx.StringSlice("attachment")
-			attachments, err := processAttachments(attachmentPaths)
+			attachments, err := processAttachments(cfg.attachments)
 			if err != nil {
 				return errors.Wrap(err, "failed to process attachments")
 			}
 
-			// Build system prompt
 			toolInfos := make([]loop.ToolInfo, len(allTools))
 			for i, t := range allTools {
 				toolInfos[i] = loop.ToolInfo{
@@ -133,28 +256,22 @@ func Do() *cli.Command {
 				return errors.Wrap(err, "failed to render system prompt")
 			}
 
-			// Parse reasoning options
-			reasoningOpts := common.GetReasoningOptions(cliCtx)
+			reasoningOpts := getReasoningOptions(cfg.reasoningEffort, cfg.reasoningMaxTokens)
 
-			// Create loop handler
 			loopOpts := []loop.OptionFunc{
 				loop.WithClient(client),
 				loop.WithTools(allTools...),
 				loop.WithSystemPrompt(systemPrompt),
-				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
-				loop.WithForcePlanningStep(!cliCtx.Bool("no-planning")),
+				loop.WithMaxIterations(cfg.maxIterations),
+				loop.WithForcePlanningStep(!cfg.noPlanning),
 			}
 
-			// Apply max-tokens if specified (0 means use default)
-			maxTokens := cliCtx.Int("max-tokens")
-			if maxTokens > 0 {
-				loopOpts = append(loopOpts, loop.WithMaxTokens(maxTokens))
+			if cfg.maxTokens > 0 {
+				loopOpts = append(loopOpts, loop.WithMaxTokens(cfg.maxTokens))
 			}
 
-			// Apply max-tool-result-tokens if specified (0 means use default)
-			maxToolResultTokens := cliCtx.Int("max-tool-result-tokens")
-			if maxToolResultTokens > 0 {
-				loopOpts = append(loopOpts, loop.WithMaxToolResultTokens(maxToolResultTokens))
+			if cfg.maxToolResultTokens > 0 {
+				loopOpts = append(loopOpts, loop.WithMaxToolResultTokens(cfg.maxToolResultTokens))
 			}
 			if reasoningOpts != nil {
 				loopOpts = append(loopOpts, loop.WithReasoningOptions(reasoningOpts))
@@ -165,24 +282,15 @@ func Do() *cli.Command {
 				return errors.Wrap(err, "failed to create handler")
 			}
 
-			// Create runner
 			runner := agent.NewRunner(handler)
 
 			ctx = openrouter.WithTransforms(ctx, []string{openrouter.TransformMiddleOut})
 
-			// Determine if we should use UI mode
-			unattended := cliCtx.Bool("unattended")
-
-			// Run the agent
 			var result string
 			err = runner.Run(ctx, agent.NewInput(taskPrompt, attachments...), func(evt agent.Event) error {
-				if unattended {
-					// Use slog for logging in unattended mode
+				if cfg.unattended {
 					switch evt.Type() {
 					case agent.EventTypeTextDelta:
-						// Accumulate streamed text deltas so the final output is
-						// complete even when EventTypeComplete arrives with an empty
-						// message (already streamed token by token).
 						data := evt.Data().(*agent.TextDeltaData)
 						result += data.Delta
 					case agent.EventTypeComplete:
@@ -211,9 +319,6 @@ func Do() *cli.Command {
 						slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))
 					}
 				} else {
-					// Use lipgloss UI for output in interactive mode.
-					// TextDelta events are printed inline (no newline) so tokens
-					// appear as they stream; all other events use Println.
 					if evt.Type() == agent.EventTypeTextDelta {
 						fmt.Print(RenderEvent(evt))
 					} else {
@@ -223,7 +328,6 @@ func Do() *cli.Command {
 						}
 					}
 
-					// Store result when complete
 					switch evt.Type() {
 					case agent.EventTypeTextDelta:
 						data := evt.Data().(*agent.TextDeltaData)
@@ -242,7 +346,7 @@ func Do() *cli.Command {
 				return errors.WithStack(err)
 			}
 
-			if err := common.WriteToOutput(cliCtx, "output", result, unattended); err != nil {
+			if err := common.WriteToOutputString(cfg.output, result, cfg.unattended); err != nil {
 				return errors.Wrap(err, "failed to write to output")
 			}
 
@@ -251,11 +355,38 @@ func Do() *cli.Command {
 	}
 }
 
-// processAttachments reads files and converts them to llm.Attachment
+func getPrompt(cliCtx *cli.Context, prompt string, data map[string]any) (string, error) {
+	if prompt == "" {
+		return "", nil
+	}
+
+	if strings.HasPrefix(prompt, "@") {
+		filePath := prompt[1:]
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return "", errors.Wrapf(err, "failed to read prompt file: %s", filePath)
+		}
+		prompt = string(content)
+	}
+
+	if len(data) > 0 {
+		dataJSON, err := json.Marshal(data)
+		if err != nil {
+			return "", errors.Wrap(err, "failed to marshal data")
+		}
+		prompt = strings.Replace(prompt, "{{data}}", string(dataJSON), -1)
+	}
+
+	return prompt, nil
+}
+
 func processAttachments(paths []string) ([]llm.Attachment, error) {
 	attachments := make([]llm.Attachment, 0, len(paths))
 
 	for _, path := range paths {
+		if path == "" {
+			continue
+		}
 		attachment, err := fileToAttachment(path)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to process attachment '%s'", path)
@@ -266,7 +397,6 @@ func processAttachments(paths []string) ([]llm.Attachment, error) {
 	return attachments, nil
 }
 
-// fileToAttachment reads a file and creates an llm.Attachment
 func fileToAttachment(path string) (llm.Attachment, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -286,18 +416,15 @@ func fileToAttachment(path string) (llm.Attachment, error) {
 	return attachment, nil
 }
 
-// detectMimeType returns the MIME type based on file extension
 func detectMimeType(path string) string {
 	ext := filepath.Ext(path)
 	mimeType := mime.TypeByExtension(ext)
 	if mimeType == "" {
-		// Default to octet-stream for unknown types
 		return "application/octet-stream"
 	}
 	return strings.SplitN(mimeType, ";", 2)[0]
 }
 
-// detectAttachmentType returns the attachment type based on MIME type
 func detectAttachmentType(mimeType string) llm.AttachmentType {
 	if strings.HasPrefix(mimeType, "image/") {
 		return llm.AttachmentTypeImage

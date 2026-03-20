@@ -23,7 +23,7 @@ func init() {
 			Name:     "task",
 			Usage:    "Description of the task to execute (text format, or @file to load from file)",
 			EnvVars:  []string{"GENAI_TASK"},
-			Required: true,
+			Required: false,
 		},
 		&cli.StringFlag{
 			Name:    "task-data",
@@ -47,7 +47,7 @@ func init() {
 			Aliases:   []string{"a"},
 			Usage:     "File attachments to pass to the agent (supports images, documents, etc.)",
 			EnvVars:   []string{"GENAI_ATTACHMENTS"},
-			TakesFile: true,
+			TakesFile: false,
 		},
 		// A2A specific
 		&cli.BoolFlag{
@@ -100,6 +100,7 @@ func init() {
 	DoFlags = append(DoFlags, AgentLoopFlags...)
 	DoFlags = append(DoFlags, OutputFlags...)
 	DoFlags = append(DoFlags, SchemaFlags...)
+	DoFlags = append(DoFlags, ConfigFlags...)
 }
 
 // GenerateFlags contains all flags for the "llm generate" command.
@@ -187,53 +188,54 @@ func init() {
 			Aliases: []string{"a"},
 			Value:   ":0", // Random available port
 			Usage:   "Address to listen on (host:port)",
-			EnvVars: []string{"A2A_ADDRESS"},
+			EnvVars: []string{"GENAI_A2A_ADDRESS"},
 		},
 		&cli.StringFlag{
 			Name:    "name",
 			Aliases: []string{"n"},
 			Value:   "genai-agent",
 			Usage:   "Agent name (used for mDNS announcement and agent card)",
-			EnvVars: []string{"A2A_AGENT_NAME"},
+			EnvVars: []string{"GENAI_A2A_NAME"},
 		},
 		&cli.StringFlag{
 			Name:    "description",
 			Value:   "A GenAI autonomous agent",
 			Usage:   "Agent description",
-			EnvVars: []string{"A2A_AGENT_DESCRIPTION"},
+			EnvVars: []string{"GENAI_A2A_DESCRIPTION"},
 		},
 		&cli.BoolFlag{
 			Name:    "no-mdns",
 			Value:   false,
 			Usage:   "Disable mDNS announcement",
-			EnvVars: []string{"A2A_NO_MDNS"},
+			EnvVars: []string{"GENAI_A2A_NO_MDNS"},
 		},
 		&cli.BoolFlag{
 			Name:    "discover",
 			Value:   false,
 			Usage:   "Enable mDNS discovery of peer agents",
-			EnvVars: []string{"A2A_DISCOVER"},
+			EnvVars: []string{"GENAI_A2A_DISCOVER"},
 		},
 		&cli.StringFlag{
 			Name:    "skills",
 			Usage:   "Agent skills as JSON array or @file.json to load from file",
-			EnvVars: []string{"A2A_SKILLS"},
+			EnvVars: []string{"GENAI_A2A_SKILLS"},
 		},
 		&cli.StringFlag{
 			Name:    "uuid",
 			Usage:   "Agent UUID (defaults to randomly generated)",
-			EnvVars: []string{"A2A_UUID"},
+			EnvVars: []string{"GENAI_A2A_UUID"},
 		},
 		&cli.StringSliceFlag{
 			Name:    "ignore",
 			Usage:   "UUIDs of agents to ignore (can be specified multiple times)",
-			EnvVars: []string{"A2A_IGNORE"},
+			EnvVars: []string{"GENAI_A2A_IGNORE"},
 		},
 	}
 	A2AFlags = append(A2AFlags, LLMClientFlags...)
 	A2AFlags = append(A2AFlags, MCPFlags...)
 	A2AFlags = append(A2AFlags, AgentLoopFlags...)
 	A2AFlags = append(A2AFlags, ReasoningFlags...)
+	A2AFlags = append(A2AFlags, ConfigFlags...)
 }
 
 // LLMClientFlags returns the CLI flags for LLM client configuration.
@@ -306,6 +308,17 @@ var OutputFlags = []cli.Flag{
 		Aliases: []string{"o"},
 		Usage:   "Output file path (default: stdout)",
 		EnvVars: []string{"GENAI_OUTPUT"},
+	},
+}
+
+// ConfigFlags returns the CLI flags for YAML config file support.
+var ConfigFlags = []cli.Flag{
+	&cli.StringFlag{
+		Name:      "config",
+		Aliases:   []string{"c"},
+		Usage:     "YAML configuration file path",
+		EnvVars:   []string{"GENAI_CONFIG"},
+		TakesFile: true,
 	},
 }
 

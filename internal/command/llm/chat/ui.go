@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/gdamore/tcell/v2/encoding"
 	"github.com/mattn/go-runewidth"
 	"github.com/pkg/errors"
 )
@@ -66,8 +65,6 @@ type ToolCallInfo struct {
 
 // NewUI creates a new terminal UI
 func NewUI(session *ChatSession) (*UI, error) {
-	encoding.Register()
-
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create screen")

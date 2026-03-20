@@ -17,6 +17,7 @@ import (
 	"github.com/bornholm/genai/a2a/discovery"
 	"github.com/bornholm/genai/agent/loop"
 	"github.com/bornholm/genai/internal/command/common"
+	agentconfig "github.com/bornholm/genai/internal/command/config"
 	"github.com/bornholm/genai/llm"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -26,161 +27,143 @@ import (
 	_ "github.com/bornholm/genai/llm/provider/all"
 )
 
+type a2aConfig struct {
+	baseConfig
+
+	address     string
+	name        string
+	description string
+	noMdns      bool
+	discover    bool
+	skills      []a2a.AgentSkill
+	uuid        string
+	ignore      []string
+}
+
+func loadA2AConfig(cliCtx *cli.Context) (*a2aConfig, error) {
+	if err := loadEnvFile(cliCtx); err != nil {
+		return nil, errors.Wrap(err, "failed to load env file")
+	}
+
+	var yamlCfg *agentconfig.Config
+	if configPath := cliCtx.String("config"); configPath != "" {
+		cfg, err := agentconfig.Load(configPath)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to load config file")
+		}
+		yamlCfg = cfg
+	}
+
+	r := &cfgResolver{cliCtx: cliCtx, yamlCfg: yamlCfg}
+	base := loadBaseConfig(r)
+
+	cfg := &a2aConfig{baseConfig: base}
+
+	cfg.address = r.string("address", func(c *agentconfig.Config) string {
+		if c.A2A != nil {
+			return c.A2A.Address
+		}
+		return ""
+	})
+
+	cfg.name = r.string("name", func(c *agentconfig.Config) string {
+		if c.A2A != nil {
+			return c.A2A.Name
+		}
+		return ""
+	})
+
+	cfg.description = r.string("description", func(c *agentconfig.Config) string {
+		if c.A2A != nil {
+			return c.A2A.Description
+		}
+		return ""
+	})
+
+	cfg.noMdns = r.bool("no-mdns", func(c *agentconfig.Config) bool {
+		if c.A2A != nil {
+			return c.A2A.NoMdns
+		}
+		return false
+	})
+
+	cfg.discover = r.bool("discover", func(c *agentconfig.Config) bool {
+		if c.A2A != nil {
+			return c.A2A.Discover
+		}
+		return false
+	})
+
+	if cliCtx.IsSet("skills") {
+		skills, err := parseSkills(cliCtx.String("skills"))
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse skills")
+		}
+		cfg.skills = skills
+	} else if yamlCfg != nil && yamlCfg.A2A != nil && len(yamlCfg.A2A.Skills) > 0 {
+		skills, err := convertSkills(yamlCfg.A2A.Skills)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to convert skills from YAML")
+		}
+		cfg.skills = skills
+	} else {
+		cfg.skills = []a2a.AgentSkill{}
+	}
+
+	cfg.uuid = r.string("uuid", func(c *agentconfig.Config) string {
+		if c.A2A != nil {
+			return c.A2A.UUID
+		}
+		return ""
+	})
+
+	cfg.ignore = r.strings("ignore", func(c *agentconfig.Config) []string {
+		if c.A2A != nil {
+			return c.A2A.Ignore
+		}
+		return nil
+	})
+
+	return cfg, nil
+}
+
 func A2A() *cli.Command {
 	return &cli.Command{
 		Name:  "a2a",
 		Usage: "Start an agent exposed via the A2A protocol on the local network",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "address",
-				Aliases: []string{"a"},
-				Value:   ":0", // Random available port
-				Usage:   "Address to listen on (host:port)",
-				EnvVars: []string{"A2A_ADDRESS"},
-			},
-			&cli.StringFlag{
-				Name:    "name",
-				Aliases: []string{"n"},
-				Value:   "genai-agent",
-				Usage:   "Agent name (used for mDNS announcement and agent card)",
-				EnvVars: []string{"A2A_AGENT_NAME"},
-			},
-			&cli.StringFlag{
-				Name:    "description",
-				Value:   "A GenAI autonomous agent",
-				Usage:   "Agent description",
-				EnvVars: []string{"A2A_AGENT_DESCRIPTION"},
-			},
-			&cli.BoolFlag{
-				Name:    "no-mdns",
-				Value:   false,
-				Usage:   "Disable mDNS announcement",
-				EnvVars: []string{"A2A_NO_MDNS"},
-			},
-			&cli.BoolFlag{
-				Name:    "discover",
-				Value:   false,
-				Usage:   "Enable mDNS discovery of peer agents",
-				EnvVars: []string{"A2A_DISCOVER"},
-			},
-			&cli.StringFlag{
-				Name:    "skills",
-				Usage:   "Agent skills as JSON array or @file.json to load from file",
-				EnvVars: []string{"A2A_SKILLS"},
-			},
-			&cli.StringFlag{
-				Name:      "env-file",
-				Usage:     "Environment file path",
-				EnvVars:   []string{"GENAI_LLM_ENV_FILE"},
-				Value:     ".env",
-				TakesFile: true,
-			},
-			&cli.StringFlag{
-				Name:    "env-prefix",
-				Usage:   "Environment llm variables prefix",
-				EnvVars: []string{"GENAI_LLM_ENV_PREFIX"},
-				Value:   "GENAI_",
-			},
-			&cli.StringSliceFlag{
-				Name:    "mcp",
-				Usage:   "MCP server URL",
-				EnvVars: []string{"GENAI_MCP"},
-			},
-			&cli.StringSliceFlag{
-				Name:    "mcp-auth-token",
-				Usage:   "MCP server auth token",
-				EnvVars: []string{"GENAI_MCP_AUTH_TOKEN"},
-			},
-			&cli.IntFlag{
-				Name:    "max-iterations",
-				Usage:   "Define the maximum number of iterations for the agent to make",
-				Value:   100,
-				EnvVars: []string{"GENAI_MAX_ITERATIONS"},
-			},
-			&cli.BoolFlag{
-				Name:    "no-planning",
-				Usage:   "Disable the forced TodoWrite planning step at the start of each task",
-				EnvVars: []string{"GENAI_NO_PLANNING"},
-				Value:   false,
-			},
-			&cli.StringFlag{
-				Name:    "reasoning-effort",
-				Usage:   "Reasoning effort level: xhigh, high, medium, low, minimal, none (mutually exclusive with --reasoning-max-tokens)",
-				EnvVars: []string{"GENAI_REASONING_EFFORT"},
-			},
-			&cli.IntFlag{
-				Name:    "reasoning-max-tokens",
-				Usage:   "Maximum number of tokens to use for reasoning (mutually exclusive with --reasoning-effort)",
-				EnvVars: []string{"GENAI_REASONING_MAX_TOKENS"},
-				Value:   0,
-			},
-			&cli.StringFlag{
-				Name:    "uuid",
-				Usage:   "Agent UUID (defaults to randomly generated)",
-				EnvVars: []string{"A2A_UUID"},
-			},
-			&cli.StringSliceFlag{
-				Name:    "ignore",
-				Usage:   "UUIDs of agents to ignore (can be specified multiple times)",
-				EnvVars: []string{"A2A_IGNORE"},
-			},
-			&cli.IntFlag{
-				Name:    "token-limit-chat-completion",
-				Usage:   "Maximum tokens per minute for chat completion (0 to disable)",
-				EnvVars: []string{"GENAI_TOKEN_LIMIT_CHAT_COMPLETION"},
-				Value:   500000,
-			},
-			&cli.IntFlag{
-				Name:    "token-limit-embeddings",
-				Usage:   "Maximum tokens per minute for embeddings (0 to disable)",
-				EnvVars: []string{"GENAI_TOKEN_LIMIT_EMBEDDINGS"},
-				Value:   20000000,
-			},
-		},
+		Flags: common.A2AFlags,
 		Action: func(cliCtx *cli.Context) error {
 			ctx, cancel := signal.NotifyContext(cliCtx.Context, os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 
-			envPrefix := cliCtx.String("env-prefix")
-			envFile := cliCtx.String("env-file")
+			cfg, err := loadA2AConfig(cliCtx)
+			if err != nil {
+				return errors.Wrap(err, "failed to load config")
+			}
 
-			// Build token limit options
 			var tokenLimitOpts *common.TokenLimitOptions
-			chatCompletionLimit := cliCtx.Int("token-limit-chat-completion")
-			embeddingsLimit := cliCtx.Int("token-limit-embeddings")
-			if chatCompletionLimit > 0 || embeddingsLimit > 0 {
+			if cfg.chatCompletionLimit > 0 || cfg.embeddingsLimit > 0 {
 				tokenLimitOpts = &common.TokenLimitOptions{
-					ChatCompletionTokens:   chatCompletionLimit,
+					ChatCompletionTokens:   cfg.chatCompletionLimit,
 					ChatCompletionInterval: time.Minute,
-					EmbeddingsTokens:       embeddingsLimit,
+					EmbeddingsTokens:       cfg.embeddingsLimit,
 					EmbeddingsInterval:     time.Minute,
 				}
 			}
 
-			// Build LLM client using the same infrastructure as "agent do"
-			llmClient, err := common.NewResilientClient(ctx, envPrefix, envFile, tokenLimitOpts)
+			llmClient, err := common.NewResilientClient(ctx, cfg.envPrefix, cfg.envFile, tokenLimitOpts)
 			if err != nil {
 				return errors.Wrap(err, "failed to create LLM client")
 			}
 
-			// Load tools (MCP servers, built-in tools) same as "agent do"
-			tools, cleanup, err := common.GetMCPTools(cliCtx, "mcp", "mcp-auth-token")
+			tools, cleanup, err := common.GetMCPToolsFromURLs(ctx, cfg.mcpURLs, cfg.mcpAuthTokens)
 			if err != nil {
 				return errors.Wrap(err, "failed to load tools")
 			}
 			defer cleanup()
 
-			// Create dynamic tool registry for discovered agents
 			dynamicRegistry := a2a.NewDynamicToolRegistry()
 
-			// Build the agent card
-			agentName := cliCtx.String("name")
-			skills, err := parseSkills(cliCtx.String("skills"))
-			if err != nil {
-				return errors.Wrap(err, "failed to parse skills")
-			}
-
-			// Build system prompt with initial tools
 			toolInfos := make([]loop.ToolInfo, len(tools))
 			for i, t := range tools {
 				toolInfos[i] = loop.ToolInfo{
@@ -194,24 +177,20 @@ func A2A() *cli.Command {
 				return errors.Wrap(err, "failed to render system prompt")
 			}
 
-			// Create a dynamic tool provider that combines static and dynamic tools
 			allToolsProvider := func() []llm.Tool {
 				return append(tools, dynamicRegistry.ListTools()...)
 			}
 
-			// Parse reasoning options
-			reasoningOpts := common.GetReasoningOptions(cliCtx)
+			reasoningOpts := getReasoningOptions(cfg.reasoningEffort, cfg.reasoningMaxTokens)
 
-			// Build loop options
 			loopOpts := []loop.OptionFunc{
-				loop.WithMaxIterations(cliCtx.Int("max-iterations")),
-				loop.WithForcePlanningStep(!cliCtx.Bool("no-planning")),
+				loop.WithMaxIterations(cfg.maxIterations),
+				loop.WithForcePlanningStep(!cfg.noPlanning),
 			}
 			if reasoningOpts != nil {
 				loopOpts = append(loopOpts, loop.WithReasoningOptions(reasoningOpts))
 			}
 
-			// Create the task handler backed by the agent loop
 			handler := a2a.NewAgentTaskHandler(
 				llmClient,
 				a2a.WithToolsProvider(allToolsProvider),
@@ -219,8 +198,7 @@ func A2A() *cli.Command {
 				a2a.WithLoopOptions(loopOpts...),
 			)
 
-			// Listen first so we know the actual port
-			listener, err := net.Listen("tcp4", cliCtx.String("address"))
+			listener, err := net.Listen("tcp4", cfg.address)
 			if err != nil {
 				return errors.Wrap(err, "failed to listen")
 			}
@@ -229,8 +207,8 @@ func A2A() *cli.Command {
 			port, _ := strconv.Atoi(portStr)
 
 			card := a2a.AgentCard{
-				Name:        agentName,
-				Description: cliCtx.String("description"),
+				Name:        cfg.name,
+				Description: cfg.description,
 				URL:         fmt.Sprintf("http://%s:%d", host, port),
 				Version:     "1.0.0",
 				Capabilities: a2a.AgentCapabilities{
@@ -238,43 +216,39 @@ func A2A() *cli.Command {
 					PushNotifications: false,
 					StateTransitions:  true,
 				},
-				Skills:             skills,
+				Skills:             cfg.skills,
 				DefaultInputModes:  []string{"text"},
 				DefaultOutputModes: []string{"text"},
 			}
 
 			server := a2a.NewServer(card, handler)
 
-			// Generate or use provided unique ID for this agent instance
-			agentID := cliCtx.String("uuid")
+			agentID := cfg.uuid
 			if agentID == "" {
 				agentID = uuid.New().String()
 			} else {
-				// Validate the provided UUID
 				if _, err := uuid.Parse(agentID); err != nil {
 					return errors.Wrap(err, "invalid UUID format")
 				}
 			}
 
-			// Build set of ignored UUIDs (self + manually ignored)
 			ignoredUUIDs := make(map[string]bool)
 			ignoredUUIDs[agentID] = true
-			for _, id := range cliCtx.StringSlice("ignore") {
+			for _, id := range cfg.ignore {
 				if _, err := uuid.Parse(id); err != nil {
 					return errors.Wrapf(err, "invalid ignore UUID format: %s", id)
 				}
 				ignoredUUIDs[id] = true
 			}
 
-			// Start mDNS announcement
-			if !cliCtx.Bool("no-mdns") {
+			if !cfg.noMdns {
 				announcer, err := discovery.NewAnnouncer(
-					discovery.WithInstance(agentName),
+					discovery.WithInstance(cfg.name),
 					discovery.WithPort(port),
 					discovery.WithTXTRecords(
 						fmt.Sprintf("id=%s", agentID),
 						"version=1.0.0",
-						fmt.Sprintf("description=%s", cliCtx.String("description")),
+						fmt.Sprintf("description=%s", cfg.description),
 					),
 				)
 				if err != nil {
@@ -283,17 +257,14 @@ func A2A() *cli.Command {
 				defer announcer.Shutdown()
 			}
 
-			// Optionally start mDNS discovery of peer agents with dynamic tool registration
-			if cliCtx.Bool("discover") {
+			if cfg.discover {
 				watcher := discovery.NewWatcher(&discovery.AgentEventHandlerFunc{
 					OnDiscovered: func(discoveredAgent *discovery.DiscoveredAgent) {
-						// Ignore self and manually ignored agents (by UUID)
 						if ignoredUUIDs[discoveredAgent.ID] {
 							slog.Debug("ignoring agent in discovery", "id", discoveredAgent.ID, "name", discoveredAgent.Name)
 							return
 						}
 
-						// Create a tool for the discovered agent
 						tool := a2a.NewRemoteAgentTool(
 							sanitizeToolName(discoveredAgent.Name),
 							fmt.Sprintf("Delegate tasks to the '%s' agent. %s", discoveredAgent.Name, getAgentDescription(discoveredAgent)),
@@ -303,7 +274,6 @@ func A2A() *cli.Command {
 						slog.Info("registered tool for discovered agent", "name", discoveredAgent.Name, "id", discoveredAgent.ID, "url", discoveredAgent.URL)
 					},
 					OnRemoved: func(discoveredAgent *discovery.DiscoveredAgent) {
-						// Ignore self and manually ignored agents (by UUID)
 						if ignoredUUIDs[discoveredAgent.ID] {
 							return
 						}
@@ -322,7 +292,7 @@ func A2A() *cli.Command {
 
 			slog.Info("A2A agent started",
 				"address", listener.Addr().String(),
-				"name", agentName,
+				"name", cfg.name,
 				"id", agentID,
 			)
 
@@ -343,9 +313,7 @@ func A2A() *cli.Command {
 	}
 }
 
-// sanitizeToolName converts an agent name to a valid tool name
 func sanitizeToolName(name string) string {
-	// Replace spaces and special characters with underscores
 	result := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
 			return r
@@ -355,7 +323,6 @@ func sanitizeToolName(name string) string {
 	return "agent_" + result
 }
 
-// getAgentDescription extracts description from TXT records or returns a default
 func getAgentDescription(agent *discovery.DiscoveredAgent) string {
 	for _, txt := range agent.TXT {
 		if strings.HasPrefix(txt, "description=") {
@@ -365,7 +332,6 @@ func getAgentDescription(agent *discovery.DiscoveredAgent) string {
 	return fmt.Sprintf("Remote agent at %s", agent.URL)
 }
 
-// parseSkills parses skills from JSON string or loads from file if prefixed with @
 func parseSkills(input string) ([]a2a.AgentSkill, error) {
 	if input == "" {
 		return []a2a.AgentSkill{}, nil
@@ -373,9 +339,8 @@ func parseSkills(input string) ([]a2a.AgentSkill, error) {
 
 	var jsonData string
 
-	// Check if input starts with "@" (file path)
 	if strings.HasPrefix(input, "@") {
-		filePath := input[1:] // Remove the "@" prefix
+		filePath := input[1:]
 		content, err := os.ReadFile(filePath)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to read skills file: %s", filePath)
@@ -388,6 +353,24 @@ func parseSkills(input string) ([]a2a.AgentSkill, error) {
 	var skills []a2a.AgentSkill
 	if err := json.Unmarshal([]byte(jsonData), &skills); err != nil {
 		return nil, errors.Wrap(err, "failed to parse skills JSON")
+	}
+
+	return skills, nil
+}
+
+func convertSkills(skillsAny []any) ([]a2a.AgentSkill, error) {
+	if len(skillsAny) == 0 {
+		return []a2a.AgentSkill{}, nil
+	}
+
+	data, err := json.Marshal(skillsAny)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal skills for conversion")
+	}
+
+	var skills []a2a.AgentSkill
+	if err := json.Unmarshal(data, &skills); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshal skills")
 	}
 
 	return skills, nil

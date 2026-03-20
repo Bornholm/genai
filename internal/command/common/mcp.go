@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -19,19 +20,23 @@ func GetMCPTools(ctx *cli.Context, mcpURLParam string, mcpAuthParam string) ([]l
 	mcpURLs := ctx.StringSlice(mcpURLParam)
 	mcpAuths := ctx.StringSlice(mcpAuthParam)
 
+	return GetMCPToolsFromURLs(ctx.Context, mcpURLs, mcpAuths)
+}
+
+func GetMCPToolsFromURLs(ctx context.Context, mcpURLs []string, mcpAuths []string) ([]llm.Tool, func(), error) {
 	clients := make([]mcp.Client, 0)
 
 	close := func() {
 		for _, c := range clients {
 			if err := c.Stop(); err != nil {
-				slog.ErrorContext(ctx.Context, "could not stop mcp client", slogx.Error(err))
+				slog.ErrorContext(ctx, "could not stop mcp client", slogx.Error(err))
 			}
 		}
 	}
 
 	for i, u := range mcpURLs {
 		var c mcp.Client
-		if url, err := url.ParseRequestURI(u); err == nil && strings.HasPrefix(url.Scheme, "http") {
+		if parsedURL, err := url.ParseRequestURI(u); err == nil && strings.HasPrefix(parsedURL.Scheme, "http") {
 			opts := []http.OptionFunc{}
 
 			if len(mcpAuths) > i {
@@ -47,13 +52,13 @@ func GetMCPTools(ctx *cli.Context, mcpURLParam string, mcpAuthParam string) ([]l
 			c = stdio.NewClient(command)
 		}
 
-		slog.DebugContext(ctx.Context, "starting mcp client", slog.String("client", u))
+		slog.DebugContext(ctx, "starting mcp client", slog.String("client", u))
 
-		if err := c.Start(ctx.Context); err != nil {
+		if err := c.Start(ctx); err != nil {
 			return nil, nil, errors.Wrapf(err, "could not start mcp client '%s'", u)
 		}
 
-		slog.DebugContext(ctx.Context, "mcp client started", slog.String("client", u))
+		slog.DebugContext(ctx, "mcp client started", slog.String("client", u))
 
 		clients = append(clients, c)
 	}
@@ -61,7 +66,7 @@ func GetMCPTools(ctx *cli.Context, mcpURLParam string, mcpAuthParam string) ([]l
 	tools := make([]llm.Tool, 0)
 
 	for i, c := range clients {
-		clientTools, err := c.GetTools(ctx.Context)
+		clientTools, err := c.GetTools(ctx)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "could not retrieve mcp server '%s' tools", mcpURLs[i])
 		}
