@@ -287,6 +287,7 @@ func Do() *cli.Command {
 			ctx = openrouter.WithTransforms(ctx, []string{openrouter.TransformMiddleOut})
 
 			var result string
+			var streamed bool
 			err = runner.Run(ctx, agent.NewInput(taskPrompt, attachments...), func(evt agent.Event) error {
 				if cfg.unattended {
 					switch evt.Type() {
@@ -319,23 +320,21 @@ func Do() *cli.Command {
 						slog.ErrorContext(ctx, "agent error", slog.String("message", data.Message))
 					}
 				} else {
-					if evt.Type() == agent.EventTypeTextDelta {
-						fmt.Print(RenderEvent(evt))
-					} else {
-						output := RenderEvent(evt)
-						if output != "" {
-							fmt.Println(output)
-						}
-					}
-
 					switch evt.Type() {
 					case agent.EventTypeTextDelta:
+						fmt.Print(RenderEvent(evt))
 						data := evt.Data().(*agent.TextDeltaData)
 						result += data.Delta
+						streamed = true
 					case agent.EventTypeComplete:
 						data := evt.Data().(*agent.CompleteData)
 						if data.Message != "" {
 							result = data.Message
+						}
+					default:
+						output := RenderEvent(evt)
+						if output != "" {
+							fmt.Println(output)
 						}
 					}
 				}
@@ -346,8 +345,14 @@ func Do() *cli.Command {
 				return errors.WithStack(err)
 			}
 
-			if err := common.WriteToOutputString(cfg.output, result, cfg.unattended); err != nil {
-				return errors.Wrap(err, "failed to write to output")
+			if cfg.output != "" {
+				if err := common.WriteToOutputString(cfg.output, result, cfg.unattended); err != nil {
+					return errors.Wrap(err, "failed to write to output")
+				}
+			} else if !streamed {
+				if err := common.WriteToOutputString("", result, cfg.unattended); err != nil {
+					return errors.Wrap(err, "failed to write to output")
+				}
 			}
 
 			return nil
