@@ -29,34 +29,65 @@ go get github.com/Bornholm/genai
 
 ## Getting started
 
+Here's how to get started with the GenAI library using environment variables for configuration:
+
 ```go
-ctx := context.Background()
+package main
 
-// Create a client with chat completion implementation
-client, err := provider.Create(ctx, provider.WithChatCompletionOptions(provider.ClientOptions{
-  Provider: openai.Name,
-  BaseURL:  "https://api.openai.com/v1/",
-  Model:    "gpt-4o-mini",
-  APIKey: "<your-api-key>",
-}))
-if err != nil {
-  log.Fatalf("[FATAL] %s", err)
-}
+import (
+  "context"
+  "flag"
+  "log"
 
-// Create our chat completion history
-messages := []llm.Message{
-  llm.NewMessage(llm.RoleSystem, "You are an expert in story-telling."),
-  llm.NewMessage(llm.RoleUser, "Please tell me a beautiful story."),
-}
-
-res, err := client.ChatCompletion(ctx,
-  llm.WithMessages(messages...),
+  "github.com/bornholm/genai/llm"
+  "github.com/bornholm/genai/llm/provider"
+  "github.com/bornholm/genai/llm/provider/env"
 )
-if err != nil {
-  log.Fatalf("[FATAL] %s", err)
+
+var (
+  envFile string = ".env"
+)
+
+func init() {
+  flag.StringVar(&envFile, "env-file", envFile, "client configuration environment file")
 }
 
-log.Printf("[STORY] %s", res.Message().Content())
+func main() {
+  flag.Parse()
+  ctx := context.Background()
+
+  // Create a client with chat completion implementation
+  client, err := provider.Create(ctx, env.With("GENAI_", envFile))
+  if err != nil {
+    log.Fatalf("[FATAL] %s", err)
+  }
+
+  // Create our chat completion history
+  messages := []llm.Message{
+    llm.NewMessage(llm.RoleSystem, "You are an expert in story-telling."),
+    llm.NewMessage(llm.RoleUser, "Please tell me a beautiful story."),
+  }
+
+  // The chat completion options will now be validated before sending
+  res, err := client.ChatCompletion(ctx,
+    llm.WithMessages(messages...),
+    llm.WithTemperature(0.7), // This will be validated to be between 0 and 2
+  )
+  if err != nil {
+    log.Fatalf("[FATAL] %s", err)
+  }
+
+  log.Printf("[STORY] %s", res.Message().Content())
+}
+```
+
+Make sure to create a `.env` file with your API key. For example, with the Mistral provider:
+
+```bash
+GENAI_CHAT_COMPLETION_PROVIDER=mistral
+GENAI_CHAT_COMPLETION_MISTRAL_BASE_URL=https://api.mistral.ai/v1/
+GENAI_CHAT_COMPLETION_MISTRAL_API_KEY=<your_api_key>
+GENAI_CHAT_COMPLETION_MISTRAL_MODEL=mistral-small-latest
 ```
 
 ## Examples
@@ -71,6 +102,10 @@ log.Printf("[STORY] %s", res.Message().Content())
 ## CLI
 
 A CLI using this library is available. It supports the main operations provided by this library.
+
+### Tutorials
+
+- [Getting started with `genai llm chat`](./docs/tutorials/getting-started-with-chat.md)
 
 ## License
 
