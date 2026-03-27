@@ -5,6 +5,9 @@ SHELL := /bin/bash
 build:
 	CGO_ENABLED=0 go build -o bin/genai ./cmd/genai
 
+build-wasm:
+	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o bin/genai.wasm ./wasm
+
 watch: tools/modd/bin/modd
 	tools/modd/bin/modd
 

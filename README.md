@@ -103,6 +103,10 @@ GENAI_CHAT_COMPLETION_MISTRAL_MODEL=mistral-small-latest
 
 A CLI using this library is available. It supports the main operations provided by this library.
 
+## WASM
+
+The GenAI library can be compiled to WebAssembly (WASM) to enable usage in browser-based environments, such as Thunderbird extensions or web applications. See [`WASM.md`](./WASM.md) for more informations.
+
 ### Tutorials
 
 - [Getting started with `genai llm chat`](./docs/tutorials/getting-started-with-chat.md)
