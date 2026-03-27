@@ -1,9 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"mime"
@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/bornholm/genai/a2a"
@@ -375,11 +376,17 @@ func getPrompt(cliCtx *cli.Context, prompt string, data map[string]any) (string,
 	}
 
 	if len(data) > 0 {
-		dataJSON, err := json.Marshal(data)
+		var buf bytes.Buffer
+		tmpl, err := template.New("").Parse(prompt)
 		if err != nil {
-			return "", errors.Wrap(err, "failed to marshal data")
+			return "", errors.Wrap(err, "could not parse prompt template")
 		}
-		prompt = strings.Replace(prompt, "{{data}}", string(dataJSON), -1)
+
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return "", errors.Wrap(err, "could inject prompt template data")
+		}
+
+		prompt = buf.String()
 	}
 
 	return prompt, nil
