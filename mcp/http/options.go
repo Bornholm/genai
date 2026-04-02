@@ -1,16 +1,25 @@
 package http
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 type Options struct {
-	HTTPClient *http.Client
+	HTTPClient       *http.Client
+	MaxRetries       int
+	BaseDelay        time.Duration
+	ReconnectEnabled bool
 }
 
 type OptionFunc func(opts *Options)
 
 func NewOptions(funcs ...OptionFunc) *Options {
 	opts := &Options{
-		HTTPClient: http.DefaultClient,
+		HTTPClient:       http.DefaultClient,
+		MaxRetries:       3,
+		BaseDelay:        100 * time.Millisecond,
+		ReconnectEnabled: true,
 	}
 	for _, fn := range funcs {
 		fn(opts)
@@ -42,6 +51,24 @@ func WithAuthToken(authToken string) OptionFunc {
 				"Authorization": []string{"Bearer " + authToken},
 			},
 		}
+	}
+}
+
+func WithMaxRetries(maxRetries int) OptionFunc {
+	return func(opts *Options) {
+		opts.MaxRetries = maxRetries
+	}
+}
+
+func WithBaseDelay(delay time.Duration) OptionFunc {
+	return func(opts *Options) {
+		opts.BaseDelay = delay
+	}
+}
+
+func WithReconnectEnabled(enabled bool) OptionFunc {
+	return func(opts *Options) {
+		opts.ReconnectEnabled = enabled
 	}
 }
 

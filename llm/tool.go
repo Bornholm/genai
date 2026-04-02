@@ -113,13 +113,15 @@ func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessa
 	switch typ := tc.Parameters().(type) {
 	case string:
 		if err := json.Unmarshal([]byte(typ), &params); err != nil {
-			toolResult := NewToolResult("Invalid parameter format")
+			schema, _ := json.Marshal(tool.Parameters())
+			toolResult := NewToolResult(fmt.Sprintf("Invalid parameter format for '%s'. Expected valid JSON object. Schema: %s", tc.Name(), schema))
 			return NewToolMessage(tc.ID(), toolResult), nil
 		}
 
 	case []byte:
 		if err := json.Unmarshal(typ, &params); err != nil {
-			toolResult := NewToolResult("Invalid parameter format")
+			schema, _ := json.Marshal(tool.Parameters())
+			toolResult := NewToolResult(fmt.Sprintf("Invalid parameter format for '%s'. Expected valid JSON object. Schema: %s", tc.Name(), schema))
 			return NewToolMessage(tc.ID(), toolResult), nil
 		}
 
@@ -156,9 +158,9 @@ type JSONSchema map[string]any
 
 func NewJSONSchema() JSONSchema {
 	return map[string]any{
-		"type":                  "object",
-		"properties":            map[string]any{},
-		"required":              []string{},
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"required":             []string{},
 		"additionalProperties": false,
 	}
 }

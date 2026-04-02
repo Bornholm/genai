@@ -51,7 +51,10 @@ func NewClient(command []string, funcs ...OptionFunc) *Client {
 	}
 
 	return &Client{
-		client: common.NewClient(connector),
+		client: common.NewClient(connector,
+			common.WithMaxRetries(opts.MaxRetries),
+			common.WithBaseDelay(opts.BaseDelay),
+			common.WithReconnectEnabled(opts.ReconnectEnabled)),
 	}
 }
 

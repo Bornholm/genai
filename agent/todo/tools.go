@@ -72,7 +72,7 @@ func NewTodoWriteTool(list *List, emit agent.EmitFunc) llm.Tool {
 			var items []TodoWriteItem
 
 			if err := json.Unmarshal(itemsJSON, &items); err != nil {
-				return llm.NewToolResult("Error: invalid items format. Expected JSON array with id, content, and status fields."), nil
+				return llm.NewToolResult("Error: invalid items format. Expected JSON array of objects with 'id' (string), 'content' (string), and 'status' (string: 'pending'|'in_progress'|'done') fields. Example: [{\"id\": \"1\", \"content\": \"Do something\", \"status\": \"pending\"}]"), nil
 			}
 
 			// Replace the entire list

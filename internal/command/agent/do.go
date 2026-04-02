@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/bornholm/genai/a2a"
@@ -35,9 +33,9 @@ type doConfig struct {
 	a2aEnabled            bool
 	a2aDiscoveryDelay     time.Duration
 	task                  string
-	taskData              map[string]any
+	taskData              any
 	additionalContext     string
-	additionalContextData map[string]any
+	additionalContextData any
 	attachments           []string
 	maxTokens             int
 	maxToolResultTokens   int
@@ -72,9 +70,12 @@ func loadDoConfig(cliCtx *cli.Context) (*doConfig, error) {
 		return ""
 	})
 
-	if yamlCfg != nil && yamlCfg.Do != nil && yamlCfg.Do.TaskData != nil {
-		cfg.taskData = yamlCfg.Do.TaskData
-	}
+	cfg.taskData = r.data("task-data", func(c *agentconfig.Config) map[string]any {
+		if c.Do != nil {
+			return c.Do.TaskData
+		}
+		return nil
+	})
 
 	cfg.additionalContext = r.string("additional-context", func(c *agentconfig.Config) string {
 		if c.Do != nil {
@@ -83,9 +84,12 @@ func loadDoConfig(cliCtx *cli.Context) (*doConfig, error) {
 		return ""
 	})
 
-	if yamlCfg != nil && yamlCfg.Do != nil && yamlCfg.Do.AdditionalContextData != nil {
-		cfg.additionalContextData = yamlCfg.Do.AdditionalContextData
-	}
+	cfg.additionalContextData = r.data("additional-context-data", func(c *agentconfig.Config) map[string]any {
+		if c.Do != nil {
+			return c.Do.AdditionalContextData
+		}
+		return nil
+	})
 
 	cfg.attachments = r.strings("attachment", func(c *agentconfig.Config) []string {
 		if c.Do != nil {
@@ -229,12 +233,12 @@ func Do() *cli.Command {
 				})))
 			}
 
-			taskPrompt, err := getPrompt(cliCtx, cfg.task, cfg.taskData)
+			taskPrompt, err := common.GetPromptWithData(cliCtx, cfg.task, cfg.taskData)
 			if err != nil {
 				return errors.Wrap(err, "failed to process task prompt")
 			}
 
-			additionalContext, err := getPrompt(cliCtx, cfg.additionalContext, cfg.additionalContextData)
+			additionalContext, err := common.GetPromptWithData(cliCtx, cfg.additionalContext, cfg.additionalContextData)
 			if err != nil {
 				return errors.WithStack(err)
 			}
@@ -359,37 +363,6 @@ func Do() *cli.Command {
 			return nil
 		},
 	}
-}
-
-func getPrompt(cliCtx *cli.Context, prompt string, data map[string]any) (string, error) {
-	if prompt == "" {
-		return "", nil
-	}
-
-	if strings.HasPrefix(prompt, "@") {
-		filePath := prompt[1:]
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			return "", errors.Wrapf(err, "failed to read prompt file: %s", filePath)
-		}
-		prompt = string(content)
-	}
-
-	if len(data) > 0 {
-		var buf bytes.Buffer
-		tmpl, err := template.New("").Parse(prompt)
-		if err != nil {
-			return "", errors.Wrap(err, "could not parse prompt template")
-		}
-
-		if err := tmpl.Execute(&buf, data); err != nil {
-			return "", errors.Wrap(err, "could inject prompt template data")
-		}
-
-		prompt = buf.String()
-	}
-
-	return prompt, nil
 }
 
 func processAttachments(paths []string) ([]llm.Attachment, error) {

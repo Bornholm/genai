@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"os"
+	"strings"
 
 	"github.com/bornholm/genai/internal/command/config"
 	"github.com/bornholm/genai/llm"
@@ -74,6 +76,34 @@ func (r *cfgResolver) strings(flag string, getter func(*config.Config) []string)
 		}
 	}
 	return r.cliCtx.StringSlice(flag)
+}
+
+func (r *cfgResolver) data(flag string, getter func(*config.Config) map[string]any) any {
+	if r.cliCtx.IsSet(flag) {
+		rawData := r.cliCtx.String(flag)
+		if rawData == "" {
+			return nil
+		}
+		if strings.HasPrefix(rawData, "@") {
+			filePath := rawData[1:]
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil
+			}
+			rawData = string(content)
+		}
+		var data any
+		if err := json.Unmarshal([]byte(rawData), &data); err != nil {
+			return nil
+		}
+		return data
+	}
+	if r.yamlCfg != nil {
+		if data := getter(r.yamlCfg); data != nil {
+			return data
+		}
+	}
+	return nil
 }
 
 // loadEnvFile charge le fichier .env spécifié par le flag "env-file" dans l'environnement du processus,
