@@ -97,6 +97,8 @@ type BaseStreamDelta struct {
 	toolCalls        []ToolCallDelta
 	reasoning        string
 	reasoningDetails []ReasoningDetail
+	audioData        string
+	transcript       string
 }
 
 // Role implements StreamDelta
@@ -122,6 +124,16 @@ func (d *BaseStreamDelta) Reasoning() string {
 // ReasoningDetails implements ReasoningStreamDelta
 func (d *BaseStreamDelta) ReasoningDetails() []ReasoningDetail {
 	return d.reasoningDetails
+}
+
+// AudioData returns the base64-encoded audio data in this chunk
+func (d *BaseStreamDelta) AudioData() string {
+	return d.audioData
+}
+
+// Transcript returns the transcript in this audio chunk
+func (d *BaseStreamDelta) Transcript() string {
+	return d.transcript
 }
 
 var _ StreamDelta = &BaseStreamDelta{}
@@ -202,6 +214,18 @@ func NewReasoningStreamDelta(role Role, content string, reasoning string, reason
 		toolCalls:        toolCalls,
 		reasoning:        reasoning,
 		reasoningDetails: reasoningDetails,
+	}
+}
+
+// NewAudioStreamDelta creates a new stream delta that also carries audio data.
+// Use this when the provider returns audio chunks during streaming (e.g., text-to-audio models).
+func NewAudioStreamDelta(role Role, content, audioData, transcript string, toolCalls ...ToolCallDelta) *BaseStreamDelta {
+	return &BaseStreamDelta{
+		role:       role,
+		content:    content,
+		toolCalls:  toolCalls,
+		audioData:  audioData,
+		transcript: transcript,
 	}
 }
 

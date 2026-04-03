@@ -362,6 +362,23 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	req.ToolChoice = opts.ToolChoice
 
+	// Configure modalities (e.g., ["text", "audio"] for audio output)
+	if len(opts.Modalities) > 0 {
+		modalities := make([]openrouter.ChatCompletionModality, len(opts.Modalities))
+		for i, m := range opts.Modalities {
+			modalities[i] = openrouter.ChatCompletionModality(m)
+		}
+		req.Modalities = modalities
+	}
+
+	// Configure audio output
+	if opts.Audio != nil {
+		req.AudioConfig = &openrouter.ChatCompletionAudioConfig{
+			Voice:  openrouter.AudioVoice(opts.Audio.Voice),
+			Format: openrouter.AudioFormat(opts.Audio.Format),
+		}
+	}
+
 	messages, err := buildMessages(opts.Messages, c.model)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -504,6 +521,23 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	req.ToolChoice = opts.ToolChoice
 
+	// Configure modalities (e.g., ["text", "audio"] for audio output)
+	if len(opts.Modalities) > 0 {
+		modalities := make([]openrouter.ChatCompletionModality, len(opts.Modalities))
+		for i, m := range opts.Modalities {
+			modalities[i] = openrouter.ChatCompletionModality(m)
+		}
+		req.Modalities = modalities
+	}
+
+	// Configure audio output
+	if opts.Audio != nil {
+		req.AudioConfig = &openrouter.ChatCompletionAudioConfig{
+			Voice:  openrouter.AudioVoice(opts.Audio.Voice),
+			Format: openrouter.AudioFormat(opts.Audio.Format),
+		}
+	}
+
 	messages, err := buildMessages(opts.Messages, c.model)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -610,7 +644,24 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				deltaReasoningDetails = toReasoningDetails(delta.ReasoningDetails)
 			}
 
-			if deltaReasoning != "" || len(deltaReasoningDetails) > 0 {
+			// Extract audio data from the delta (for text-to-audio models like Lyria)
+			var audioData, transcript string
+			if delta.Audio != nil {
+				audioData = delta.Audio.Data
+				transcript = delta.Audio.Transcript
+			}
+
+			// Emit audio stream delta if audio data or transcript is present
+			if audioData != "" || transcript != "" {
+				streamDelta := llm.NewAudioStreamDelta(
+					llm.RoleAssistant,
+					delta.Content,
+					audioData,
+					transcript,
+					toolCallDeltas...,
+				)
+				chunks <- llm.NewStreamChunk(streamDelta)
+			} else if deltaReasoning != "" || len(deltaReasoningDetails) > 0 {
 				streamDelta := llm.NewReasoningStreamDelta(
 					llm.RoleAssistant,
 					delta.Content,

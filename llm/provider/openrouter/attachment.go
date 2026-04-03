@@ -130,6 +130,8 @@ func ConvertAttachmentToContent(attachment llm.Attachment, textContent string) (
 		return convertImageAttachment(attachment, textContent)
 	case llm.AttachmentTypeDocument:
 		return convertDocumentAttachment(attachment, textContent)
+	case llm.AttachmentTypeAudio:
+		return convertAudioAttachment(attachment, textContent)
 	default:
 		return openrouter.Content{}, errors.Errorf("unsupported attachment type for conversion: %s", attachment.Type())
 	}
@@ -233,6 +235,65 @@ func convertDocumentAttachment(attachment llm.Attachment, textContent string) (o
 	parts = append(parts, openrouter.ChatMessagePart{
 		Type: openrouter.ChatMessagePartTypeText,
 		Text: documentContent,
+	})
+
+	return openrouter.Content{
+		Multi: parts,
+	}, nil
+}
+
+// convertAudioAttachment converts an audio attachment to OpenRouter content format
+func convertAudioAttachment(attachment llm.Attachment, textContent string) (openrouter.Content, error) {
+	parts := make([]openrouter.ChatMessagePart, 0)
+
+	// Add text content if present
+	if textContent != "" {
+		parts = append(parts, openrouter.ChatMessagePart{
+			Type: openrouter.ChatMessagePartTypeText,
+			Text: textContent,
+		})
+	}
+
+	// Extract format from MIME type (e.g., "audio/wav" -> "wav")
+	mimeType := strings.ToLower(attachment.MimeType())
+	format := strings.TrimPrefix(mimeType, "audio/")
+
+	// Validate format
+	validFormats := map[string]bool{
+		"mp3": true, "wav": true, "aiff": true, "aac": true,
+		"ogg": true, "flac": true, "m4a": true, "pcm16": true,
+		"pcm24": true,
+	}
+	if !validFormats[format] {
+		return openrouter.Content{}, errors.Errorf("unsupported audio format: %s (supported: mp3, wav, aiff, aac, ogg, flac, m4a, pcm16, pcm24)", format)
+	}
+
+	// Get audio data
+	var audioData string
+	switch attachment.Source() {
+	case llm.AttachmentSourceBase64:
+		data := attachment.Data()
+		// Remove data URL prefix if present
+		if strings.HasPrefix(data, "data:") {
+			parts := strings.SplitN(data, ",", 2)
+			if len(parts) == 2 {
+				data = parts[1]
+			}
+		}
+		audioData = data
+	case llm.AttachmentSourceURL:
+		return openrouter.Content{}, errors.Errorf("URL-based audio is not supported; please download and embed the content as base64")
+	default:
+		return openrouter.Content{}, errors.Errorf("unsupported attachment source: %s", attachment.Source())
+	}
+
+	// Add audio part
+	parts = append(parts, openrouter.ChatMessagePart{
+		Type: openrouter.ChatMessagePartTypeInputAudio,
+		InputAudio: &openrouter.ChatMessageInputAudio{
+			Data:   audioData,
+			Format: openrouter.AudioFormat(format),
+		},
 	})
 
 	return openrouter.Content{

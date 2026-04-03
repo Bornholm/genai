@@ -24,6 +24,11 @@ const (
 	ToolChoiceRequired ToolChoice = "required"
 )
 
+type AudioOutputConfig struct {
+	Voice  string
+	Format string
+}
+
 type ChatCompletionOptions struct {
 	Messages            []Message
 	Tools               []Tool
@@ -34,6 +39,8 @@ type ChatCompletionOptions struct {
 	Seed                *int
 	MaxCompletionTokens *int
 	Reasoning           *ReasoningOptions
+	Modalities          []string
+	Audio               *AudioOutputConfig
 }
 
 // Validate checks if the ChatCompletionOptions are valid
@@ -187,6 +194,21 @@ func WithTools(tools ...Tool) ChatCompletionOptionFunc {
 		}
 
 		opts.Tools = tools
+	}
+}
+
+func WithModalities(modalities ...string) ChatCompletionOptionFunc {
+	return func(opts *ChatCompletionOptions) {
+		opts.Modalities = modalities
+	}
+}
+
+func WithAudioOutput(voice, format string) ChatCompletionOptionFunc {
+	return func(opts *ChatCompletionOptions) {
+		opts.Audio = &AudioOutputConfig{
+			Voice:  voice,
+			Format: format,
+		}
 	}
 }
 
