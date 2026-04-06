@@ -49,7 +49,7 @@ func NewResilientClient(ctx context.Context, envPrefix string, envFile string, t
 	}
 
 	client = retry.NewClient(client, time.Second*2, 5)
-	client = ratelimit.NewClient(client, time.Second*2, 1)
+	client = ratelimit.NewClient(client, ratelimit.WithChatLimit(time.Second*2, 1), ratelimit.WithEmbeddingsLimit(time.Second*2, 1))
 
 	// Apply token limiting if configured
 	if tokenLimitOpts != nil {

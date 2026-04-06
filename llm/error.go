@@ -33,12 +33,15 @@ func NewHTTPError(statusCode int, body string) *HTTPError {
 }
 
 // IsRetryable reports whether err should be retried.
-// It returns true for ErrRateLimit sentinels and for HTTPError responses with
-// status 429 (Too Many Requests).
+// It returns true for ErrRateLimit and ErrNoMessage sentinels, and for HTTPError
+// responses with status 429 (Too Many Requests) or 5xx server errors.
 func IsRetryable(err error) bool {
-	if errors.Is(err, ErrRateLimit) {
+	if errors.Is(err, ErrRateLimit) || errors.Is(err, ErrNoMessage) {
 		return true
 	}
 	var httpErr *HTTPError
-	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode == http.StatusTooManyRequests || httpErr.StatusCode >= http.StatusInternalServerError
+	}
+	return false
 }

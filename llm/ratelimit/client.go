@@ -10,13 +10,14 @@ import (
 )
 
 type Client struct {
-	limiter *rate.Limiter
-	client  llm.Client
+	chatLimiter       *rate.Limiter
+	embeddingsLimiter *rate.Limiter
+	client            llm.Client
 }
 
 // ChatCompletion implements llm.Client.
 func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
-	if err := c.limiter.Wait(ctx); err != nil {
+	if err := c.chatLimiter.Wait(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return c.client.ChatCompletion(ctx, funcs...)
@@ -24,7 +25,7 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 
 // ChatCompletionStream implements llm.Client.
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
-	if err := c.limiter.Wait(ctx); err != nil {
+	if err := c.chatLimiter.Wait(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return c.client.ChatCompletionStream(ctx, funcs...)
@@ -32,16 +33,49 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 
 // Embeddings implements llm.Client.
 func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
-	if err := c.limiter.Wait(ctx); err != nil {
+	if err := c.embeddingsLimiter.Wait(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return c.client.Embeddings(ctx, inputs, funcs...)
 }
 
-func NewClient(client llm.Client, minInterval time.Duration, maxBurst int) *Client {
+type Options struct {
+	ChatMinInterval       time.Duration
+	ChatMaxBurst          int
+	EmbeddingsMinInterval time.Duration
+	EmbeddingsMaxBurst    int
+}
+
+type OptionFunc func(*Options)
+
+func WithChatLimit(minInterval time.Duration, maxBurst int) OptionFunc {
+	return func(o *Options) {
+		o.ChatMinInterval = minInterval
+		o.ChatMaxBurst = maxBurst
+	}
+}
+
+func WithEmbeddingsLimit(minInterval time.Duration, maxBurst int) OptionFunc {
+	return func(o *Options) {
+		o.EmbeddingsMinInterval = minInterval
+		o.EmbeddingsMaxBurst = maxBurst
+	}
+}
+
+func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
+	opts := &Options{
+		ChatMinInterval:       time.Second,
+		ChatMaxBurst:          1,
+		EmbeddingsMinInterval: time.Second,
+		EmbeddingsMaxBurst:    1,
+	}
+	for _, fn := range funcs {
+		fn(opts)
+	}
 	return &Client{
-		limiter: rate.NewLimiter(rate.Every(minInterval), maxBurst),
-		client:  client,
+		chatLimiter:       rate.NewLimiter(rate.Every(opts.ChatMinInterval), opts.ChatMaxBurst),
+		embeddingsLimiter: rate.NewLimiter(rate.Every(opts.EmbeddingsMinInterval), opts.EmbeddingsMaxBurst),
+		client:            client,
 	}
 }
 

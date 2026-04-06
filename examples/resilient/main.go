@@ -41,7 +41,7 @@ func main() {
 	retryClient := retry.NewClient(baseClient, time.Second, 3)
 
 	// Wrap with rate limiting (max 10 requests per minute)
-	rateLimitedClient := ratelimit.NewClient(retryClient, time.Minute/10, 1)
+	rateLimitedClient := ratelimit.NewClient(retryClient, ratelimit.WithChatLimit(time.Minute/10, 1), ratelimit.WithEmbeddingsLimit(time.Minute/10, 1))
 
 	// Wrap with token rate limiting (by default, 500k/minute total tokens for chat completion)
 	tokenRateLimitedClient := tokenlimit.NewClient(rateLimitedClient)
