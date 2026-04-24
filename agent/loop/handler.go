@@ -175,6 +175,14 @@ Be specific about progress made, any obstacles encountered, and recommendations 
 	summaryMessage := llm.NewMessage(llm.RoleUser, summaryPrompt)
 	summaryMessages := append(messages, summaryMessage)
 
+	// Emit EventTypeBudgetExceeded before anything else so callers can detect
+	// the budget-exceeded condition and decide whether to use the summary.
+	if err := emit(agent.NewEvent(agent.EventTypeBudgetExceeded, &agent.BudgetExceededData{
+		MaxIterations: h.options.MaxIterations,
+	})); err != nil {
+		return errors.WithStack(err)
+	}
+
 	res, err := h.options.Client.ChatCompletion(ctx,
 		llm.WithMessages(summaryMessages...),
 		llm.WithTools(), // No tools for summary

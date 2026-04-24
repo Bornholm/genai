@@ -14,6 +14,11 @@ const (
 	// It is fired once per LLM turn, immediately after the response is received
 	// and before any tool calls are dispatched.
 	EventTypeReasoning EventType = "reasoning"
+	// EventTypeBudgetExceeded is emitted when the agent exhausts its iteration
+	// budget without producing a final text response. It is fired before the
+	// summary Complete event so that callers can decide whether to use or
+	// discard the budget-exceeded summary.
+	EventTypeBudgetExceeded EventType = "budget_exceeded"
 )
 
 // Event represents an event emitted during agent execution.
@@ -97,6 +102,12 @@ type ErrorData struct {
 // CompleteData represents the data for a EventTypeComplete event
 type CompleteData struct {
 	Message string
+}
+
+// BudgetExceededData represents the data for a EventTypeBudgetExceeded event
+type BudgetExceededData struct {
+	// MaxIterations is the iteration limit that was reached.
+	MaxIterations int
 }
 
 // ReasoningData represents the data for a EventTypeReasoning event.
