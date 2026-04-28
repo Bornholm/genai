@@ -183,7 +183,7 @@ func renderReasoning(data *agent.ReasoningData) string {
 
 	timestamp := timeStyle.Render(formatTime(time.Now()))
 	header := reasoningStyle.Render("🤔 Reasoning")
-	reasoning := strings.TrimSpace(data.Reasoning)
+	reasoning := normalizeReasoningText(data.Reasoning)
 
 	lines := strings.Split(reasoning, "\n")
 	for i, line := range lines {
@@ -191,6 +191,21 @@ func renderReasoning(data *agent.ReasoningData) string {
 	}
 
 	return fmt.Sprintf("\n%s %s\n\n%s", timestamp, header, strings.Join(lines, "\n"))
+}
+
+// normalizeReasoningText collapses per-token newlines that streaming models often
+// emit into readable prose. Reasoning is free-form thinking so newlines are
+// treated as word separators rather than formatting.
+func normalizeReasoningText(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+	lines := strings.Split(s, "\n")
+	var tokens []string
+	for _, line := range lines {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			tokens = append(tokens, trimmed)
+		}
+	}
+	return strings.Join(tokens, " ")
 }
 
 func renderError(data *agent.ErrorData) string {
