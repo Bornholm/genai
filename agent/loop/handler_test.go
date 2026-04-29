@@ -442,7 +442,7 @@ func TestHandler_Attachments(t *testing.T) {
 }
 
 func TestHandler_TodoTools(t *testing.T) {
-	// Test: LLM calls TodoWrite then TodoRead → verify state consistency and events emitted
+	// Test: LLM calls TodoWrite then TodoRead then marks done → verify state consistency and events emitted
 	client := &MockChatCompletionClient{
 		responses: []MockResponse{
 			{
@@ -457,6 +457,13 @@ func TestHandler_TodoTools(t *testing.T) {
 					id:         "2",
 					name:       "TodoRead",
 					parameters: map[string]any{},
+				}},
+			},
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "3",
+					name:       "TodoWrite",
+					parameters: map[string]any{"items": []any{map[string]any{"id": "1", "content": "Task 1", "status": "done"}}},
 				}},
 			},
 			{
@@ -487,5 +494,226 @@ func TestHandler_TodoTools(t *testing.T) {
 
 	if len(todoEvents) == 0 {
 		t.Error("expected at least one TodoUpdated event")
+	}
+}
+
+func TestHandler_PendingTodoBlocksCompletion(t *testing.T) {
+	// Test: LLM tries to finish early while a todo item is still pending →
+	// continuation prompt injected → LLM marks item done → Complete emitted.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "1",
+					name:       "TodoWrite",
+					parameters: map[string]any{"items": []any{map[string]any{"id": "1", "content": "Do the thing", "status": "pending"}}},
+				}},
+			},
+			{
+				// Premature finish — todo still has a pending item
+				Message: llm.NewMessage(llm.RoleAssistant, "I think I'm done."),
+			},
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "2",
+					name:       "TodoWrite",
+					parameters: map[string]any{"items": []any{map[string]any{"id": "1", "content": "Do the thing", "status": "done"}}},
+				}},
+			},
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "All done now."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Do the thing"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	lastEvent := events[len(events)-1]
+	if lastEvent.Type() != agent.EventTypeComplete {
+		t.Errorf("expected EventTypeComplete as last event, got %s", lastEvent.Type())
+	}
+
+	data := lastEvent.Data().(*agent.CompleteData)
+	if data.Message != "All done now." {
+		t.Errorf("expected final message 'All done now.', got '%s'", data.Message)
+	}
+
+	for _, evt := range events {
+		if evt.Type() == agent.EventTypeComplete {
+			d := evt.Data().(*agent.CompleteData)
+			if d.Message == "I think I'm done." {
+				t.Error("premature completion text should not have been emitted as a Complete event")
+			}
+		}
+	}
+
+	if client.callCount != 4 {
+		t.Errorf("expected 4 LLM calls, got %d", client.callCount)
+	}
+}
+
+func TestHandler_EmptyTodoAllowsCompletion(t *testing.T) {
+	// Test: todo list never written (stays empty) → LLM finishes immediately → Complete emitted without injection.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "Done, nothing to track."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Quick question"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	if len(events) != 1 || events[0].Type() != agent.EventTypeComplete {
+		t.Errorf("expected single Complete event, got %d events", len(events))
+	}
+
+	if client.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", client.callCount)
+	}
+}
+
+func TestHandler_PlanningStepRetryOnInvalidJSON(t *testing.T) {
+	// Test: ForcePlanningStep=true, first TodoWrite call has malformed JSON params (string, not map)
+	// → planning step retries → second call succeeds → loop completes normally.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			// Planning attempt 1: TodoWrite with a string param (simulates malformed streaming JSON)
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "p1",
+					name:       "TodoWrite",
+					parameters: "not valid json {{{",
+				}},
+			},
+			// Planning attempt 2 (retry): TodoWrite with valid params
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "p2",
+					name:       "TodoWrite",
+					parameters: map[string]any{"items": []any{map[string]any{"id": "1", "content": "Do the thing", "status": "pending"}}},
+				}},
+			},
+			// Main loop: mark done
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "m1",
+					name:       "TodoWrite",
+					parameters: map[string]any{"items": []any{map[string]any{"id": "1", "content": "Do the thing", "status": "done"}}},
+				}},
+			},
+			// Final response
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "All done."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+		WithForcePlanningStep(true),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Do the thing"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	lastEvent := events[len(events)-1]
+	if lastEvent.Type() != agent.EventTypeComplete {
+		t.Errorf("expected EventTypeComplete, got %s", lastEvent.Type())
+	}
+
+	if client.callCount != 4 {
+		t.Errorf("expected 4 LLM calls, got %d", client.callCount)
+	}
+}
+
+func TestHandler_AllDoneTodoAllowsCompletion(t *testing.T) {
+	// Test: todo list written with all items done → LLM finishes → Complete emitted without injection.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:   "1",
+					name: "TodoWrite",
+					parameters: map[string]any{"items": []any{
+						map[string]any{"id": "1", "content": "Task A", "status": "done"},
+						map[string]any{"id": "2", "content": "Task B", "status": "done"},
+					}},
+				}},
+			},
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "Everything is done."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Finish tasks"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	lastEvent := events[len(events)-1]
+	if lastEvent.Type() != agent.EventTypeComplete {
+		t.Errorf("expected EventTypeComplete, got %s", lastEvent.Type())
+	}
+
+	if client.callCount != 2 {
+		t.Errorf("expected 2 LLM calls, got %d", client.callCount)
 	}
 }

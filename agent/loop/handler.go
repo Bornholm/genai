@@ -41,7 +41,7 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 	// the model MUST write a structured plan before taking any action.
 	// This is skipped when ForcePlanningStep is false or when no tools exist.
 	if h.options.ForcePlanningStep && len(allTools) > 0 {
-		if err := h.runPlanningStep(ctx, allTools, &messages, emit); err != nil {
+		if err := h.runPlanningStep(ctx, todoList, allTools, &messages, emit); err != nil {
 			return errors.WithStack(err)
 		}
 	}
@@ -87,8 +87,15 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 			messages = append(messages, llm.NewMessage(llm.RoleAssistant, result.content))
 		}
 
-		// 2e. If there are NO tool calls, emit Complete and finish.
+		// 2e. If there are NO tool calls, check for unfinished todo items first.
 		if len(result.toolCalls) == 0 {
+			if hasPendingTodoItems(todoList) {
+				messages = append(messages, llm.NewMessage(
+					llm.RoleUser,
+					"Your todo list still contains pending or in-progress items. If you have completed all your work, please update your todo list to mark every item as done. If there is still work to do, continue working on the remaining tasks before providing your final response.",
+				))
+				continue
+			}
 			if err := emit(agent.NewEvent(agent.EventTypeComplete, &agent.CompleteData{
 				Message: result.content,
 			})); err != nil {
@@ -212,9 +219,10 @@ Be specific about progress made, any obstacles encountered, and recommendations 
 	return nil
 }
 
-// runPlanningStep makes one dedicated LLM call with only the TodoWrite tool exposed
+// runPlanningStep makes dedicated LLM calls with only the TodoWrite tool exposed
 // and tool_choice=required, guaranteeing the model writes a plan before acting.
-func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, messages *[]llm.Message, emit agent.EmitFunc) error {
+// It retries once if the TodoWrite call fails (e.g. due to malformed streaming JSON).
+func (h *Handler) runPlanningStep(ctx context.Context, todoList *todo.List, allTools []llm.Tool, messages *[]llm.Message, emit agent.EmitFunc) error {
 	var todoWriteTool llm.Tool
 	for _, t := range allTools {
 		if t.Name() == "TodoWrite" {
@@ -228,49 +236,74 @@ func (h *Handler) runPlanningStep(ctx context.Context, allTools []llm.Tool, mess
 
 	slog.DebugContext(ctx, "running forced planning step")
 
-	planOpts := []llm.ChatCompletionOptionFunc{
-		llm.WithMessages(*messages...),
-		llm.WithTools(todoWriteTool),
-		llm.WithToolChoice(llm.ToolChoiceRequired),
-	}
-	if h.options.Reasoning != nil {
-		planOpts = append(planOpts, llm.WithReasoning(h.options.Reasoning))
-	}
+	const maxPlanningAttempts = 2
+	for attempt := range maxPlanningAttempts {
+		// Save cursor so we can roll back malformed tool-call messages on failure.
+		// Providers reject subsequent requests that include invalid JSON in history.
+		checkpointLen := len(*messages)
 
-	result, err := h.doLLMCall(ctx, planOpts, emit)
-	if err != nil {
-		return errors.WithStack(err)
-	}
+		// Build a transient message slice for this LLM call — NOT stored in *messages.
+		// On retry, a system hint is appended here rather than to *messages to avoid
+		// sending consecutive user messages (which providers reject with 400).
+		planMessages := append([]llm.Message(nil), *messages...)
+		if attempt > 0 {
+			slog.DebugContext(ctx, "planning step did not write todo items, retrying")
+			planMessages = append(planMessages, llm.NewMessage(llm.RoleSystem,
+				"Your previous TodoWrite call failed because the JSON was malformed. Keep each todo item description short and retry with valid JSON."))
+		}
 
-	if len(result.toolCalls) == 0 {
-		return nil
-	}
+		planOpts := []llm.ChatCompletionOptionFunc{
+			llm.WithMessages(planMessages...),
+			llm.WithTools(todoWriteTool),
+			llm.WithToolChoice(llm.ToolChoiceRequired),
+		}
+		if h.options.Reasoning != nil {
+			planOpts = append(planOpts, llm.WithReasoning(h.options.Reasoning))
+		}
 
-	*messages = append(*messages, h.makeToolCallsMessage(result))
-
-	for _, tc := range result.toolCalls {
-		if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
-			ID:         tc.ID(),
-			Name:       tc.Name(),
-			Parameters: tc.Parameters(),
-		})); err != nil {
+		result, err := h.doLLMCall(ctx, planOpts, emit)
+		if err != nil {
 			return errors.WithStack(err)
 		}
 
-		r, execErr := executeTool(ctx, allTools, tc)
-		if execErr != nil {
-			r = execErr.Error()
+		if len(result.toolCalls) == 0 {
+			return nil
 		}
 
-		*messages = append(*messages, llm.NewToolMessage(tc.ID(), llm.NewToolResult(r)))
+		*messages = append(*messages, h.makeToolCallsMessage(result))
 
-		if err := emit(agent.NewEvent(agent.EventTypeToolCallDone, &agent.ToolCallDoneData{
-			ID:     tc.ID(),
-			Name:   tc.Name(),
-			Result: r,
-		})); err != nil {
-			return errors.WithStack(err)
+		for _, tc := range result.toolCalls {
+			if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
+				ID:         tc.ID(),
+				Name:       tc.Name(),
+				Parameters: tc.Parameters(),
+			})); err != nil {
+				return errors.WithStack(err)
+			}
+
+			r, execErr := executeTool(ctx, allTools, tc)
+			if execErr != nil {
+				r = execErr.Error()
+			}
+
+			*messages = append(*messages, llm.NewToolMessage(tc.ID(), llm.NewToolResult(r)))
+
+			if err := emit(agent.NewEvent(agent.EventTypeToolCallDone, &agent.ToolCallDoneData{
+				ID:     tc.ID(),
+				Name:   tc.Name(),
+				Result: r,
+			})); err != nil {
+				return errors.WithStack(err)
+			}
 		}
+
+		if len(todoList.Items) > 0 {
+			return nil
+		}
+
+		// Roll back messages to remove the malformed tool call from history
+		// so the provider does not reject the next request with a 400 error.
+		*messages = (*messages)[:checkpointLen]
 	}
 
 	return nil
@@ -360,6 +393,15 @@ func (h *Handler) truncateToolResult(result string) string {
 	}
 
 	return result
+}
+
+func hasPendingTodoItems(list *todo.List) bool {
+	for _, item := range list.Items {
+		if item.Status == todo.StatusPending || item.Status == todo.StatusInProgress {
+			return true
+		}
+	}
+	return false
 }
 
 var _ agent.Handler = &Handler{}
