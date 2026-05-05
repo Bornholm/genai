@@ -1,3 +1,6 @@
+// Pour compiler et exécuter cet exemple, le build tag "yzma" est requis :
+//
+//	go run -tags yzma examples/yzma/main.go -model /path/to/model.gguf -lib /path/to/lib
 package main
 
 import (

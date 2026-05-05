@@ -22,9 +22,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
-
-	// Import all provider implementations
-	_ "github.com/bornholm/genai/llm/provider/all"
 )
 
 type a2aConfig struct {

@@ -14,9 +14,6 @@ import (
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
-
-	// Import all provider implementations
-	_ "github.com/bornholm/genai/llm/provider/all"
 )
 
 func Generate() *cli.Command {

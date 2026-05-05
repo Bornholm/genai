@@ -11,8 +11,6 @@ import (
 	"github.com/bornholm/genai/proxy/hooks/usage"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
-
-	_ "github.com/bornholm/genai/llm/provider/all"
 )
 
 func Root() *cli.Command {

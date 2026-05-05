@@ -19,12 +19,9 @@ import (
 	"github.com/bornholm/genai/internal/command/common"
 	agentconfig "github.com/bornholm/genai/internal/command/config"
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/provider/openrouter"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
-
-	// Import all provider implementations
-	_ "github.com/bornholm/genai/llm/provider/all"
-	"github.com/bornholm/genai/llm/provider/openrouter"
 )
 
 type doConfig struct {

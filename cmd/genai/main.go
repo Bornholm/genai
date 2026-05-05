@@ -5,6 +5,9 @@ import (
 	"github.com/bornholm/genai/internal/command/agent"
 	"github.com/bornholm/genai/internal/command/llm"
 	proxyCommand "github.com/bornholm/genai/internal/command/proxy"
+
+	// Import all provider implementations
+	_ "github.com/bornholm/genai/llm/provider/all"
 )
 
 var (
