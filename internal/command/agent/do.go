@@ -279,6 +279,14 @@ func Do() *cli.Command {
 				loopOpts = append(loopOpts, loop.WithReasoningOptions(reasoningOpts))
 			}
 
+			responseSchema, err := common.GetResponseSchema(cliCtx, "schema")
+			if err != nil {
+				return errors.Wrap(err, "failed to load response schema")
+			}
+			if responseSchema != nil {
+				loopOpts = append(loopOpts, loop.WithResponseSchema(responseSchema))
+			}
+
 			handler, err := loop.NewHandler(loopOpts...)
 			if err != nil {
 				return errors.Wrap(err, "failed to create handler")

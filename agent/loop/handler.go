@@ -96,6 +96,31 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 				))
 				continue
 			}
+
+			// If a response schema is configured, make a synthesis LLM call with the schema
+			// to ensure the final output is valid structured JSON.
+			if h.options.ResponseSchema != nil {
+				synthMessages := make([]llm.Message, 0, len(messages)+2)
+				synthMessages = append(synthMessages, budgetMessage)
+				synthMessages = append(synthMessages, messages...)
+				if result.content != "" {
+					synthMessages = append(synthMessages, llm.NewMessage(llm.RoleAssistant, result.content))
+				}
+
+				synthOpts := []llm.ChatCompletionOptionFunc{
+					llm.WithMessages(synthMessages...),
+					llm.WithJSONResponse(h.options.ResponseSchema),
+				}
+				if h.options.Reasoning != nil {
+					synthOpts = append(synthOpts, llm.WithReasoning(h.options.Reasoning))
+				}
+
+				synthResult, synthErr := h.doLLMCall(ctx, synthOpts, func(e agent.Event) error { return nil })
+				if synthErr == nil && synthResult.content != "" {
+					result.content = synthResult.content
+				}
+			}
+
 			if err := emit(agent.NewEvent(agent.EventTypeComplete, &agent.CompleteData{
 				Message: result.content,
 			})); err != nil {

@@ -56,6 +56,10 @@ type Options struct {
 	// This guarantees the model writes a structured plan before taking any action.
 	// Defaults to true when tools are present. Set to false to disable.
 	ForcePlanningStep bool
+	// ResponseSchema sets a JSON schema that the LLM's final response must conform to.
+	// When set, the handler makes a synthesis LLM call with the schema before emitting
+	// the Complete event, ensuring structured output.
+	ResponseSchema llm.ResponseSchema
 }
 
 // OptionFunc is a function that configures the loop handler
@@ -163,6 +167,15 @@ func WithCompressionRatio(ratio float64) OptionFunc {
 }
 
 // NewOptions creates a new Options with defaults
+// WithResponseSchema sets a JSON response schema that the LLM's final output must conform to.
+// When configured, the handler makes a final synthesis LLM call with the schema before
+// emitting the Complete event, ensuring the agent's output is valid structured JSON.
+func WithResponseSchema(schema llm.ResponseSchema) OptionFunc {
+	return func(o *Options) {
+		o.ResponseSchema = schema
+	}
+}
+
 func NewOptions(funcs ...OptionFunc) *Options {
 	opts := &Options{
 		MaxIterations:       DefaultMaxIterations,
