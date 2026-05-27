@@ -10,6 +10,7 @@ type Options struct {
 	MaxRetries       int
 	BaseDelay        time.Duration
 	ReconnectEnabled bool
+	ReadOnlyHint     bool
 }
 
 type OptionFunc func(opts *Options)
@@ -69,6 +70,12 @@ func WithBaseDelay(delay time.Duration) OptionFunc {
 func WithReconnectEnabled(enabled bool) OptionFunc {
 	return func(opts *Options) {
 		opts.ReconnectEnabled = enabled
+	}
+}
+
+func WithReadOnlyHint(enabled bool) OptionFunc {
+	return func(opts *Options) {
+		opts.ReadOnlyHint = enabled
 	}
 }
 

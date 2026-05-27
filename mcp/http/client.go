@@ -53,7 +53,8 @@ func NewClient(endpoint string, funcs ...OptionFunc) *Client {
 		client: common.NewClient(connector,
 			common.WithMaxRetries(opts.MaxRetries),
 			common.WithBaseDelay(opts.BaseDelay),
-			common.WithReconnectEnabled(opts.ReconnectEnabled)),
+			common.WithReconnectEnabled(opts.ReconnectEnabled),
+			common.WithReadOnlyHint(opts.ReadOnlyHint)),
 	}
 }
 

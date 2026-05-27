@@ -28,6 +28,7 @@ type Options struct {
 	MaxRetries       int
 	BaseDelay        time.Duration
 	ReconnectEnabled bool
+	ReadOnlyHint     bool
 }
 
 type Client struct {
@@ -152,6 +153,10 @@ func (c *Client) GetTools(ctx context.Context) ([]llm.Tool, error) {
 		}
 
 		for _, t := range res.Tools {
+			if c.options.ReadOnlyHint && (t.Annotations == nil || !t.Annotations.ReadOnlyHint) {
+				continue
+			}
+
 			llmTool, err := c.toTool(t)
 			if err != nil {
 				return nil, errors.WithStack(err)
@@ -269,6 +274,12 @@ func WithBaseDelay(delay time.Duration) OptionFunc {
 func WithReconnectEnabled(enabled bool) OptionFunc {
 	return func(opts *Options) {
 		opts.ReconnectEnabled = enabled
+	}
+}
+
+func WithReadOnlyHint(enabled bool) OptionFunc {
+	return func(opts *Options) {
+		opts.ReadOnlyHint = enabled
 	}
 }
 
