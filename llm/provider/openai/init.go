@@ -18,6 +18,7 @@ func init() {
 		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
 			options := []option.RequestOption{
 				option.WithBaseURL(opts.BaseURL),
+				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
 			}
 			if opts.APIKey != "" {
 				options = append(options, option.WithAPIKey(opts.APIKey))
@@ -33,6 +34,7 @@ func init() {
 		func(ctx context.Context, opts *Options) (llm.EmbeddingsClient, error) {
 			options := []option.RequestOption{
 				option.WithBaseURL(opts.BaseURL),
+				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
 			}
 			if opts.APIKey != "" {
 				options = append(options, option.WithAPIKey(opts.APIKey))
