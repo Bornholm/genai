@@ -617,9 +617,13 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 			// Create stream delta
 			var toolCallDeltas []llm.ToolCallDelta
-			for i, tc := range delta.ToolCalls {
+			for _, tc := range delta.ToolCalls {
+				idx := 0
+				if tc.Index != nil {
+					idx = *tc.Index
+				}
 				toolCallDeltas = append(toolCallDeltas, llm.NewToolCallDelta(
-					i,
+					idx,
 					tc.ID,
 					tc.Function.Name,
 					tc.Function.Arguments,

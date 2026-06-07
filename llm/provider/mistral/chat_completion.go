@@ -163,9 +163,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			// Tool call deltas are structured and safe to forward immediately.
 			if len(delta.ToolCalls) > 0 {
 				var toolCallDeltas []llm.ToolCallDelta
-				for i, tc := range delta.ToolCalls {
+				for _, tc := range delta.ToolCalls {
 					toolCallDeltas = append(toolCallDeltas, llm.NewToolCallDelta(
-						i,
+						int(tc.Index),
 						tc.ID,
 						tc.Function.Name,
 						tc.Function.Arguments,
