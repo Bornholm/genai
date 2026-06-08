@@ -23,7 +23,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.3.0
 	github.com/openai/openai-go v0.1.0-beta.10
 	github.com/pkg/errors v0.9.1
-	github.com/revrost/go-openrouter v1.2.0
+	github.com/revrost/go-openrouter v1.6.0
 	github.com/testcontainers/testcontainers-go v0.35.0
 	github.com/urfave/cli/v2 v2.27.7
 	golang.org/x/time v0.15.0

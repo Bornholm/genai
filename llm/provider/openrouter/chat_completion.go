@@ -79,6 +79,38 @@ func fromReasoningDetails(details []llm.ReasoningDetail) []openrouter.ChatComple
 	return result
 }
 
+// toOpenRouterCacheControl converts an llm.CacheControl hint to its OpenRouter
+// SDK equivalent, forwarded as-is to the provider.
+func toOpenRouterCacheControl(cc *llm.CacheControl) *openrouter.CacheControl {
+	if cc == nil {
+		return nil
+	}
+	return &openrouter.CacheControl{
+		Type: cc.Type,
+		TTL:  cc.TTL,
+	}
+}
+
+// textContent builds an openrouter.Content for a plain-text message, using a
+// multi-part representation with cache_control when the message carries an
+// explicit cache hint, or a plain text content otherwise.
+func textContent(m llm.Message) openrouter.Content {
+	if cm, ok := m.(llm.CacheControlMessage); ok {
+		if cc := cm.CacheControl(); cc != nil {
+			return openrouter.Content{
+				Multi: []openrouter.ChatMessagePart{{
+					Type:         openrouter.ChatMessagePartTypeText,
+					Text:         m.Content(),
+					CacheControl: toOpenRouterCacheControl(cc),
+				}},
+			}
+		}
+	}
+	return openrouter.Content{
+		Text: m.Content(),
+	}
+}
+
 // buildMessages converts llm.Message slice to openrouter.ChatCompletionMessage slice,
 // handling attachments and reasoning preservation.
 func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletionMessage, error) {
@@ -101,10 +133,8 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 				return nil, errors.Errorf("system messages cannot have attachments")
 			}
 			messages = append(messages, openrouter.ChatCompletionMessage{
-				Role: openrouter.ChatMessageRoleSystem,
-				Content: openrouter.Content{
-					Text: m.Content(),
-				},
+				Role:    openrouter.ChatMessageRoleSystem,
+				Content: textContent(m),
 			})
 		case llm.RoleUser:
 			if len(m.Attachments()) > 0 {
@@ -159,10 +189,8 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 				}
 			} else {
 				messages = append(messages, openrouter.ChatCompletionMessage{
-					Role: openrouter.ChatMessageRoleUser,
-					Content: openrouter.Content{
-						Text: m.Content(),
-					},
+					Role:    openrouter.ChatMessageRoleUser,
+					Content: textContent(m),
 				})
 			}
 		case llm.RoleAssistant:
@@ -170,10 +198,8 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 				return nil, errors.Errorf("assistant messages cannot have attachments")
 			}
 			msg := openrouter.ChatCompletionMessage{
-				Role: openrouter.ChatMessageRoleAssistant,
-				Content: openrouter.Content{
-					Text: m.Content(),
-				},
+				Role:    openrouter.ChatMessageRoleAssistant,
+				Content: textContent(m),
 			}
 			// Preserve reasoning for multi-turn conversations.
 			// When a model returns reasoning tokens, they must be passed back in

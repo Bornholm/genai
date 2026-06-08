@@ -270,12 +270,14 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 
 		default:
 			role := llm.Role(m.Role)
-			text, attachments, err := extractContentParts(m.Content)
+			text, attachments, cacheControl, err := extractContentParts(m.Content)
 			if err != nil {
 				return nil, errors.Wrapf(err, "could not convert content parts for role %s", m.Role)
 			}
 			if len(attachments) > 0 {
 				out = append(out, llm.NewMultimodalMessage(role, text, attachments...))
+			} else if cacheControl != nil {
+				out = append(out, llm.NewMessageWithCacheControl(role, text, cacheControl))
 			} else {
 				out = append(out, llm.NewMessage(role, text))
 			}
@@ -311,13 +313,13 @@ func extractTextContent(raw any) string {
 // extractContentParts extracts text and attachments from a message content field.
 // For string content it returns the string with no attachments.
 // For array content it parses text and image_url parts.
-func extractContentParts(raw any) (text string, attachments []llm.Attachment, err error) {
+func extractContentParts(raw any) (text string, attachments []llm.Attachment, cacheControl *llm.CacheControl, err error) {
 	if raw == nil {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
 	switch v := raw.(type) {
 	case string:
-		return v, nil, nil
+		return v, nil, nil, nil
 	case []any:
 		var buf strings.Builder
 		for _, part := range v {
@@ -330,6 +332,9 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, er
 				if t, ok := partMap["text"].(string); ok {
 					buf.WriteString(t)
 				}
+				if cc := extractCacheControl(partMap["cache_control"]); cc != nil {
+					cacheControl = cc
+				}
 			case "image_url":
 				imgURL, ok := partMap["image_url"].(map[string]any)
 				if !ok {
@@ -341,7 +346,7 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, er
 				}
 				att, attErr := convertImageURL(url)
 				if attErr != nil {
-					return "", nil, errors.Wrapf(attErr, "could not convert image_url")
+					return "", nil, nil, errors.Wrapf(attErr, "could not convert image_url")
 				}
 				attachments = append(attachments, att)
 			case "input_audio":
@@ -357,15 +362,33 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, er
 				mimeType := "audio/" + format
 				att, attErr := llm.NewBase64Attachment(llm.AttachmentTypeAudio, mimeType, data)
 				if attErr != nil {
-					return "", nil, errors.Wrapf(attErr, "could not convert input_audio")
+					return "", nil, nil, errors.Wrapf(attErr, "could not convert input_audio")
 				}
 				attachments = append(attachments, att)
 			}
 		}
-		return buf.String(), attachments, nil
+		return buf.String(), attachments, cacheControl, nil
 	default:
-		return fmt.Sprintf("%v", raw), nil, nil
+		return fmt.Sprintf("%v", raw), nil, nil, nil
 	}
+}
+
+// extractCacheControl parses an optional cache_control annotation from a
+// content part, expecting a map with a "type" string and optional "ttl" string.
+func extractCacheControl(raw any) *llm.CacheControl {
+	ccMap, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	ccType, ok := ccMap["type"].(string)
+	if !ok || ccType == "" {
+		return nil
+	}
+	cc := &llm.CacheControl{Type: ccType}
+	if ttl, ok := ccMap["ttl"].(string); ok && ttl != "" {
+		cc.TTL = &ttl
+	}
+	return cc
 }
 
 // convertImageURL creates an llm.Attachment from an OpenAI image_url value.

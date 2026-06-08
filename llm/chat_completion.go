@@ -235,9 +235,23 @@ type Message interface {
 	Attachments() []Attachment
 }
 
+// CacheControl carries an opaque cache hint attached to a message's content,
+// forwarded as-is to providers that support explicit prompt caching (e.g. OpenRouter).
+type CacheControl struct {
+	Type string  // ex: "ephemeral"
+	TTL  *string // ex: "5m", "1h" — provider-specific
+}
+
+// CacheControlMessage is implemented by messages carrying an optional cache hint.
+// Providers that support explicit caching should type-assert for this interface.
+type CacheControlMessage interface {
+	CacheControl() *CacheControl
+}
+
 type BaseMessage struct {
-	role    Role
-	content string
+	role         Role
+	content      string
+	cacheControl *CacheControl
 }
 
 // Content implements Message.
@@ -255,12 +269,28 @@ func (b *BaseMessage) Attachments() []Attachment {
 	return nil
 }
 
+// CacheControl implements CacheControlMessage.
+func (b *BaseMessage) CacheControl() *CacheControl {
+	return b.cacheControl
+}
+
 var _ Message = &BaseMessage{}
+var _ CacheControlMessage = &BaseMessage{}
 
 func NewMessage(role Role, content string) *BaseMessage {
 	return &BaseMessage{
 		role:    role,
 		content: content,
+	}
+}
+
+// NewMessageWithCacheControl creates a message annotated with an explicit
+// cache hint, forwarded to providers that support it (e.g. OpenRouter).
+func NewMessageWithCacheControl(role Role, content string, cc *CacheControl) *BaseMessage {
+	return &BaseMessage{
+		role:         role,
+		content:      content,
+		cacheControl: cc,
 	}
 }
 
