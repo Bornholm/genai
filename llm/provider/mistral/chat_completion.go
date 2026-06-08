@@ -74,7 +74,12 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		toolCalls = append(toolCalls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 	}
 
-	usage := llm.NewChatCompletionUsage(completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
+	usage := llm.NewChatCompletionUsageWithCache(
+		completion.Usage.PromptTokens,
+		completion.Usage.CompletionTokens,
+		completion.Usage.TotalTokens,
+		completion.Usage.PromptTokensDetails.CachedTokens,
+	)
 
 	// Return response with reasoning if present
 	if reasoning != "" || len(reasoningDetails) > 0 {
@@ -131,10 +136,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			// Save usage for later — emitting CompleteStreamChunk here would cause
 			// doStreamingLLMCall to break before the content chunk is sent below.
 			if !isNullUsage {
-				finalUsage = llm.NewChatCompletionUsage(
+				finalUsage = llm.NewChatCompletionUsageWithCache(
 					int64(chunk.Usage.PromptTokens),
 					int64(chunk.Usage.CompletionTokens),
 					int64(chunk.Usage.TotalTokens),
+					chunk.Usage.PromptTokensDetails.CachedTokens,
 				)
 			}
 

@@ -45,4 +45,5 @@ type TokenUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	CachedTokens     int
 }

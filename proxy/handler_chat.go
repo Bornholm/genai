@@ -101,14 +101,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 9. Build ProxyResponse
 	body := FormatChatCompletionResponse(llmRes, resolvedModel)
 	usage := llmRes.Usage()
+	tokensUsed := &TokenUsage{
+		PromptTokens:     int(usage.PromptTokens()),
+		CompletionTokens: int(usage.CompletionTokens()),
+		TotalTokens:      int(usage.TotalTokens()),
+	}
+	type cachedUsage interface{ CachedTokens() int64 }
+	if cu, ok := usage.(cachedUsage); ok {
+		tokensUsed.CachedTokens = int(cu.CachedTokens())
+	}
 	proxyRes := &ProxyResponse{
 		StatusCode: http.StatusOK,
 		Body:       body,
-		TokensUsed: &TokenUsage{
-			PromptTokens:     int(usage.PromptTokens()),
-			CompletionTokens: int(usage.CompletionTokens()),
-			TotalTokens:      int(usage.TotalTokens()),
-		},
+		TokensUsed: tokensUsed,
 	}
 
 	// 10. Post-response hooks
@@ -240,14 +245,19 @@ func (s *Server) handleChatCompletionsStream(
 
 	// Post-response hook with accumulated usage
 	usage := tracker.Usage()
+	streamTokensUsed := &TokenUsage{
+		PromptTokens:     int(usage.PromptTokens()),
+		CompletionTokens: int(usage.CompletionTokens()),
+		TotalTokens:      int(usage.TotalTokens()),
+	}
+	type cachedUsageStream interface{ CachedTokens() int64 }
+	if cu, ok := usage.(cachedUsageStream); ok {
+		streamTokensUsed.CachedTokens = int(cu.CachedTokens())
+	}
 	proxyRes := &ProxyResponse{
 		StatusCode: http.StatusOK,
 		Body:       nil,
-		TokensUsed: &TokenUsage{
-			PromptTokens:     int(usage.PromptTokens()),
-			CompletionTokens: int(usage.CompletionTokens()),
-			TotalTokens:      int(usage.TotalTokens()),
-		},
+		TokensUsed: streamTokensUsed,
 	}
 	if err := s.chain.RunPostResponse(ctx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))

@@ -41,6 +41,7 @@ type ChatCompletionOptions struct {
 	Reasoning           *ReasoningOptions
 	Modalities          []string
 	Audio               *AudioOutputConfig
+	SessionID           string
 }
 
 // Validate checks if the ChatCompletionOptions are valid
@@ -140,6 +141,12 @@ func WithResponseSchema(schema ResponseSchema) ChatCompletionOptionFunc {
 func WithMessages(messages ...Message) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		opts.Messages = messages
+	}
+}
+
+func WithSessionID(id string) ChatCompletionOptionFunc {
+	return func(opts *ChatCompletionOptions) {
+		opts.SessionID = id
 	}
 }
 
@@ -465,6 +472,7 @@ type BaseChatCompletionUsage struct {
 	totalTokens      int64
 	promptTokens     int64
 	completionTokens int64
+	cachedTokens     int64
 }
 
 // CompletionTokens implements ChatCompletionUsage.
@@ -482,11 +490,25 @@ func (u *BaseChatCompletionUsage) TotalTokens() int64 {
 	return u.totalTokens
 }
 
+// CachedTokens returns the number of prompt tokens served from the provider's cache.
+func (u *BaseChatCompletionUsage) CachedTokens() int64 {
+	return u.cachedTokens
+}
+
 func NewChatCompletionUsage(promptTokens, completionTokens, totalTokens int64) *BaseChatCompletionUsage {
 	return &BaseChatCompletionUsage{
 		promptTokens:     promptTokens,
 		completionTokens: completionTokens,
 		totalTokens:      totalTokens,
+	}
+}
+
+func NewChatCompletionUsageWithCache(promptTokens, completionTokens, totalTokens, cachedTokens int64) *BaseChatCompletionUsage {
+	return &BaseChatCompletionUsage{
+		promptTokens:     promptTokens,
+		completionTokens: completionTokens,
+		totalTokens:      totalTokens,
+		cachedTokens:     cachedTokens,
 	}
 }
 

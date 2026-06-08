@@ -408,6 +408,10 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	req.Models = models
 
+	if opts.SessionID != "" {
+		req.SessionId = opts.SessionID
+	}
+
 	res, err := c.client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		var reqErr *openrouter.RequestError
@@ -457,7 +461,12 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		toolCalls = append(toolCalls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 	}
 
-	usage := llm.NewChatCompletionUsage(int64(res.Usage.PromptTokens), int64(res.Usage.CompletionTokens), int64(res.Usage.TotalTokens))
+	usage := llm.NewChatCompletionUsageWithCache(
+		int64(res.Usage.PromptTokens),
+		int64(res.Usage.CompletionTokens),
+		int64(res.Usage.TotalTokens),
+		int64(res.Usage.PromptTokenDetails.CachedTokens),
+	)
 
 	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...), nil
 }
@@ -567,6 +576,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	req.Models = models
 
+	if opts.SessionID != "" {
+		req.SessionId = opts.SessionID
+	}
+
 	// Create streaming channel
 	chunks := make(chan llm.StreamChunk, 10)
 
@@ -574,6 +587,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		promptTokens     atomic.Int64
 		completionTokens atomic.Int64
 		totalTokens      atomic.Int64
+		cachedTokens     atomic.Int64
 	)
 
 	go func() {
@@ -606,6 +620,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				promptTokens.Store(int64(response.Usage.PromptTokens))
 				completionTokens.Store(int64(response.Usage.CompletionTokens))
 				totalTokens.Store(int64(response.Usage.TotalTokens))
+				cachedTokens.Store(int64(response.Usage.PromptTokenDetails.CachedTokens))
 			}
 
 			if len(response.Choices) == 0 {
@@ -681,10 +696,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		// Send completion chunk with usage if available
-		usage := llm.NewChatCompletionUsage(
+		usage := llm.NewChatCompletionUsageWithCache(
 			promptTokens.Load(),
 			completionTokens.Load(),
 			totalTokens.Load(),
+			cachedTokens.Load(),
 		)
 
 		chunks <- llm.NewCompleteStreamChunk(usage)
