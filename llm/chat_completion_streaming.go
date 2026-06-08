@@ -244,6 +244,7 @@ type StreamingUsageTracker struct {
 	promptTokens     int64
 	completionTokens int64
 	totalTokens      int64
+	cachedTokens     int64
 }
 
 // Update updates the usage tracker with data from a streaming chunk
@@ -252,12 +253,16 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 		t.promptTokens = usage.PromptTokens()
 		t.completionTokens = usage.CompletionTokens()
 		t.totalTokens = usage.TotalTokens()
+		type cachedUsage interface{ CachedTokens() int64 }
+		if cu, ok := usage.(cachedUsage); ok {
+			t.cachedTokens = cu.CachedTokens()
+		}
 	}
 }
 
 // Usage returns the current usage as a ChatCompletionUsage
 func (t *StreamingUsageTracker) Usage() ChatCompletionUsage {
-	return NewChatCompletionUsage(t.promptTokens, t.completionTokens, t.totalTokens)
+	return NewChatCompletionUsageWithCache(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens)
 }
 
 // NewStreamingUsageTracker creates a new streaming usage tracker
