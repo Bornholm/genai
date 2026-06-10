@@ -7,6 +7,39 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
+func TestConvertAnthropicMessagesJSON(t *testing.T) {
+	messagesJSON := json.RawMessage(`[
+		{"role": "user", "content": "Hello"},
+		{"role": "assistant", "content": "Hi there!"}
+	]`)
+
+	msgs, err := ConvertAnthropicMessagesJSON(messagesJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role() != llm.RoleUser {
+		t.Errorf("first message role = %q, want user", msgs[0].Role())
+	}
+	if msgs[0].Content() != "Hello" {
+		t.Errorf("first message content = %q, want Hello", msgs[0].Content())
+	}
+	if msgs[1].Role() != llm.RoleAssistant {
+		t.Errorf("second message role = %q, want assistant", msgs[1].Role())
+	}
+	if msgs[1].Content() != "Hi there!" {
+		t.Errorf("second message content = %q, want Hi there!", msgs[1].Content())
+	}
+}
+
+func TestConvertAnthropicMessagesJSON_InvalidJSON(t *testing.T) {
+	if _, err := ConvertAnthropicMessagesJSON(json.RawMessage(`not json`)); err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
 func TestParseMessagesRequest_Basic(t *testing.T) {
 	body := json.RawMessage(`{
 		"model": "claude-3-5-sonnet-20241022",
@@ -314,6 +347,49 @@ func TestParseMessagesRequest_ToolChoice(t *testing.T) {
 				t.Errorf("tools = %+v", compiled.Tools)
 			}
 		})
+	}
+}
+
+// TestParseMessagesRequest_ToolChoiceDefaultsToAuto verifies that when tools
+// are provided without an explicit tool_choice, the model is still allowed
+// to call them. llm.NewChatCompletionOptions defaults ToolChoice to "none",
+// which would otherwise silently disable tool calling.
+func TestParseMessagesRequest_ToolChoiceDefaultsToAuto(t *testing.T) {
+	body := json.RawMessage(`{
+		"model": "m",
+		"max_tokens": 100,
+		"tools": [{"name": "calculator", "description": "evaluates expressions", "input_schema": {"type": "object"}}],
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`)
+
+	_, _, opts, err := ParseMessagesRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	compiled := llm.NewChatCompletionOptions(opts...)
+	if compiled.ToolChoice != llm.ToolChoiceAuto {
+		t.Errorf("tool choice = %q, want %q", compiled.ToolChoice, llm.ToolChoiceAuto)
+	}
+}
+
+// TestParseMessagesRequest_NoToolsToolChoiceNone verifies that without any
+// tools, ToolChoice keeps its default value of "none".
+func TestParseMessagesRequest_NoToolsToolChoiceNone(t *testing.T) {
+	body := json.RawMessage(`{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`)
+
+	_, _, opts, err := ParseMessagesRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	compiled := llm.NewChatCompletionOptions(opts...)
+	if compiled.ToolChoice != llm.ToolChoiceNone {
+		t.Errorf("tool choice = %q, want %q", compiled.ToolChoice, llm.ToolChoiceNone)
 	}
 }
 

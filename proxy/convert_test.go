@@ -41,6 +41,33 @@ func TestParseChatCompletionRequest_Basic(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIMessagesJSON(t *testing.T) {
+	messagesJSON := json.RawMessage(`[
+		{"role": "system", "content": "You are helpful."},
+		{"role": "user", "content": "Hello"}
+	]`)
+
+	msgs, err := ConvertOpenAIMessagesJSON(messagesJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role() != llm.RoleSystem {
+		t.Errorf("first message role = %q, want system", msgs[0].Role())
+	}
+	if msgs[1].Content() != "Hello" {
+		t.Errorf("second message content = %q, want Hello", msgs[1].Content())
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_InvalidJSON(t *testing.T) {
+	if _, err := ConvertOpenAIMessagesJSON(json.RawMessage(`not json`)); err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
 func TestParseChatCompletionRequest_Stream(t *testing.T) {
 	body := json.RawMessage(`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	_, stream, _, err := ParseChatCompletionRequest(body)
@@ -83,6 +110,47 @@ func TestParseChatCompletionRequest_InvalidJSON(t *testing.T) {
 	_, _, _, err := ParseChatCompletionRequest(json.RawMessage(`not json`))
 	if err == nil {
 		t.Error("expected error for invalid JSON")
+	}
+}
+
+// TestParseChatCompletionRequest_ToolChoiceDefaultsToAuto verifies that when
+// tools are provided without an explicit tool_choice, the model is still
+// allowed to call them. llm.NewChatCompletionOptions defaults ToolChoice to
+// "none", which would otherwise silently disable tool calling.
+func TestParseChatCompletionRequest_ToolChoiceDefaultsToAuto(t *testing.T) {
+	body := json.RawMessage(`{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hi"}],
+		"tools": [{"type": "function", "function": {"name": "calculator", "description": "evaluates expressions", "parameters": {"type": "object"}}}]
+	}`)
+
+	_, _, opts, err := ParseChatCompletionRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	compiled := llm.NewChatCompletionOptions(opts...)
+	if compiled.ToolChoice != llm.ToolChoiceAuto {
+		t.Errorf("tool choice = %q, want %q", compiled.ToolChoice, llm.ToolChoiceAuto)
+	}
+}
+
+// TestParseChatCompletionRequest_NoToolsToolChoiceNone verifies that without
+// any tools, ToolChoice keeps its default value of "none".
+func TestParseChatCompletionRequest_NoToolsToolChoiceNone(t *testing.T) {
+	body := json.RawMessage(`{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`)
+
+	_, _, opts, err := ParseChatCompletionRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	compiled := llm.NewChatCompletionOptions(opts...)
+	if compiled.ToolChoice != llm.ToolChoiceNone {
+		t.Errorf("tool choice = %q, want %q", compiled.ToolChoice, llm.ToolChoiceNone)
 	}
 }
 
