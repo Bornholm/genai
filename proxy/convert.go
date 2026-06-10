@@ -41,8 +41,8 @@ type openAIMessage struct {
 }
 
 type openAITool struct {
-	Type     string          `json:"type"` // "function"
-	Function openAIFunction  `json:"function"`
+	Type     string         `json:"type"` // "function"
+	Function openAIFunction `json:"function"`
 }
 
 type openAIFunction struct {
@@ -52,9 +52,9 @@ type openAIFunction struct {
 }
 
 type openAIToolCall struct {
-	ID       string              `json:"id"`
-	Type     string              `json:"type"` // "function"
-	Function openAIFunctionCall  `json:"function"`
+	ID       string             `json:"id"`
+	Type     string             `json:"type"` // "function"
+	Function openAIFunctionCall `json:"function"`
 }
 
 type openAIFunctionCall struct {
@@ -65,18 +65,18 @@ type openAIFunctionCall struct {
 // ---- OpenAI response types ----------------------------------------------
 
 type openAIChatResponse struct {
-	ID      string            `json:"id"`
-	Object  string            `json:"object"`
-	Created int64             `json:"created"`
-	Model   string            `json:"model"`
-	Choices []openAIChoice    `json:"choices"`
-	Usage   openAIUsage       `json:"usage"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []openAIChoice `json:"choices"`
+	Usage   openAIUsage    `json:"usage"`
 }
 
 type openAIChoice struct {
-	Index        int            `json:"index"`
-	Message      openAIMessage  `json:"message"`
-	FinishReason string         `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openAIMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type openAIUsage struct {
@@ -87,12 +87,12 @@ type openAIUsage struct {
 
 // openAIStreamChunk is a single SSE data payload.
 type openAIStreamChunk struct {
-	ID      string                `json:"id"`
-	Object  string                `json:"object"`
-	Created int64                 `json:"created"`
-	Model   string                `json:"model"`
-	Choices []openAIStreamChoice  `json:"choices"`
-	Usage   *openAIUsage          `json:"usage,omitempty"`
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Created int64                `json:"created"`
+	Model   string               `json:"model"`
+	Choices []openAIStreamChoice `json:"choices"`
+	Usage   *openAIUsage         `json:"usage,omitempty"`
 }
 
 type openAIStreamChoice struct {
@@ -235,12 +235,18 @@ func ParseChatCompletionRequest(body json.RawMessage) (model string, stream bool
 				opts = append(opts, llm.WithToolChoice(llm.ToolChoiceRequired))
 			}
 		}
+	} else if len(req.Tools) > 0 {
+		// OpenAI's API defaults to "auto" when tools are provided without an
+		// explicit tool_choice. llm.NewChatCompletionOptions defaults to
+		// ToolChoiceNone, which would silently prevent the model from ever
+		// calling a tool.
+		opts = append(opts, llm.WithToolChoice(llm.ToolChoiceAuto))
 	}
 
 	return model, stream, opts, nil
 }
 
-// ConvertOpenAIMessagesJSON converts a JSON array of OpenAI Chat Completions
+// ConvertOpenAIMessagesJSON converts a JSON array of OpenAI-style chat
 // messages into genai's internal []llm.Message representation.
 func ConvertOpenAIMessagesJSON(messagesJSON json.RawMessage) ([]llm.Message, error) {
 	var msgs []openAIMessage

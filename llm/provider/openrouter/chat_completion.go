@@ -388,7 +388,9 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		req.Tools = tools
 	}
 
-	req.ToolChoice = opts.ToolChoice
+	if opts.ToolChoice != "" {
+		req.ToolChoice = string(opts.ToolChoice)
+	}
 
 	// Configure modalities (e.g., ["text", "audio"] for audio output)
 	if len(opts.Modalities) > 0 {
@@ -559,7 +561,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		req.Tools = tools
 	}
 
-	req.ToolChoice = opts.ToolChoice
+	if opts.ToolChoice != "" {
+		req.ToolChoice = string(opts.ToolChoice)
+	}
 
 	// Configure modalities (e.g., ["text", "audio"] for audio output)
 	if len(opts.Modalities) > 0 {
