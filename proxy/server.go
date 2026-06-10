@@ -29,6 +29,8 @@ func NewServer(funcs ...OptionFunc) *Server {
 	s.mux.HandleFunc("POST /chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("POST /embeddings", s.handleEmbeddings)
 	s.mux.HandleFunc("GET /models", s.handleModels)
+	s.mux.HandleFunc("POST /messages", s.handleMessages)
+	s.mux.HandleFunc("POST /messages/count_tokens", s.handleCountTokens)
 
 	return s
 }

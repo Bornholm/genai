@@ -97,3 +97,37 @@ func NewModelNotFoundError(model string) *APIError {
 		Code:       "model_not_found",
 	}
 }
+
+// AnthropicError is the "error" object in an Anthropic Messages API error response.
+type AnthropicError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// AnthropicErrorResponse is the top-level error envelope used by the
+// Anthropic Messages API.
+type AnthropicErrorResponse struct {
+	Type  string         `json:"type"`
+	Error AnthropicError `json:"error"`
+}
+
+// anthropicErrorType maps an OpenAI-style error type to its Anthropic equivalent.
+func anthropicErrorType(apiErr *APIError) string {
+	switch apiErr.Type {
+	case "invalid_request_error", "authentication_error", "permission_error", "rate_limit_error", "not_found_error":
+		return apiErr.Type
+	default:
+		return "api_error"
+	}
+}
+
+// writeAnthropicAPIError writes apiErr using the Anthropic error envelope format.
+func writeAnthropicAPIError(w http.ResponseWriter, apiErr *APIError) {
+	writeJSON(w, apiErr.StatusCode, AnthropicErrorResponse{
+		Type: "error",
+		Error: AnthropicError{
+			Type:    anthropicErrorType(apiErr),
+			Message: apiErr.Message,
+		},
+	})
+}

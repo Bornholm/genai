@@ -13,6 +13,8 @@ const (
 	RequestTypeChatCompletion RequestType = "chat_completion"
 	RequestTypeEmbedding      RequestType = "embedding"
 	RequestTypeModels         RequestType = "models"
+	RequestTypeMessage        RequestType = "message"
+	RequestTypeCountTokens    RequestType = "count_tokens"
 )
 
 // ProxyRequest encapsulates any request transiting through the proxy.

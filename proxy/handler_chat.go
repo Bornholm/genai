@@ -9,6 +9,7 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	"github.com/google/uuid"
+	"github.com/pkg/errors"
 )
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -133,133 +134,71 @@ func (s *Server) handleChatCompletionsStream(
 	resolvedModel string,
 	opts []llm.ChatCompletionOptionFunc,
 ) {
-	ctx := r.Context()
+	emitter := newOpenAIStreamEmitter(resolvedModel)
+	s.streamChatCompletion(w, r, req, client, resolvedModel, opts, emitter)
+}
 
-	chunks, err := client.ChatCompletionStream(ctx, opts...)
-	if err != nil {
-		slog.ErrorContext(ctx, "stream chat completion error", slog.Any("error", err))
-		errRes, _ := s.chain.RunOnError(ctx, req, err)
-		if errRes != nil {
-			writeProxyResponse(w, errRes)
-		} else {
-			writeAPIError(w, apiErrorFromErr(err))
-		}
-		return
-	}
+// openAIStreamEmitter encodes llm.StreamChunk values as OpenAI-compatible
+// "chat.completion.chunk" SSE events.
+type openAIStreamEmitter struct {
+	streamID     string
+	model        string
+	sawToolCalls bool
+}
 
-	// Peek at the first chunk before committing to SSE headers.
-	// This lets us return a proper HTTP error status when the backend
-	// immediately rejects the request (e.g. invalid model parameters).
-	firstChunk, ok := <-chunks
-	if !ok {
-		writeAPIError(w, NewInternalError("stream closed with no data"))
-		return
-	}
-	if firstChunk.Error() != nil {
-		slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", firstChunk.Error()))
-		errRes, _ := s.chain.RunOnError(ctx, req, firstChunk.Error())
-		if errRes != nil {
-			writeProxyResponse(w, errRes)
-		} else {
-			writeAPIError(w, apiErrorFromErr(firstChunk.Error()))
-		}
-		return
-	}
-
-	// First chunk is good — commit to SSE.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, canFlush := w.(http.Flusher)
-
-	streamID := "chatcmpl-" + uuid.New().String()
-	tracker := llm.NewStreamingUsageTracker()
-	hadStreamError := false
-	sawToolCalls := false
-
-	chunkHasToolCalls := func(c llm.StreamChunk) bool {
-		return !c.IsComplete() && c.Delta() != nil && len(c.Delta().ToolCalls()) > 0
-	}
-
-	// Emit the first chunk we already received.
-	tracker.Update(firstChunk)
-	if chunkHasToolCalls(firstChunk) {
-		sawToolCalls = true
-	}
-	if payload, merr := json.Marshal(FormatStreamChunk(firstChunk, streamID, resolvedModel, sawToolCalls)); merr == nil {
-		fmt.Fprintf(w, "data: %s\n\n", payload)
-		if canFlush {
-			flusher.Flush()
-		}
-	}
-
-	for chunk := range chunks {
-		if chunk.Error() != nil {
-			slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
-			// Headers already sent; forward the error as a data event.
-			apiErr := apiErrorFromErr(chunk.Error())
-			if errData, jsonErr := json.Marshal(ErrorResponse{Error: *apiErr}); jsonErr == nil {
-				fmt.Fprintf(w, "data: %s\n\n", errData)
-				if canFlush {
-					flusher.Flush()
-				}
-			}
-			hadStreamError = true
-			break
-		}
-
-		tracker.Update(chunk)
-		if chunkHasToolCalls(chunk) {
-			sawToolCalls = true
-		}
-
-		payload := FormatStreamChunk(chunk, streamID, resolvedModel, sawToolCalls)
-		data, err := json.Marshal(payload)
-		if err != nil {
-			slog.ErrorContext(ctx, "could not marshal stream chunk", slog.Any("error", err))
-			continue
-		}
-
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		if canFlush {
-			flusher.Flush()
-		}
-
-		if chunk.IsComplete() {
-			break
-		}
-	}
-
-	fmt.Fprintf(w, "data: [DONE]\n\n")
-	if canFlush {
-		flusher.Flush()
-	}
-
-	// Skip post-response hooks on stream error — nothing useful to record.
-	if hadStreamError {
-		return
-	}
-
-	// Post-response hook with accumulated usage
-	usage := tracker.Usage()
-	streamTokensUsed := &TokenUsage{
-		PromptTokens:     int(usage.PromptTokens()),
-		CompletionTokens: int(usage.CompletionTokens()),
-		TotalTokens:      int(usage.TotalTokens()),
-	}
-	type cachedUsageStream interface{ CachedTokens() int64 }
-	if cu, ok := usage.(cachedUsageStream); ok {
-		streamTokensUsed.CachedTokens = int(cu.CachedTokens())
-	}
-	proxyRes := &ProxyResponse{
-		StatusCode: http.StatusOK,
-		Body:       nil,
-		TokensUsed: streamTokensUsed,
-	}
-	if err := s.chain.RunPostResponse(ctx, req, proxyRes); err != nil {
-		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
+func newOpenAIStreamEmitter(model string) *openAIStreamEmitter {
+	return &openAIStreamEmitter{
+		streamID: "chatcmpl-" + uuid.New().String(),
+		model:    model,
 	}
 }
+
+func (e *openAIStreamEmitter) write(w io.Writer, chunk llm.StreamChunk) error {
+	if !chunk.IsComplete() && chunk.Delta() != nil && len(chunk.Delta().ToolCalls()) > 0 {
+		e.sawToolCalls = true
+	}
+
+	payload := FormatStreamChunk(chunk, e.streamID, e.model, e.sawToolCalls)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
+}
+
+// EmitFirst implements streamEmitter.
+func (e *openAIStreamEmitter) EmitFirst(w io.Writer, chunk llm.StreamChunk) error {
+	return e.write(w, chunk)
+}
+
+// Emit implements streamEmitter.
+func (e *openAIStreamEmitter) Emit(w io.Writer, chunk llm.StreamChunk) error {
+	return e.write(w, chunk)
+}
+
+// EmitError implements streamEmitter.
+func (e *openAIStreamEmitter) EmitError(w io.Writer, err error) error {
+	apiErr := apiErrorFromErr(err)
+	data, merr := json.Marshal(ErrorResponse{Error: *apiErr})
+	if merr != nil {
+		return errors.WithStack(merr)
+	}
+	if _, werr := fmt.Fprintf(w, "data: %s\n\n", data); werr != nil {
+		return errors.WithStack(werr)
+	}
+	return nil
+}
+
+// Finalize implements streamEmitter.
+func (e *openAIStreamEmitter) Finalize(w io.Writer, usage llm.ChatCompletionUsage) error {
+	if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
+}
+
+var _ streamEmitter = &openAIStreamEmitter{}
