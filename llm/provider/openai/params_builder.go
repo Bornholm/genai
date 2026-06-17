@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
@@ -241,11 +242,20 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 
 			toolCalls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(toolCallsMessage.ToolCalls()))
 			for _, tc := range toolCallsMessage.ToolCalls() {
+				// Some models emit malformed arguments (e.g. several JSON objects
+				// concatenated together when they intend multiple calls but only
+				// produce one tool_call). Replaying invalid JSON as
+				// function.arguments in history is rejected outright by some
+				// providers (e.g. Qwen), so sanitize before sending.
+				args, _ := tc.Parameters().(string)
+				if !json.Valid([]byte(args)) {
+					args = "{}"
+				}
 				toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
 					ID: tc.ID(),
 					Function: openai.ChatCompletionMessageToolCallFunctionParam{
 						Name:      tc.Name(),
-						Arguments: tc.Parameters().(string),
+						Arguments: args,
 					},
 				})
 			}

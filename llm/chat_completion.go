@@ -595,6 +595,13 @@ func (b *BaseToolCall) Attachments() []Attachment {
 var _ ToolCall = &BaseToolCall{}
 
 func NewToolCall(id string, name string, parameters string) *BaseToolCall {
+	// Some providers stream no argument deltas at all for parameterless tool
+	// calls, leaving an empty string. Replaying an empty string as
+	// function.arguments in later conversation history is rejected as
+	// invalid JSON by some providers (e.g. Qwen), so default to "{}".
+	if parameters == "" {
+		parameters = "{}"
+	}
 	return &BaseToolCall{
 		id:         id,
 		name:       name,
