@@ -441,6 +441,16 @@ type ChatCompletionUsage interface {
 	CompletionTokens() int64
 }
 
+// CostReportingUsage is satisfied by usage objects from providers that report
+// the actual billed cost of a request (e.g. OpenRouter). Callers can
+// type-assert ChatCompletionUsage to this interface to access it, following
+// the same optional-capability pattern as CachedTokens.
+type CostReportingUsage interface {
+	// Cost returns the provider-reported cost and its currency. ok is false
+	// if the provider did not report a cost for this request.
+	Cost() (amount float64, currency string, ok bool)
+}
+
 type BaseChatCompletionResponse struct {
 	message          Message
 	toolCalls        []ToolCall
@@ -503,6 +513,8 @@ type BaseChatCompletionUsage struct {
 	promptTokens     int64
 	completionTokens int64
 	cachedTokens     int64
+	cost             *float64
+	costCurrency     string
 }
 
 // CompletionTokens implements ChatCompletionUsage.
@@ -525,6 +537,14 @@ func (u *BaseChatCompletionUsage) CachedTokens() int64 {
 	return u.cachedTokens
 }
 
+// Cost implements CostReportingUsage.
+func (u *BaseChatCompletionUsage) Cost() (amount float64, currency string, ok bool) {
+	if u.cost == nil {
+		return 0, "", false
+	}
+	return *u.cost, u.costCurrency, true
+}
+
 func NewChatCompletionUsage(promptTokens, completionTokens, totalTokens int64) *BaseChatCompletionUsage {
 	return &BaseChatCompletionUsage{
 		promptTokens:     promptTokens,
@@ -541,6 +561,22 @@ func NewChatCompletionUsageWithCache(promptTokens, completionTokens, totalTokens
 		cachedTokens:     cachedTokens,
 	}
 }
+
+// NewChatCompletionUsageWithCost creates a usage that also carries the
+// provider-reported cost of the request, for providers that report it
+// (e.g. OpenRouter). Use CostReportingUsage to retrieve it.
+func NewChatCompletionUsageWithCost(promptTokens, completionTokens, totalTokens, cachedTokens int64, cost float64, currency string) *BaseChatCompletionUsage {
+	return &BaseChatCompletionUsage{
+		promptTokens:     promptTokens,
+		completionTokens: completionTokens,
+		totalTokens:      totalTokens,
+		cachedTokens:     cachedTokens,
+		cost:             &cost,
+		costCurrency:     currency,
+	}
+}
+
+var _ CostReportingUsage = &BaseChatCompletionUsage{}
 
 var _ ChatCompletionUsage = &BaseChatCompletionUsage{}
 

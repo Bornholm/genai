@@ -111,6 +111,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if cu, ok := usage.(cachedUsage); ok {
 		tokensUsed.CachedTokens = int(cu.CachedTokens())
 	}
+	if cr, ok := usage.(llm.CostReportingUsage); ok {
+		if amount, currency, ok := cr.Cost(); ok {
+			tokensUsed.Cost = &amount
+			tokensUsed.CostCurrency = currency
+		}
+	}
 	proxyRes := &ProxyResponse{
 		StatusCode: http.StatusOK,
 		Body:       body,

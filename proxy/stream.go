@@ -141,6 +141,12 @@ func (s *Server) streamChatCompletion(
 	if cu, ok := usage.(cachedUsageStream); ok {
 		streamTokensUsed.CachedTokens = int(cu.CachedTokens())
 	}
+	if cr, ok := usage.(llm.CostReportingUsage); ok {
+		if amount, currency, ok := cr.Cost(); ok {
+			streamTokensUsed.Cost = &amount
+			streamTokensUsed.CostCurrency = currency
+		}
+	}
 	proxyRes := &ProxyResponse{
 		StatusCode: http.StatusOK,
 		Body:       nil,

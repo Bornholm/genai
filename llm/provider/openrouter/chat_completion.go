@@ -2,6 +2,7 @@ package openrouter
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 
@@ -345,6 +346,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	req := openrouter.ChatCompletionRequest{
 		Model:       c.model,
 		Temperature: temperature,
+		Usage:       &openrouter.IncludeUsage{Include: true},
 	}
 
 	// Configure reasoning if requested
@@ -487,11 +489,13 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		toolCalls = append(toolCalls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 	}
 
-	usage := llm.NewChatCompletionUsageWithCache(
+	usage := llm.NewChatCompletionUsageWithCost(
 		int64(res.Usage.PromptTokens),
 		int64(res.Usage.CompletionTokens),
 		int64(res.Usage.TotalTokens),
 		int64(res.Usage.PromptTokenDetails.CachedTokens),
+		res.Usage.Cost,
+		"USD", // OpenRouter always reports cost in USD
 	)
 
 	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...), nil
@@ -513,6 +517,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		Temperature:   temperature,
 		Stream:        true, // Enable streaming
 		StreamOptions: &openrouter.StreamOptions{IncludeUsage: true},
+		Usage:         &openrouter.IncludeUsage{Include: true},
 	}
 
 	// Configure reasoning if requested
@@ -614,6 +619,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		completionTokens atomic.Int64
 		totalTokens      atomic.Int64
 		cachedTokens     atomic.Int64
+		cost             atomic.Uint64 // float64 bits, see math.Float64bits/Float64frombits
+		costReported     atomic.Bool
 	)
 
 	go func() {
@@ -647,6 +654,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				completionTokens.Store(int64(response.Usage.CompletionTokens))
 				totalTokens.Store(int64(response.Usage.TotalTokens))
 				cachedTokens.Store(int64(response.Usage.PromptTokenDetails.CachedTokens))
+				cost.Store(math.Float64bits(response.Usage.Cost))
+				costReported.Store(true)
 			}
 
 			if len(response.Choices) == 0 {
@@ -726,12 +735,24 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		// Send completion chunk with usage if available
-		usage := llm.NewChatCompletionUsageWithCache(
-			promptTokens.Load(),
-			completionTokens.Load(),
-			totalTokens.Load(),
-			cachedTokens.Load(),
-		)
+		var usage llm.ChatCompletionUsage
+		if costReported.Load() {
+			usage = llm.NewChatCompletionUsageWithCost(
+				promptTokens.Load(),
+				completionTokens.Load(),
+				totalTokens.Load(),
+				cachedTokens.Load(),
+				math.Float64frombits(cost.Load()),
+				"USD", // OpenRouter always reports cost in USD
+			)
+		} else {
+			usage = llm.NewChatCompletionUsageWithCache(
+				promptTokens.Load(),
+				completionTokens.Load(),
+				totalTokens.Load(),
+				cachedTokens.Load(),
+			)
+		}
 
 		chunks <- llm.NewCompleteStreamChunk(usage)
 	}()

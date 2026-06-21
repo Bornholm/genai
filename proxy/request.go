@@ -48,4 +48,6 @@ type TokenUsage struct {
 	CompletionTokens int
 	TotalTokens      int
 	CachedTokens     int
+	Cost             *float64 // provider-reported cost, nil if not available
+	CostCurrency     string
 }

@@ -240,6 +240,17 @@ func ParseChatCompletionRequest(body json.RawMessage) (model string, stream bool
 	return model, stream, opts, nil
 }
 
+// ConvertOpenAIMessagesJSON converts a JSON array of OpenAI Chat Completions
+// messages into genai's internal []llm.Message representation.
+func ConvertOpenAIMessagesJSON(messagesJSON json.RawMessage) ([]llm.Message, error) {
+	var msgs []openAIMessage
+	if err := json.Unmarshal(messagesJSON, &msgs); err != nil {
+		return nil, errors.Wrap(err, "could not unmarshal messages")
+	}
+
+	return convertMessages(msgs)
+}
+
 func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 	out := make([]llm.Message, 0, len(msgs))
 
