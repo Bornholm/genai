@@ -274,9 +274,16 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 	return nil
 }
 
-// BuildStreamingParams builds parameters for streaming requests
-// Note: OpenAI Go SDK handles streaming through different methods, not params
+// BuildStreamingParams builds parameters for streaming requests.
+// Adds stream_options.include_usage=true so providers return token usage
+// in the final streaming chunk, enabling accurate cost tracking.
 func (b *paramsBuilder) BuildStreamingParams(ctx context.Context, opts *llm.ChatCompletionOptions) (*openai.ChatCompletionNewParams, error) {
-	// Use the same params as regular completion - streaming is handled by the SDK method
-	return b.BuildParams(ctx, opts)
+	params, err := b.BuildParams(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+		IncludeUsage: openai.Bool(true),
+	}
+	return params, nil
 }
