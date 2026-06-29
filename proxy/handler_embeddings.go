@@ -40,6 +40,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.UserID = userID
+		ctx = r.Context()
 	}
 
 	shortCircuit, err := s.chain.RunPreRequest(ctx, req)

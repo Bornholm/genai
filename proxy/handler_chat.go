@@ -47,6 +47,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.UserID = userID
+		// AuthExtractor may store values in r's context (e.g. org ID for OIDC
+		// users). Refresh ctx so pre-request hooks see the updated context.
+		ctx = r.Context()
 	}
 
 	// 5. Pre-request hooks

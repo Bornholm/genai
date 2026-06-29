@@ -45,6 +45,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.UserID = userID
+		ctx = r.Context()
 	}
 
 	// 5. Pre-request hooks
