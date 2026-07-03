@@ -37,6 +37,10 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 	// Create context manager
 	contextManager := NewContextManager(h.options.MaxTokens, h.options.TokenEstimator, h.options.CompressionRatio, h.options.TruncationStrategy)
 
+	// Tracks whether the one-shot final instruction has already been injected.
+	// Kept local to Handle so each invocation starts fresh.
+	finalInstructionInjected := false
+
 	// 1b. Forced planning step: expose only TodoWrite with tool_choice=required so
 	// the model MUST write a structured plan before taking any action.
 	// This is skipped when ForcePlanningStep is false or when no tools exist.
@@ -94,6 +98,14 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 					llm.RoleUser,
 					"Your todo list still contains pending or in-progress items. If you have completed all your work, please update your todo list to mark every item as done. If there is still work to do, continue working on the remaining tasks before providing your final response.",
 				))
+				continue
+			}
+
+			// One-shot final instruction: give the agent a last chance to act (e.g. ensure
+			// it exported its report) before the loop reports completion.
+			if h.options.FinalInstruction != "" && !finalInstructionInjected {
+				messages = append(messages, llm.NewMessage(llm.RoleUser, h.options.FinalInstruction))
+				finalInstructionInjected = true
 				continue
 			}
 

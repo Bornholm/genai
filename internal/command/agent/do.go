@@ -33,6 +33,7 @@ type doConfig struct {
 	taskData              any
 	additionalContext     string
 	additionalContextData any
+	finalInstruction      string
 	attachments           []string
 	maxTokens             int
 	maxToolResultTokens   int
@@ -86,6 +87,13 @@ func loadDoConfig(cliCtx *cli.Context) (*doConfig, error) {
 			return c.Do.AdditionalContextData
 		}
 		return nil
+	})
+
+	cfg.finalInstruction = r.string("final-instruction", func(c *agentconfig.Config) string {
+		if c.Do != nil {
+			return c.Do.FinalInstruction
+		}
+		return ""
 	})
 
 	cfg.attachments = r.strings("attachment", func(c *agentconfig.Config) []string {
@@ -240,6 +248,11 @@ func Do() *cli.Command {
 				return errors.WithStack(err)
 			}
 
+			finalInstruction, err := common.GetPromptWithData(cliCtx, cfg.finalInstruction, cfg.taskData)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
 			attachments, err := processAttachments(cfg.attachments)
 			if err != nil {
 				return errors.Wrap(err, "failed to process attachments")
@@ -266,6 +279,10 @@ func Do() *cli.Command {
 				loop.WithSystemPrompt(systemPrompt),
 				loop.WithMaxIterations(cfg.maxIterations),
 				loop.WithForcePlanningStep(!cfg.noPlanning),
+			}
+
+			if finalInstruction != "" {
+				loopOpts = append(loopOpts, loop.WithFinalInstruction(finalInstruction))
 			}
 
 			if cfg.maxTokens > 0 {

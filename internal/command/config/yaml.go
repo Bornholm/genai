@@ -42,6 +42,7 @@ type DoConfig struct {
 	TaskData              map[string]any      `yaml:"taskData"`
 	AdditionalContext     string              `yaml:"additionalContext"`
 	AdditionalContextData map[string]any      `yaml:"additionalContextData"`
+	FinalInstruction      string              `yaml:"finalInstruction"`
 	Attachments           []string            `yaml:"attachments"`
 	MaxTokens             int                 `yaml:"maxTokens"`
 	MaxToolResultTokens   int                 `yaml:"maxToolResultTokens"`
@@ -102,6 +103,7 @@ func interpolateConfig(cfg *Config) {
 		cfg.Do.Schema = Interpolate(cfg.Do.Schema)
 		cfg.Do.Task = Interpolate(cfg.Do.Task)
 		cfg.Do.AdditionalContext = Interpolate(cfg.Do.AdditionalContext)
+		cfg.Do.FinalInstruction = Interpolate(cfg.Do.FinalInstruction)
 		cfg.Do.Output = Interpolate(cfg.Do.Output)
 		for i := range cfg.Do.Attachments {
 			cfg.Do.Attachments[i] = Interpolate(cfg.Do.Attachments[i])

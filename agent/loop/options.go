@@ -60,6 +60,11 @@ type Options struct {
 	// When set, the handler makes a synthesis LLM call with the schema before emitting
 	// the Complete event, ensuring structured output.
 	ResponseSchema llm.ResponseSchema
+	// FinalInstruction is injected as a user message exactly once, when the agent is
+	// about to terminate naturally (no tool calls, no pending todos), giving it a last
+	// chance to perform a final action (e.g. ensure it exported its report) before the
+	// loop reports completion. The injection is one-shot to avoid an infinite loop.
+	FinalInstruction string
 }
 
 // OptionFunc is a function that configures the loop handler
@@ -173,6 +178,15 @@ func WithCompressionRatio(ratio float64) OptionFunc {
 func WithResponseSchema(schema llm.ResponseSchema) OptionFunc {
 	return func(o *Options) {
 		o.ResponseSchema = schema
+	}
+}
+
+// WithFinalInstruction sets a user message injected exactly once, right before the
+// agent concludes, letting it perform a final action (e.g. ensure it exported its
+// report). See Options.FinalInstruction for details.
+func WithFinalInstruction(instruction string) OptionFunc {
+	return func(o *Options) {
+		o.FinalInstruction = instruction
 	}
 }
 

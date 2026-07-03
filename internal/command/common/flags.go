@@ -41,6 +41,12 @@ func init() {
 			Usage:   "Data to inject in the additional context (text format, or @file to load from file)",
 			EnvVars: []string{"GENAI_ADDITIONAL_CONTEXT_DATA"},
 		},
+		// Final instruction injected once before the agent concludes
+		&cli.StringFlag{
+			Name:    "final-instruction",
+			Usage:   "Instruction injected once, before the agent concludes, to run a final action (text, or @file). Supports templating with --task-data.",
+			EnvVars: []string{"GENAI_FINAL_INSTRUCTION"},
+		},
 		// Attachments
 		&cli.StringSliceFlag{
 			Name:      "attachment",

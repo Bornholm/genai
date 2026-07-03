@@ -670,6 +670,93 @@ func TestHandler_PlanningStepRetryOnInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestHandler_FinalInstructionInjectedOnce(t *testing.T) {
+	// Test: WithFinalInstruction set. The LLM first tries to finish with plain text →
+	// the final instruction is injected once and the loop runs one more turn → the LLM
+	// finishes again → Complete emitted. The injection must be one-shot: if it repeated,
+	// the mock would run out of responses and error.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "I think I'm done."),
+			},
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "Confirmed, report exported."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+		WithFinalInstruction("Make sure you exported your report before concluding."),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Do the thing"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	// One extra turn: the instruction forced a second LLM call, no more.
+	if client.callCount != 2 {
+		t.Errorf("expected 2 LLM calls (one-shot injection), got %d", client.callCount)
+	}
+
+	if len(events) != 1 || events[0].Type() != agent.EventTypeComplete {
+		t.Fatalf("expected single Complete event, got %d events", len(events))
+	}
+
+	data := events[0].Data().(*agent.CompleteData)
+	if data.Message != "Confirmed, report exported." {
+		t.Errorf("expected final message 'Confirmed, report exported.', got '%s'", data.Message)
+	}
+}
+
+func TestHandler_NoFinalInstructionNoExtraTurn(t *testing.T) {
+	// Regression: without a final instruction the agent completes on the first turn.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "Done."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Quick question"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	if client.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d", client.callCount)
+	}
+
+	if len(events) != 1 || events[0].Type() != agent.EventTypeComplete {
+		t.Errorf("expected single Complete event, got %d events", len(events))
+	}
+}
+
 func TestHandler_AllDoneTodoAllowsCompletion(t *testing.T) {
 	// Test: todo list written with all items done → LLM finishes → Complete emitted without injection.
 	client := &MockChatCompletionClient{
