@@ -60,20 +60,19 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 		// Apply context window management
 		messages = contextManager.Manage(messages)
 
-		// 2b. Build iteration budget message
-		remainingIterations := h.options.MaxIterations - iteration
-		budgetMessage := llm.NewMessage(llm.RoleSystem, fmt.Sprintf(
-			"You have %d iteration%s remaining to complete your task.",
-			remainingIterations,
-			map[bool]string{true: "", false: "s"}[remainingIterations == 1],
-		))
+		// 2b. Build iteration budget message. It must be prepended into a single
+		// WithMessages call: llm.WithMessages replaces (not appends) opts.Messages, so
+		// passing it as a separate option would silently drop it.
+		budgetMessage := h.buildBudgetMessage(iteration)
+		callMessages := make([]llm.Message, 0, len(messages)+1)
+		callMessages = append(callMessages, budgetMessage)
+		callMessages = append(callMessages, messages...)
 
 		// 2c. Call the LLM (streaming when supported, non-streaming otherwise)
-		slog.DebugContext(ctx, "calling LLM", slog.Int("iteration", iteration), slog.Int("remaining", remainingIterations))
+		slog.DebugContext(ctx, "calling LLM", slog.Int("iteration", iteration), slog.Int("remaining", h.options.MaxIterations-iteration))
 
 		completionOpts := []llm.ChatCompletionOptionFunc{
-			llm.WithMessages(budgetMessage),
-			llm.WithMessages(messages...),
+			llm.WithMessages(callMessages...),
 			llm.WithTools(allTools...),
 			llm.WithToolChoice(llm.ToolChoiceAuto),
 		}
@@ -203,8 +202,102 @@ func (h *Handler) Handle(ctx context.Context, input agent.Input, emit agent.Emit
 		// 2k. Continue the loop
 	}
 
-	// 3. If the loop exits because maxIterations was reached, generate a summary
+	// 3. The loop exited because MaxIterations was reached. Signal the budget-exceeded
+	// condition up-front so callers/UI can explain the stop before any grace action runs.
+	if err := emit(agent.NewEvent(agent.EventTypeBudgetExceeded, &agent.BudgetExceededData{
+		MaxIterations: h.options.MaxIterations,
+	})); err != nil {
+		return errors.WithStack(err)
+	}
+
+	// 4. If a final instruction is configured and was never injected (the agent spent
+	// its entire budget on tool calls), give it a bounded, tool-enabled grace window to
+	// honor that instruction — e.g. ensure it exported its report — before summarizing.
+	if h.options.FinalInstruction != "" && !finalInstructionInjected {
+		if err := h.runFinalInstructionStep(ctx, allTools, &messages, emit); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	// 5. Generate a summary of what was accomplished within the iteration budget.
 	return h.generateBudgetExceededSummary(ctx, messages, emit)
+}
+
+// maxFinalInstructionIterations bounds how many extra tool-enabled LLM calls the agent
+// may make to honor its final instruction after exhausting its iteration budget. It is a
+// small grace window so the agent can perform a last meaningful action (e.g. exporting
+// its report) — with a little slack to absorb a wasted turn — without reopening an
+// unbounded loop.
+const maxFinalInstructionIterations = 5
+
+// runFinalInstructionStep injects the configured final instruction after the main
+// iteration budget was exhausted and lets the agent make a bounded number of tool-enabled
+// turns to honor it (e.g. ensure it exported its report). Any tool calls are executed and
+// their results appended; a final text response terminates the step early. This mirrors
+// the in-loop one-shot final instruction (handler.go, step 2e) for the budget-exceeded
+// path, where the agent never reached a voluntary stop.
+func (h *Handler) runFinalInstructionStep(ctx context.Context, allTools []llm.Tool, messages *[]llm.Message, emit agent.EmitFunc) error {
+	slog.DebugContext(ctx, "injecting final instruction after budget exhaustion")
+
+	*messages = append(*messages, llm.NewMessage(llm.RoleUser, h.options.FinalInstruction))
+
+	for range maxFinalInstructionIterations {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		completionOpts := []llm.ChatCompletionOptionFunc{
+			llm.WithMessages(*messages...),
+			llm.WithTools(allTools...),
+			llm.WithToolChoice(llm.ToolChoiceAuto),
+		}
+		if h.options.Reasoning != nil {
+			completionOpts = append(completionOpts, llm.WithReasoning(h.options.Reasoning))
+		}
+
+		result, err := h.doLLMCall(ctx, completionOpts, emit)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+
+		// No tool calls → the agent is done reacting to the final instruction.
+		if len(result.toolCalls) == 0 {
+			if result.content != "" {
+				*messages = append(*messages, llm.NewMessage(llm.RoleAssistant, result.content))
+			}
+			return nil
+		}
+
+		*messages = append(*messages, h.makeToolCallsMessage(result))
+
+		for _, tc := range result.toolCalls {
+			if err := emit(agent.NewEvent(agent.EventTypeToolCallStart, &agent.ToolCallStartData{
+				ID:         tc.ID(),
+				Name:       tc.Name(),
+				Parameters: tc.Parameters(),
+			})); err != nil {
+				return errors.WithStack(err)
+			}
+
+			r, execErr := executeTool(ctx, allTools, tc)
+			if execErr != nil {
+				r = execErr.Error()
+			}
+			r = h.truncateToolResult(r)
+
+			*messages = append(*messages, llm.NewToolMessage(tc.ID(), llm.NewToolResult(r)))
+
+			if err := emit(agent.NewEvent(agent.EventTypeToolCallDone, &agent.ToolCallDoneData{
+				ID:     tc.ID(),
+				Name:   tc.Name(),
+				Result: r,
+			})); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // generateBudgetExceededSummary makes a final LLM call to summarize what was accomplished
@@ -219,13 +312,8 @@ Be specific about progress made, any obstacles encountered, and recommendations 
 	summaryMessage := llm.NewMessage(llm.RoleUser, summaryPrompt)
 	summaryMessages := append(messages, summaryMessage)
 
-	// Emit EventTypeBudgetExceeded before anything else so callers can detect
-	// the budget-exceeded condition and decide whether to use the summary.
-	if err := emit(agent.NewEvent(agent.EventTypeBudgetExceeded, &agent.BudgetExceededData{
-		MaxIterations: h.options.MaxIterations,
-	})); err != nil {
-		return errors.WithStack(err)
-	}
+	// Note: EventTypeBudgetExceeded is emitted by Handle before this summary (and
+	// before any final-instruction grace step), so callers are notified up-front.
 
 	res, err := h.options.Client.ChatCompletion(ctx,
 		llm.WithMessages(summaryMessages...),
@@ -282,7 +370,11 @@ func (h *Handler) runPlanningStep(ctx context.Context, todoList *todo.List, allT
 		// Build a transient message slice for this LLM call — NOT stored in *messages.
 		// On retry, a system hint is appended here rather than to *messages to avoid
 		// sending consecutive user messages (which providers reject with 400).
-		planMessages := append([]llm.Message(nil), *messages...)
+		// The budget message is prefixed (as in the main loop) so the initial roadmap
+		// is sized against the iteration budget.
+		planMessages := make([]llm.Message, 0, len(*messages)+2)
+		planMessages = append(planMessages, h.buildBudgetMessage(0))
+		planMessages = append(planMessages, *messages...)
 		if attempt > 0 {
 			slog.DebugContext(ctx, "planning step did not write todo items, retrying")
 			planMessages = append(planMessages, llm.NewMessage(llm.RoleSystem,
@@ -430,6 +522,44 @@ func (h *Handler) truncateToolResult(result string) string {
 	}
 
 	return result
+}
+
+// buildBudgetMessage returns the system message informing the agent of its iteration
+// budget for the given zero-based iteration index. It states the current iteration, the
+// total and the remaining count, and reminds the agent to keep its roadmap (todo list)
+// aligned with the budget so it can re-prioritize toward its objectives when iterations
+// run low.
+func (h *Handler) buildBudgetMessage(iteration int) llm.Message {
+	remaining := h.options.MaxIterations - iteration
+	plural := "s"
+	if remaining == 1 {
+		plural = ""
+	}
+
+	// In the final stretch, escalate from a gentle reminder to an imperative
+	// wind-down so the agent stops gathering new information and delivers its
+	// result while it still has budget, instead of being cut off mid-exploration.
+	windDown := h.options.MaxIterations / 10
+	if windDown < 3 {
+		windDown = 3
+	}
+	if remaining <= windDown {
+		return llm.NewMessage(llm.RoleSystem, fmt.Sprintf(
+			"Iteration %d of %d — only %d iteration%s left before your budget is exhausted. "+
+				"STOP gathering new information and do not start any new analysis or exploration. "+
+				"Immediately finalize and deliver your result — perform your closing action "+
+				"(e.g. sending or exporting your report) NOW, using the findings you already have.",
+			iteration+1, h.options.MaxIterations, remaining, plural,
+		))
+	}
+
+	return llm.NewMessage(llm.RoleSystem, fmt.Sprintf(
+		"Iteration %d of %d — %d iteration%s remaining to complete your task. "+
+			"Keep your roadmap (todo list) aligned with this budget: if iterations are "+
+			"running low, re-prioritize toward the highest-value objectives and update "+
+			"your todos accordingly.",
+		iteration+1, h.options.MaxIterations, remaining, plural,
+	))
 }
 
 func hasPendingTodoItems(list *todo.List) bool {

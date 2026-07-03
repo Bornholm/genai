@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/agent"
@@ -13,6 +14,9 @@ import (
 type MockChatCompletionClient struct {
 	responses []MockResponse
 	callCount int
+	// capturedMessages records the messages passed to each ChatCompletion call,
+	// letting tests assert on what the agent actually sent (e.g. the budget message).
+	capturedMessages [][]llm.Message
 }
 
 type MockResponse struct {
@@ -22,6 +26,7 @@ type MockResponse struct {
 }
 
 func (m *MockChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	m.capturedMessages = append(m.capturedMessages, llm.NewChatCompletionOptions(funcs...).Messages)
 	if m.callCount >= len(m.responses) {
 		return nil, errors.New("no more mock responses")
 	}
@@ -754,6 +759,214 @@ func TestHandler_NoFinalInstructionNoExtraTurn(t *testing.T) {
 
 	if len(events) != 1 || events[0].Type() != agent.EventTypeComplete {
 		t.Errorf("expected single Complete event, got %d events", len(events))
+	}
+}
+
+func TestHandler_FinalInstructionAppliedOnBudgetExceeded(t *testing.T) {
+	// Test: the agent spends its entire iteration budget on tool calls (never stops
+	// voluntarily), so the in-loop one-shot final instruction is never injected. On
+	// budget exhaustion the handler must still give the final instruction a bounded
+	// grace window, letting the agent perform a last action (here: send_report) before
+	// the budget-exceeded summary is produced.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			// Budget is 2 iterations, both tool calls → budget exhausted.
+			{ToolCalls: []llm.ToolCall{&MockToolCall{id: "1", name: "test_tool", parameters: map[string]any{}}}},
+			{ToolCalls: []llm.ToolCall{&MockToolCall{id: "2", name: "test_tool", parameters: map[string]any{}}}},
+			// Grace window: the agent honors the final instruction by sending the report...
+			{ToolCalls: []llm.ToolCall{&MockToolCall{id: "3", name: "send_report", parameters: map[string]any{}}}},
+			// ...then finishes with plain text (no tool call) → grace window ends early.
+			{Message: llm.NewMessage(llm.RoleAssistant, "Report exported.")},
+			// Budget-exceeded summary call.
+			{Message: llm.NewMessage(llm.RoleAssistant, "Summary of work done.")},
+		},
+	}
+
+	testTool := &MockTool{
+		name:        "test_tool",
+		description: "A test tool",
+		execute: func(ctx context.Context, params map[string]any) (llm.ToolResult, error) {
+			return llm.NewToolResult("result"), nil
+		},
+	}
+	var reportSent bool
+	sendReport := &MockTool{
+		name:        "send_report",
+		description: "Send the final report",
+		execute: func(ctx context.Context, params map[string]any) (llm.ToolResult, error) {
+			reportSent = true
+			return llm.NewToolResult("report sent"), nil
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+		WithTools(testTool, sendReport),
+		WithMaxIterations(2),
+		WithFinalInstruction("Make sure you exported your report before concluding."),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	var events []agent.Event
+	err = handler.Handle(context.Background(), agent.NewInput("Audit the code"), func(evt agent.Event) error {
+		events = append(events, evt)
+		return nil
+	})
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	// 2 loop turns + 2 grace turns + 1 summary.
+	if client.callCount != 5 {
+		t.Errorf("expected 5 LLM calls, got %d", client.callCount)
+	}
+
+	// The final instruction must have driven send_report during the grace window.
+	if !reportSent {
+		t.Error("expected send_report to be called via the final-instruction grace window")
+	}
+
+	// The budget-exceeded condition must be signaled to callers.
+	var sawBudgetExceeded bool
+	for _, evt := range events {
+		if evt.Type() == agent.EventTypeBudgetExceeded {
+			sawBudgetExceeded = true
+		}
+	}
+	if !sawBudgetExceeded {
+		t.Error("expected an EventTypeBudgetExceeded event")
+	}
+
+	// The last event is the summary Complete.
+	last := events[len(events)-1]
+	if last.Type() != agent.EventTypeComplete {
+		t.Fatalf("expected last event EventTypeComplete, got %s", last.Type())
+	}
+	if data := last.Data().(*agent.CompleteData); data.Message != "Summary of work done." {
+		t.Errorf("expected summary message 'Summary of work done.', got '%s'", data.Message)
+	}
+}
+
+func TestHandler_BudgetMessageWindsDownNearLimit(t *testing.T) {
+	// buildBudgetMessage must escalate to an imperative wind-down once few iterations
+	// remain, so the agent stops exploring and delivers its result while it still has
+	// budget instead of being cut off mid-exploration.
+	handler, err := NewHandler(
+		WithClient(&MockChatCompletionClient{}),
+		WithSystemPrompt("You are a helpful assistant."),
+		WithMaxIterations(100),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	// Early iteration: gentle reminder to keep the roadmap aligned.
+	early := handler.buildBudgetMessage(0)
+	if !strings.Contains(early.Content(), "remaining to complete your task") {
+		t.Errorf("expected the gentle reminder early on, got: %q", early.Content())
+	}
+
+	// Final stretch (remaining = 5 <= MaxIterations/10 = 10): imperative wind-down.
+	late := handler.buildBudgetMessage(95)
+	if !strings.Contains(late.Content(), "STOP gathering new information") {
+		t.Errorf("expected the imperative wind-down near the limit, got: %q", late.Content())
+	}
+}
+
+// messagesContainSystem reports whether any system message in the slice contains substr.
+func messagesContainSystem(messages []llm.Message, substr string) bool {
+	for _, m := range messages {
+		if m.Role() == llm.RoleSystem && strings.Contains(m.Content(), substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHandler_PlanningStepReceivesBudget(t *testing.T) {
+	// Test: with the forced planning step enabled, the very first LLM call (the planning
+	// call that builds the roadmap) must include the iteration budget message so the agent
+	// can size its todo list against the budget.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			// Planning step: write the roadmap (already done to avoid a pending-todo nudge).
+			{
+				ToolCalls: []llm.ToolCall{&MockToolCall{
+					id:         "p1",
+					name:       "TodoWrite",
+					parameters: map[string]any{"items": []any{map[string]any{"id": "1", "content": "Do the thing", "status": "done"}}},
+				}},
+			},
+			// Main loop: finish.
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "All planned and done."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+		WithForcePlanningStep(true),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	err = handler.Handle(context.Background(), agent.NewInput("Do the thing"), func(evt agent.Event) error {
+		return nil
+	})
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	if len(client.capturedMessages) == 0 {
+		t.Fatal("expected at least one captured LLM call")
+	}
+
+	// The first captured call is the planning step; it must carry the budget message.
+	if !messagesContainSystem(client.capturedMessages[0], "remaining to complete your task") {
+		t.Error("planning step did not receive the iteration budget message")
+	}
+}
+
+func TestHandler_BudgetMessageEnriched(t *testing.T) {
+	// Test: the recurring budget message states the current iteration and the total, so
+	// the agent knows its pace, not just a bare remaining count.
+	client := &MockChatCompletionClient{
+		responses: []MockResponse{
+			{
+				Message: llm.NewMessage(llm.RoleAssistant, "Done."),
+			},
+		},
+	}
+
+	handler, err := NewHandler(
+		WithClient(client),
+		WithSystemPrompt("You are a helpful assistant."),
+		WithMaxIterations(7),
+	)
+	if err != nil {
+		t.Fatalf("failed to create handler: %v", err)
+	}
+
+	err = handler.Handle(context.Background(), agent.NewInput("Quick question"), func(evt agent.Event) error {
+		return nil
+	})
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+
+	if len(client.capturedMessages) == 0 {
+		t.Fatal("expected at least one captured LLM call")
+	}
+
+	// First loop call: "Iteration 1 of 7 — 7 iterations remaining ...".
+	if !messagesContainSystem(client.capturedMessages[0], "Iteration 1 of 7") {
+		t.Error("budget message did not mention the current iteration and total")
 	}
 }
 

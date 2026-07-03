@@ -357,6 +357,13 @@ func Do() *cli.Command {
 						data := evt.Data().(*agent.CompleteData)
 						if data.Message != "" {
 							result = data.Message
+							// When the final message was not streamed live (e.g. the
+							// budget-exceeded summary or a schema-synthesis result, both
+							// produced by non-streaming calls), render it now so the
+							// terminal is not left without any final output.
+							if !streamed {
+								fmt.Println(RenderEvent(evt))
+							}
 						}
 					default:
 						output := RenderEvent(evt)

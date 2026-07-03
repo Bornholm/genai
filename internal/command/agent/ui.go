@@ -87,9 +87,25 @@ func RenderEvent(evt agent.Event) string {
 	case agent.EventTypeError:
 		data := evt.Data().(*agent.ErrorData)
 		return renderError(data)
+	case agent.EventTypeBudgetExceeded:
+		data := evt.Data().(*agent.BudgetExceededData)
+		return renderBudgetExceeded(data)
 	default:
 		return ""
 	}
+}
+
+func renderBudgetExceeded(data *agent.BudgetExceededData) string {
+	timestamp := timeStyle.Render(formatTime(time.Now()))
+	header := warningStyle.Render("⚠ Iteration budget exceeded")
+	divider := subtleStyle.Render(strings.Repeat("─", 60))
+	msg := fmt.Sprintf(
+		"The agent reached its limit of %d iterations before completing the task. "+
+			"A summary of the progress made and the remaining work follows.",
+		data.MaxIterations,
+	)
+
+	return fmt.Sprintf("\n%s %s\n%s\n\n%s\n", timestamp, header, divider, warningStyle.Render(msg))
 }
 
 func renderComplete(data *agent.CompleteData) string {
