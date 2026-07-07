@@ -8,18 +8,11 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 
 ## Features
 
-- Multi-provider support - Use OpenAI, OpenRouter, Mistral, Ollama and other providers with the same interface
+- Multi-provider support - Use OpenAI (or any OpenAI compatible API), OpenRouter, Mistral, Ollama and other providers with the same interface
 - Unified API - Simple and consistent API for all providers
 - Chat Completions - Create conversational AI experiences with ease
 - Environment-based configuration - Configure your clients using environment variables
 - Extensible - Easily add support for new providers or capabilities
-
-## Supported Providers
-
-- OpenAI
-- OpenRouter
-- Ollama
-- Mistral
 
 ## Installation
 
