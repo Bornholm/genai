@@ -47,7 +47,7 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, func
 	if err != nil {
 		if httpRes != nil {
 			body, _ := io.ReadAll(httpRes.Body)
-			return nil, errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body)))
+			return nil, errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))
 		}
 
 		return nil, errors.WithStack(err)

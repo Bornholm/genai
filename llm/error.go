@@ -13,11 +13,8 @@ var (
 )
 
 // HTTPError is returned by providers when the upstream API responds with a
-// non-2xx HTTP status. Callers (e.g. the proxy) can use errors.As to retrieve
-// the status code and propagate it faithfully.
-//
-// HTTPError satisfies errors.Is(err, ErrRateLimit) when StatusCode is 429, so
-// retry logic that checks for ErrRateLimit continues to work without changes.
+// non-2xx HTTP status. It is a plain data carrier: callers can use errors.As to
+// retrieve the status code and body and propagate them faithfully.
 type HTTPError struct {
 	StatusCode int
 	Body       string
@@ -30,6 +27,21 @@ func (e *HTTPError) Error() string {
 // NewHTTPError creates an HTTPError for the given status code and body.
 func NewHTTPError(statusCode int, body string) *HTTPError {
 	return &HTTPError{StatusCode: statusCode, Body: body}
+}
+
+// RateLimitError builds the error a provider returns for a non-2xx upstream
+// response, tagging it as a rate limit when appropriate. The underlying
+// *HTTPError is always retrievable via errors.As. When statusCode is 429 (Too
+// Many Requests) the returned error also wraps ErrRateLimit, so callers can
+// detect it with errors.Is(err, ErrRateLimit). Providers call this explicitly at
+// the point they observe the upstream status.
+func RateLimitError(statusCode int, body string) error {
+	httpErr := NewHTTPError(statusCode, body)
+	if statusCode == http.StatusTooManyRequests {
+		return errors.Join(ErrRateLimit, httpErr)
+	}
+
+	return httpErr
 }
 
 // IsRetryable reports whether err should be retried.

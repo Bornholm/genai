@@ -38,7 +38,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	if err != nil {
 		if httpRes != nil {
 			body, _ := io.ReadAll(httpRes.Body)
-			return nil, errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body)))
+			return nil, errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))
 		}
 
 		return nil, errors.WithStack(err)
@@ -185,7 +185,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err := stream.Err(); err != nil {
 			if httpRes != nil {
 				body, _ := io.ReadAll(httpRes.Body)
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.NewHTTPError(httpRes.StatusCode, string(body))))
+				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body))))
 			} else {
 				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
 			}
