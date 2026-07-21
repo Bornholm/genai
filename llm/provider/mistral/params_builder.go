@@ -29,6 +29,7 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 		configureRandomSeed,
 		genai.ConfigureReasoning,
 		configurePromptMode,
+		genai.ConfigureExtraFields,
 	)
 	if err != nil {
 		return nil, errors.WithStack(err)

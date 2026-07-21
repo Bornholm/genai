@@ -169,19 +169,6 @@ func ConvertAnthropicMessagesJSON(messagesJSON json.RawMessage) ([]llm.Message, 
 
 // convertAnthropicMessages converts the system prompt and conversation
 // messages of an Anthropic Messages request into llm.Message values.
-// ConvertAnthropicMessagesJSON converts a JSON array of Anthropic Messages
-// API turns into genai's internal []llm.Message representation. The "system"
-// prompt (if any) is expected to be carried separately and is not handled
-// here.
-func ConvertAnthropicMessagesJSON(messagesJSON json.RawMessage) ([]llm.Message, error) {
-	var messages []anthropicMessage
-	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
-		return nil, errors.Wrap(err, "could not unmarshal messages")
-	}
-
-	return convertAnthropicMessages(nil, messages)
-}
-
 func convertAnthropicMessages(system any, messages []anthropicMessage) ([]llm.Message, error) {
 	out := make([]llm.Message, 0, len(messages)+1)
 

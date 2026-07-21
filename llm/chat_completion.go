@@ -42,6 +42,10 @@ type ChatCompletionOptions struct {
 	Modalities          []string
 	Audio               *AudioOutputConfig
 	SessionID           string
+	// ExtraFields carries arbitrary provider-specific key/values to inject
+	// verbatim into the request body (e.g. MiniMax's "reasoning_split").
+	// Providers that support it merge these into the outgoing JSON payload.
+	ExtraFields map[string]any
 }
 
 // Validate checks if the ChatCompletionOptions are valid
@@ -147,6 +151,23 @@ func WithMessages(messages ...Message) ChatCompletionOptionFunc {
 func WithSessionID(id string) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		opts.SessionID = id
+	}
+}
+
+// WithExtraFields adds arbitrary provider-specific key/values that are injected
+// verbatim into the request body. Keys already present in ExtraFields are
+// overwritten. Only providers that opt in (openai, mistral) forward them.
+func WithExtraFields(fields map[string]any) ChatCompletionOptionFunc {
+	return func(opts *ChatCompletionOptions) {
+		if len(fields) == 0 {
+			return
+		}
+		if opts.ExtraFields == nil {
+			opts.ExtraFields = make(map[string]any, len(fields))
+		}
+		for k, v := range fields {
+			opts.ExtraFields[k] = v
+		}
 	}
 }
 

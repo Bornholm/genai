@@ -38,6 +38,7 @@ func (b *paramsBuilder) BuildParams(ctx context.Context, opts *llm.ChatCompletio
 		ConfigureMaxCompletionTokens,
 		ConfigureSeed,
 		ConfigureReasoning,
+		ConfigureExtraFields,
 	)
 	if err != nil {
 		return nil, errors.WithStack(llm.ErrUnavailable)
@@ -126,6 +127,27 @@ func ConfigureReasoning(ctx context.Context, opts *llm.ChatCompletionOptions, pa
 		})
 	}
 
+	return nil
+}
+
+// ConfigureExtraFields injects the caller-provided ExtraFields verbatim into the
+// request body. It merges with any extra fields already set by earlier
+// configurators (e.g. reasoning_effort) instead of overwriting them, so it must
+// run last in the chain. Caller-provided keys win on conflict.
+func ConfigureExtraFields(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
+	if len(opts.ExtraFields) == 0 {
+		return nil
+	}
+
+	merged := map[string]any{}
+	for k, v := range params.GetExtraFields() {
+		merged[k] = v
+	}
+	for k, v := range opts.ExtraFields {
+		merged[k] = v
+	}
+
+	params.WithExtraFields(merged)
 	return nil
 }
 
