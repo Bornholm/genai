@@ -9,6 +9,7 @@ import (
 type Options struct {
 	ChatCompletionLimiter *rate.Limiter
 	EmbeddingsLimiter     *rate.Limiter
+	TranscriptionLimiter  *rate.Limiter
 }
 
 type OptionFunc func(opts *Options)
@@ -37,5 +38,11 @@ func WithChatCompletionLimit(max int, interval time.Duration) OptionFunc {
 func WithEmbeddingsLimit(max int, interval time.Duration) OptionFunc {
 	return func(opts *Options) {
 		opts.EmbeddingsLimiter = rate.NewLimiter(rate.Limit(float64(max)/interval.Seconds()), max)
+	}
+}
+
+func WithTranscriptionLimit(max int, interval time.Duration) OptionFunc {
+	return func(opts *Options) {
+		opts.TranscriptionLimiter = rate.NewLimiter(rate.Limit(float64(max)/interval.Seconds()), max)
 	}
 }

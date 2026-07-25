@@ -10,6 +10,7 @@ import (
 type Client struct {
 	chatCompletion llm.ChatCompletionClient
 	embeddings     llm.EmbeddingsClient
+	transcription  llm.TranscriptionClient
 }
 
 // ChatCompletion implements llm.Client.
@@ -55,10 +56,25 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	return response, nil
 }
 
-func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient) *Client {
+// Transcription implements llm.Client.
+func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	if c.transcription == nil {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+
+	response, err := c.transcription.Transcription(ctx, audio, funcs...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return response, nil
+}
+
+func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient, transcription llm.TranscriptionClient) *Client {
 	return &Client{
 		chatCompletion: chatCompletion,
 		embeddings:     embeddings,
+		transcription:  transcription,
 	}
 }
 

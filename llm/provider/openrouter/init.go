@@ -28,4 +28,13 @@ func init() {
 			return NewEmbeddingsClient(client, opts.Model), nil
 		},
 	)
+
+	provider.RegisterTranscription(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.TranscriptionClient, error) {
+			client := openrouter.NewClient(opts.APIKey)
+			return NewTranscriptionClient(client, opts.Model), nil
+		},
+	)
 }

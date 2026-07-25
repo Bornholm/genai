@@ -12,6 +12,7 @@ func Root() *cli.Command {
 		Flags: []cli.Flag{},
 		Subcommands: []*cli.Command{
 			Generate(),
+			Transcribe(),
 			chat.Root(),
 		},
 	}

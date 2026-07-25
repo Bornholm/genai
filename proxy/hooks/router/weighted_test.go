@@ -20,6 +20,9 @@ func (m *testClient) ChatCompletionStream(_ context.Context, _ ...llm.ChatComple
 func (m *testClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	return nil, nil
 }
+func (m *testClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
 
 var _ llm.Client = &testClient{}
 

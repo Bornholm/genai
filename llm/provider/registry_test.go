@@ -266,6 +266,52 @@ func (d *dummyEmbeddingsClient) Embeddings(ctx context.Context, inputs []string,
 	return nil, nil
 }
 
+// dummyTranscriptionClient implements llm.TranscriptionClient for tests.
+type dummyTranscriptionClient struct {
+	model string
+}
+
+func (d *dummyTranscriptionClient) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+func TestWithTranscription_CreatesClientSuccessfully(t *testing.T) {
+	const testProvider provider.Name = "test-with-transcription-provider"
+
+	var receivedModel string
+	provider.RegisterTranscription(
+		testProvider,
+		func() *testChatOptions { return &testChatOptions{Model: "default"} },
+		func(ctx context.Context, opts *testChatOptions) (llm.TranscriptionClient, error) {
+			receivedModel = opts.Model
+			return &dummyTranscriptionClient{model: opts.Model}, nil
+		},
+	)
+
+	ctx := context.Background()
+	client, err := provider.Create(ctx, provider.WithTranscription(testProvider, testChatOptions{
+		Model: "whisper-1",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+
+	if receivedModel != "whisper-1" {
+		t.Errorf("expected model 'whisper-1', got %q", receivedModel)
+	}
+}
+
+func TestNewTranscriptionProviderOptions_UnknownProvider(t *testing.T) {
+	opts := provider.NewTranscriptionProviderOptions("unknown-transcription-provider-xyz")
+	if opts != nil {
+		t.Errorf("expected nil for unknown provider, got %v", opts)
+	}
+}
+
 func TestWithChatCompletion_Immutability(t *testing.T) {
 	original := testChatOptions{Model: "original", Timeout: 30}
 	optFunc := provider.WithChatCompletion("test-provider", original)

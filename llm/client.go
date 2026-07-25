@@ -4,4 +4,5 @@ type Client interface {
 	ChatCompletionClient
 	ChatCompletionStreamingClient
 	EmbeddingsClient
+	TranscriptionClient
 }

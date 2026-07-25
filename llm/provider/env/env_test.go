@@ -37,6 +37,15 @@ func init() {
 			return nil, nil
 		},
 	)
+	provider.RegisterTranscription(
+		"envtest",
+		func() *envTestOptions {
+			return &envTestOptions{BaseURL: "http://default-stt.example.com"}
+		},
+		func(ctx context.Context, opts *envTestOptions) (llm.TranscriptionClient, error) {
+			return nil, nil
+		},
+	)
 }
 
 func TestWith_ParsesChatCompletionOptions(t *testing.T) {
@@ -144,5 +153,42 @@ func TestWith_ParsesBothChatAndEmbeddings(t *testing.T) {
 	}
 	if embTyped.Model != "emb-model" {
 		t.Errorf("expected embedding model 'emb-model', got %q", embTyped.Model)
+	}
+}
+
+func TestWith_ParsesTranscriptionOptions(t *testing.T) {
+	os.Setenv("TEST5_TRANSCRIPTION_PROVIDER", "envtest")
+	os.Setenv("TEST5_TRANSCRIPTION_ENVTEST_MODEL", "stt-model")
+	os.Setenv("TEST5_TRANSCRIPTION_ENVTEST_API_KEY", "stt-secret")
+	defer func() {
+		os.Unsetenv("TEST5_TRANSCRIPTION_PROVIDER")
+		os.Unsetenv("TEST5_TRANSCRIPTION_ENVTEST_MODEL")
+		os.Unsetenv("TEST5_TRANSCRIPTION_ENVTEST_API_KEY")
+	}()
+
+	opts, err := provider.NewOptions(providerenv.With("TEST5_"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if opts.Transcription == nil {
+		t.Fatal("expected Transcription to be set")
+	}
+	if opts.Transcription.Provider != "envtest" {
+		t.Errorf("expected provider 'envtest', got %q", opts.Transcription.Provider)
+	}
+
+	typed, ok := opts.Transcription.Specific.(*envTestOptions)
+	if !ok {
+		t.Fatalf("expected *envTestOptions, got %T", opts.Transcription.Specific)
+	}
+	if typed.Model != "stt-model" {
+		t.Errorf("expected model 'stt-model', got %q", typed.Model)
+	}
+	if typed.APIKey != "stt-secret" {
+		t.Errorf("expected api key 'stt-secret', got %q", typed.APIKey)
+	}
+	if typed.BaseURL != "http://default-stt.example.com" {
+		t.Errorf("expected default base URL, got %q", typed.BaseURL)
 	}
 }

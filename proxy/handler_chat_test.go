@@ -29,6 +29,10 @@ func (m *mockChatClient) Embeddings(_ context.Context, _ []string, _ ...llm.Embe
 	return nil, nil
 }
 
+func (m *mockChatClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
 // resolverHook provides a fixed client for the hook chain.
 type resolverHook struct {
 	client llm.Client

@@ -15,6 +15,7 @@ const (
 	FeatureMultimodal
 	FeatureReasoning
 	FeatureEmbeddings
+	FeatureTranscription
 )
 
 // Suite runs a set of conformance tests against an llm.Client.
@@ -83,6 +84,11 @@ func (s *Suite) Run(t *testing.T) {
 	if s.has(FeatureEmbeddings) {
 		t.Run("Embeddings", func(t *testing.T) {
 			testEmbeddings(t, s.client)
+		})
+	}
+	if s.has(FeatureTranscription) {
+		t.Run("Transcription", func(t *testing.T) {
+			testTranscription(t, s.client)
 		})
 	}
 }

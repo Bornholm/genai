@@ -115,6 +115,23 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	return response, errors.WithStack(err)
 }
 
+// Transcription implements llm.Client with circuit breaker protection
+func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	var response llm.TranscriptionResponse
+	var err error
+
+	breakerErr := c.breaker.Execute(func() error {
+		response, err = c.client.Transcription(ctx, audio, funcs...)
+		return errors.WithStack(err)
+	})
+
+	if breakerErr != nil {
+		return nil, errors.WithStack(breakerErr)
+	}
+
+	return response, errors.WithStack(err)
+}
+
 // ChatCompletionStream implements llm.Client with circuit breaker protection
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	var stream <-chan llm.StreamChunk

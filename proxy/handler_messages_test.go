@@ -38,6 +38,10 @@ func (m *mockStreamingChatClient) Embeddings(_ context.Context, _ []string, _ ..
 	return nil, nil
 }
 
+func (m *mockStreamingChatClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
 func buildMessagesRequest(t *testing.T, path, body string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))

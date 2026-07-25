@@ -29,6 +29,7 @@ type providerEntry struct {
 type Registry struct {
 	chatCompletionEntries map[Name]providerEntry
 	embeddingsEntries     map[Name]providerEntry
+	transcriptionEntries  map[Name]providerEntry
 }
 
 // RegisterChatCompletion enregistre un provider de chat completion dans le registry global.
@@ -61,6 +62,20 @@ func RegisterEmbeddings[T any](
 	}
 }
 
+// RegisterTranscription enregistre un provider de transcription audio dans le registry global.
+func RegisterTranscription[T any](
+	name Name,
+	newOptions func() *T,
+	factory func(ctx context.Context, opts *T) (llm.TranscriptionClient, error),
+) {
+	defaultRegistry.transcriptionEntries[name] = providerEntry{
+		newOptions: func() any { return newOptions() },
+		createClient: func(ctx context.Context, opts any) (any, error) {
+			return factory(ctx, opts.(*T))
+		},
+	}
+}
+
 // NewChatCompletionProviderOptions retourne une instance d'options (avec les defaults)
 // pour le provider de chat completion donné, ou nil si le provider n'est pas enregistré.
 func NewChatCompletionProviderOptions(name Name) any {
@@ -74,6 +89,15 @@ func NewChatCompletionProviderOptions(name Name) any {
 // pour le provider d'embeddings donné, ou nil si le provider n'est pas enregistré.
 func NewEmbeddingsProviderOptions(name Name) any {
 	if entry, ok := defaultRegistry.embeddingsEntries[name]; ok {
+		return entry.newOptions()
+	}
+	return nil
+}
+
+// NewTranscriptionProviderOptions retourne une instance d'options (avec les defaults)
+// pour le provider de transcription donné, ou nil si le provider n'est pas enregistré.
+func NewTranscriptionProviderOptions(name Name) any {
+	if entry, ok := defaultRegistry.transcriptionEntries[name]; ok {
 		return entry.newOptions()
 	}
 	return nil
@@ -96,11 +120,16 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 		return nil, errors.WithStack(err)
 	}
 
-	if chatCompletion == nil && embeddings == nil {
+	transcription, err := createClientFromResolved[llm.TranscriptionClient](ctx, opts.Transcription, r.transcriptionEntries)
+	if err != nil && !errors.Is(err, ErrNotConfigured) {
+		return nil, errors.WithStack(err)
+	}
+
+	if chatCompletion == nil && embeddings == nil && transcription == nil {
 		return nil, errors.WithStack(ErrNotConfigured)
 	}
 
-	return NewClient(chatCompletion, embeddings), nil
+	return NewClient(chatCompletion, embeddings, transcription), nil
 }
 
 // createClientFromResolved crée un client T à partir des options résolues.
@@ -144,6 +173,7 @@ func newRegistry() *Registry {
 	return &Registry{
 		chatCompletionEntries: map[Name]providerEntry{},
 		embeddingsEntries:     map[Name]providerEntry{},
+		transcriptionEntries:  map[Name]providerEntry{},
 	}
 }
 

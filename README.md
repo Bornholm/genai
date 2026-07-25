@@ -11,6 +11,7 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 - Multi-provider support - Use OpenAI (or any OpenAI compatible API), OpenRouter, Mistral, Ollama and other providers with the same interface
 - Unified API - Simple and consistent API for all providers
 - Chat Completions - Create conversational AI experiences with ease
+- Audio Transcription - Transcribe audio files (speech-to-text) with OpenAI, Mistral (Voxtral) or OpenRouter
 - Environment-based configuration - Configure your clients using environment variables
 - Extensible - Easily add support for new providers or capabilities
 
@@ -83,6 +84,34 @@ GENAI_CHAT_COMPLETION_MISTRAL_API_KEY=<your_api_key>
 GENAI_CHAT_COMPLETION_MISTRAL_MODEL=mistral-small-latest
 ```
 
+### Audio transcription
+
+The same client can be configured for audio transcription (speech-to-text):
+
+```bash
+GENAI_TRANSCRIPTION_PROVIDER=mistral
+GENAI_TRANSCRIPTION_MISTRAL_API_KEY=<your_api_key>
+GENAI_TRANSCRIPTION_MISTRAL_MODEL=voxtral-mini-latest
+```
+
+```go
+audio, err := os.ReadFile("meeting.mp3")
+if err != nil {
+  log.Fatalf("[FATAL] %s", err)
+}
+
+res, err := client.Transcription(ctx, audio,
+  llm.WithTranscriptionLanguage("fr"), // optional
+)
+if err != nil {
+  log.Fatalf("[FATAL] %s", err)
+}
+
+log.Printf("[TRANSCRIPT] %s", res.Text())
+```
+
+The audio format is automatically detected from the file content; use `llm.WithAudioFormat()` to set it explicitly. Supported providers: `openai` (Whisper, `gpt-4o-transcribe`), `mistral` (Voxtral) and `openrouter`.
+
 ## Examples
 
 - [Basic](./examples/basic) - A basic example of a chat completion client with input validation
@@ -91,6 +120,7 @@ GENAI_CHAT_COMPLETION_MISTRAL_MODEL=mistral-small-latest
 - [Agent](./examples/agent) - An example of a [ReAct](https://arxiv.org/abs/2210.03629) agent with tools access
 - [Multimodal](./examples/multimodal/) - An example of a multimodal LLM model call
 - [JSON](./examples/json) - An example of a LLM call with structured output
+- [Transcription](./examples/transcription) - An example of audio transcription (speech-to-text)
 
 ## CLI
 

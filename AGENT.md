@@ -28,19 +28,20 @@ GenAI is a Go library (`github.com/bornholm/genai`) that provides a unified inte
 
 ### Core LLM Layer (`llm/`)
 
-The `llm.Client` interface composes three sub-interfaces: `ChatCompletionClient`, `ChatCompletionStreamingClient`, and `EmbeddingsClient`. Key types:
+The `llm.Client` interface composes four sub-interfaces: `ChatCompletionClient`, `ChatCompletionStreamingClient`, `EmbeddingsClient`, and `TranscriptionClient`. Key types:
 
 - `llm.Tool` / `llm.FuncTool` — tool definition and execution
 - `llm.Attachment` — multimodal content (images, audio, video, documents)
 - `llm.JSONSchema` — builder for JSON schema parameter definitions
+- `llm.TranscriptionClient` — audio transcription (speech-to-text); audio is passed as `[]byte`, format auto-detected via `llm.DetectAudioFormat`
 
 ### Provider System (`llm/provider/`)
 
-Providers register themselves via `init()` functions using `provider.RegisterChatCompletion(name, factory)` and `provider.RegisterEmbeddings(name, factory)`. The global registry creates clients via `provider.Create(ctx, opts...)`.
+Providers register themselves via `init()` functions using `provider.RegisterChatCompletion(name, factory)`, `provider.RegisterEmbeddings(name, factory)` and `provider.RegisterTranscription(name, factory)`. The global registry creates clients via `provider.Create(ctx, opts...)`.
 
-Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at once. Supported providers: `openai`, `openrouter`, `ollama`, `mistral`.
+Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at once. Supported providers: `openai`, `openrouter`, `ollama`, `mistral`. Transcription is supported by `openai`, `mistral` (Voxtral, reuses the openai client) and `openrouter`.
 
-Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and optionally `APIKey`. Environment variable prefixes: `CHAT_COMPLETION_PROVIDER`, `CHAT_COMPLETION_BASE_URL`, etc.
+Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and optionally `APIKey`. Environment variable prefixes: `CHAT_COMPLETION_PROVIDER`, `CHAT_COMPLETION_BASE_URL`, `EMBEDDINGS_*`, `TRANSCRIPTION_*`, etc.
 
 ### Resilience Wrappers (`llm/circuitbreaker/`, `llm/ratelimit/`, `llm/retry/`)
 

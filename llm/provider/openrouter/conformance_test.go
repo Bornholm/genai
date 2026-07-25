@@ -21,6 +21,11 @@ func TestConformance(t *testing.T) {
 		chatModel = "openai/gpt-oss-20b:free"
 	}
 
+	transcriptionModel := os.Getenv("CONFORMANCE_OPENROUTER_TRANSCRIPTION_MODEL")
+	if transcriptionModel == "" {
+		transcriptionModel = "openai/whisper-1"
+	}
+
 	ctx := context.Background()
 	client, err := provider.Create(ctx,
 		func(opts *provider.Options) error {
@@ -30,6 +35,15 @@ func TestConformance(t *testing.T) {
 					CommonOptions: provider.CommonOptions{
 						APIKey: apiKey,
 						Model:  chatModel,
+					},
+				},
+			}
+			opts.Transcription = &provider.ResolvedClientOptions{
+				Provider: openrouterProvider.Name,
+				Specific: &openrouterProvider.Options{
+					CommonOptions: provider.CommonOptions{
+						APIKey: apiKey,
+						Model:  transcriptionModel,
 					},
 				},
 			}
@@ -46,7 +60,8 @@ func TestConformance(t *testing.T) {
 				conformance.FeatureStreaming|
 				conformance.FeatureToolCalls|
 				conformance.FeatureJSON|
-				conformance.FeatureMultimodal,
+				conformance.FeatureMultimodal|
+				conformance.FeatureTranscription,
 		),
 	).Run(t)
 }

@@ -26,6 +26,11 @@ func TestConformance(t *testing.T) {
 		embeddingModel = "text-embedding-3-small"
 	}
 
+	transcriptionModel := os.Getenv("CONFORMANCE_OPENAI_TRANSCRIPTION_MODEL")
+	if transcriptionModel == "" {
+		transcriptionModel = "whisper-1"
+	}
+
 	ctx := context.Background()
 	client, err := provider.Create(ctx,
 		func(opts *provider.Options) error {
@@ -49,6 +54,16 @@ func TestConformance(t *testing.T) {
 					},
 				},
 			}
+			opts.Transcription = &provider.ResolvedClientOptions{
+				Provider: openaiProvider.Name,
+				Specific: &openaiProvider.Options{
+					CommonOptions: provider.CommonOptions{
+						BaseURL: "https://api.openai.com/v1",
+						APIKey:  apiKey,
+						Model:   transcriptionModel,
+					},
+				},
+			}
 			return nil
 		},
 	)
@@ -63,7 +78,8 @@ func TestConformance(t *testing.T) {
 				conformance.FeatureToolCalls|
 				conformance.FeatureJSON|
 				conformance.FeatureMultimodal|
-				conformance.FeatureEmbeddings,
+				conformance.FeatureEmbeddings|
+				conformance.FeatureTranscription,
 		),
 	).Run(t)
 }

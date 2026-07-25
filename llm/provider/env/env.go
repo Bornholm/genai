@@ -46,6 +46,16 @@ func With(variableNamePrefix string, envFiles ...string) provider.OptionFunc {
 		}
 		opts.Embeddings = embResolved
 
+		// Transcription
+		transcriptionResolved, err := resolveOptions(
+			variableNamePrefix+"TRANSCRIPTION_",
+			provider.NewTranscriptionProviderOptions,
+		)
+		if err != nil {
+			return errors.Wrap(err, "could not resolve transcription options")
+		}
+		opts.Transcription = transcriptionResolved
+
 		return nil
 	}
 }

@@ -72,6 +72,26 @@ func (fn AfterEmbeddingsFunc) AfterEmbeddings(ctx context.Context, inputs []stri
 	return fn(ctx, inputs, funcs, res)
 }
 
+type BeforeTranscriptionHook interface {
+	BeforeTranscription(ctx context.Context, audio []byte, funcs []llm.TranscriptionOptionFunc) (context.Context, []byte, []llm.TranscriptionOptionFunc, error)
+}
+
+type BeforeTranscriptionFunc func(ctx context.Context, audio []byte, funcs []llm.TranscriptionOptionFunc) (context.Context, []byte, []llm.TranscriptionOptionFunc, error)
+
+func (fn BeforeTranscriptionFunc) BeforeTranscription(ctx context.Context, audio []byte, funcs []llm.TranscriptionOptionFunc) (context.Context, []byte, []llm.TranscriptionOptionFunc, error) {
+	return fn(ctx, audio, funcs)
+}
+
+type AfterTranscriptionHook interface {
+	AfterTranscription(ctx context.Context, audio []byte, funcs []llm.TranscriptionOptionFunc, res llm.TranscriptionResponse) (llm.TranscriptionResponse, error)
+}
+
+type AfterTranscriptionFunc func(ctx context.Context, audio []byte, funcs []llm.TranscriptionOptionFunc, res llm.TranscriptionResponse) (llm.TranscriptionResponse, error)
+
+func (fn AfterTranscriptionFunc) AfterTranscription(ctx context.Context, audio []byte, funcs []llm.TranscriptionOptionFunc, res llm.TranscriptionResponse) (llm.TranscriptionResponse, error) {
+	return fn(ctx, audio, funcs, res)
+}
+
 type Client struct {
 	client llm.Client
 
@@ -82,6 +102,9 @@ type Client struct {
 
 	beforeEmbeddings BeforeEmbeddingsHook
 	afterEmbeddings  AfterEmbeddingsHook
+
+	beforeTranscription BeforeTranscriptionHook
+	afterTranscription  AfterTranscriptionHook
 }
 
 type Options struct {
@@ -91,6 +114,8 @@ type Options struct {
 	AfterChatCompletionStream  AfterChatCompletionStreamHook
 	BeforeEmbeddings           BeforeEmbeddingsHook
 	AfterEmbeddings            AfterEmbeddingsHook
+	BeforeTranscription        BeforeTranscriptionHook
+	AfterTranscription         AfterTranscriptionHook
 }
 
 type OptionFunc func(opts *Options)
@@ -141,6 +166,26 @@ func WithAfterEmbeddings(hook AfterEmbeddingsHook) OptionFunc {
 
 func WithAfterEmbeddingsFunc(fn AfterEmbeddingsFunc) OptionFunc {
 	return WithAfterEmbeddings(AfterEmbeddingsHook(fn))
+}
+
+func WithBeforeTranscription(hook BeforeTranscriptionHook) OptionFunc {
+	return func(opts *Options) {
+		opts.BeforeTranscription = hook
+	}
+}
+
+func WithBeforeTranscriptionFunc(fn BeforeTranscriptionFunc) OptionFunc {
+	return WithBeforeTranscription(BeforeTranscriptionHook(fn))
+}
+
+func WithAfterTranscription(hook AfterTranscriptionHook) OptionFunc {
+	return func(opts *Options) {
+		opts.AfterTranscription = hook
+	}
+}
+
+func WithAfterTranscriptionFunc(fn AfterTranscriptionFunc) OptionFunc {
+	return WithAfterTranscription(AfterTranscriptionHook(fn))
 }
 
 func WithBeforeChatCompletionStream(hook BeforeChatCompletionStreamHook) OptionFunc {
@@ -215,6 +260,32 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	return res, nil
 }
 
+// Transcription implements llm.Client.
+func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	var err error
+
+	if c.beforeTranscription != nil {
+		ctx, audio, funcs, err = c.beforeTranscription.BeforeTranscription(ctx, audio, funcs)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+	}
+
+	res, err := c.client.Transcription(ctx, audio, funcs...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	if c.afterTranscription != nil {
+		res, err = c.afterTranscription.AfterTranscription(ctx, audio, funcs, res)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+	}
+
+	return res, nil
+}
+
 // ChatCompletionStream implements llm.Client.
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	var err error
@@ -251,6 +322,8 @@ func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 		afterChatCompletionStream:  opts.AfterChatCompletionStream,
 		beforeEmbeddings:           opts.BeforeEmbeddings,
 		afterEmbeddings:            opts.AfterEmbeddings,
+		beforeTranscription:        opts.BeforeTranscription,
+		afterTranscription:         opts.AfterTranscription,
 	}
 }
 

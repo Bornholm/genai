@@ -11,6 +11,7 @@ import (
 type Client struct {
 	chatCompletionLimiter *rate.Limiter
 	embeddingsLimiter     *rate.Limiter
+	transcriptionLimiter  *rate.Limiter
 	client                llm.Client
 }
 
@@ -99,11 +100,30 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	return response, nil
 }
 
+// Transcription implements llm.Client.
+//
+// NOTE: Same post-request rate limiting approach as ChatCompletion.
+func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	response, err := c.client.Transcription(ctx, audio, funcs...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	if c.transcriptionLimiter != nil && response.Usage() != nil && response.Usage().TotalTokens() > 0 {
+		if err := waitN(ctx, c.transcriptionLimiter, int(response.Usage().TotalTokens())); err != nil {
+			return nil, errors.WithStack(err)
+		}
+	}
+
+	return response, nil
+}
+
 func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 	opts := NewOptions(funcs...)
 	return &Client{
 		chatCompletionLimiter: opts.ChatCompletionLimiter,
 		embeddingsLimiter:     opts.EmbeddingsLimiter,
+		transcriptionLimiter:  opts.TranscriptionLimiter,
 		client:                client,
 	}
 }

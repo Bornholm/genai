@@ -44,6 +44,35 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	}
 }
 
+// Transcription implements llm.Client.
+func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	backoff := c.baseDelay
+	maxRetries := c.maxRetries
+	retries := 0
+
+	for {
+		res, err := c.client.Transcription(ctx, audio, funcs...)
+		if err != nil {
+			if retries >= maxRetries {
+				return nil, errors.WithStack(err)
+			}
+
+			if llm.IsRetryable(err) {
+				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
+
+				retries++
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+
+			return nil, errors.WithStack(err)
+		}
+
+		return res, nil
+	}
+}
+
 // ChatCompletion implements llm.ChatCompletionClient.
 func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
 	backoff := c.baseDelay

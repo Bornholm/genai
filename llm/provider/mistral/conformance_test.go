@@ -26,6 +26,11 @@ func TestConformance(t *testing.T) {
 		embeddingModel = "mistral-embed"
 	}
 
+	transcriptionModel := os.Getenv("CONFORMANCE_MISTRAL_TRANSCRIPTION_MODEL")
+	if transcriptionModel == "" {
+		transcriptionModel = "voxtral-mini-latest"
+	}
+
 	ctx := context.Background()
 	client, err := provider.Create(ctx,
 		func(opts *provider.Options) error {
@@ -49,6 +54,16 @@ func TestConformance(t *testing.T) {
 					},
 				},
 			}
+			opts.Transcription = &provider.ResolvedClientOptions{
+				Provider: mistralProvider.Name,
+				Specific: &mistralProvider.Options{
+					CommonOptions: provider.CommonOptions{
+						BaseURL: "https://api.mistral.ai/v1",
+						APIKey:  apiKey,
+						Model:   transcriptionModel,
+					},
+				},
+			}
 			return nil
 		},
 	)
@@ -63,7 +78,8 @@ func TestConformance(t *testing.T) {
 				conformance.FeatureToolCalls|
 				conformance.FeatureJSON|
 				conformance.FeatureMultimodal|
-				conformance.FeatureEmbeddings,
+				conformance.FeatureEmbeddings|
+				conformance.FeatureTranscription,
 		),
 	).Run(t)
 }

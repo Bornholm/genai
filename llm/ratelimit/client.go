@@ -10,9 +10,10 @@ import (
 )
 
 type Client struct {
-	chatLimiter       *rate.Limiter
-	embeddingsLimiter *rate.Limiter
-	client            llm.Client
+	chatLimiter          *rate.Limiter
+	embeddingsLimiter    *rate.Limiter
+	transcriptionLimiter *rate.Limiter
+	client               llm.Client
 }
 
 // ChatCompletion implements llm.Client.
@@ -39,11 +40,21 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	return c.client.Embeddings(ctx, inputs, funcs...)
 }
 
+// Transcription implements llm.Client.
+func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	if err := c.transcriptionLimiter.Wait(ctx); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return c.client.Transcription(ctx, audio, funcs...)
+}
+
 type Options struct {
-	ChatMinInterval       time.Duration
-	ChatMaxBurst          int
-	EmbeddingsMinInterval time.Duration
-	EmbeddingsMaxBurst    int
+	ChatMinInterval          time.Duration
+	ChatMaxBurst             int
+	EmbeddingsMinInterval    time.Duration
+	EmbeddingsMaxBurst       int
+	TranscriptionMinInterval time.Duration
+	TranscriptionMaxBurst    int
 }
 
 type OptionFunc func(*Options)
@@ -62,20 +73,30 @@ func WithEmbeddingsLimit(minInterval time.Duration, maxBurst int) OptionFunc {
 	}
 }
 
+func WithTranscriptionLimit(minInterval time.Duration, maxBurst int) OptionFunc {
+	return func(o *Options) {
+		o.TranscriptionMinInterval = minInterval
+		o.TranscriptionMaxBurst = maxBurst
+	}
+}
+
 func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 	opts := &Options{
-		ChatMinInterval:       time.Second,
-		ChatMaxBurst:          1,
-		EmbeddingsMinInterval: time.Second,
-		EmbeddingsMaxBurst:    1,
+		ChatMinInterval:          time.Second,
+		ChatMaxBurst:             1,
+		EmbeddingsMinInterval:    time.Second,
+		EmbeddingsMaxBurst:       1,
+		TranscriptionMinInterval: time.Second,
+		TranscriptionMaxBurst:    1,
 	}
 	for _, fn := range funcs {
 		fn(opts)
 	}
 	return &Client{
-		chatLimiter:       rate.NewLimiter(rate.Every(opts.ChatMinInterval), opts.ChatMaxBurst),
-		embeddingsLimiter: rate.NewLimiter(rate.Every(opts.EmbeddingsMinInterval), opts.EmbeddingsMaxBurst),
-		client:            client,
+		chatLimiter:          rate.NewLimiter(rate.Every(opts.ChatMinInterval), opts.ChatMaxBurst),
+		embeddingsLimiter:    rate.NewLimiter(rate.Every(opts.EmbeddingsMinInterval), opts.EmbeddingsMaxBurst),
+		transcriptionLimiter: rate.NewLimiter(rate.Every(opts.TranscriptionMinInterval), opts.TranscriptionMaxBurst),
+		client:               client,
 	}
 }
 
