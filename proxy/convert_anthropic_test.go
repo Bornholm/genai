@@ -166,21 +166,24 @@ func TestParseMessagesRequest_ToolUseAndResult(t *testing.T) {
 	}
 
 	compiled := llm.NewChatCompletionOptions(opts...)
-	if len(compiled.Messages) != 4 {
-		t.Fatalf("messages = %d, want 4: %#v", len(compiled.Messages), compiled.Messages)
+	// The assistant's text rides on the tool calls message rather than being
+	// emitted as a separate message: two consecutive assistant messages are
+	// rejected by some providers.
+	if len(compiled.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3: %#v", len(compiled.Messages), compiled.Messages)
 	}
 
 	if compiled.Messages[0].Role() != llm.RoleUser || compiled.Messages[0].Content() != "What is 2+2?" {
 		t.Errorf("messages[0] = %+v", compiled.Messages[0])
 	}
 
-	if compiled.Messages[1].Role() != llm.RoleAssistant || compiled.Messages[1].Content() != "Let me calculate that." {
-		t.Errorf("messages[1] = %+v", compiled.Messages[1])
+	if got := compiled.Messages[1].Content(); got != "Let me calculate that." {
+		t.Errorf("tool calls message content = %q, want the assistant text", got)
 	}
 
-	toolCallsMsg, ok := compiled.Messages[2].(llm.ToolCallsMessage)
+	toolCallsMsg, ok := compiled.Messages[1].(llm.ToolCallsMessage)
 	if !ok {
-		t.Fatalf("messages[2] should implement ToolCallsMessage, got %T", compiled.Messages[2])
+		t.Fatalf("messages[1] should implement ToolCallsMessage, got %T", compiled.Messages[1])
 	}
 	calls := toolCallsMsg.ToolCalls()
 	if len(calls) != 1 {
@@ -205,9 +208,9 @@ func TestParseMessagesRequest_ToolUseAndResult(t *testing.T) {
 		t.Errorf("tool call params = %+v", params)
 	}
 
-	toolMsg, ok := compiled.Messages[3].(llm.ToolMessage)
+	toolMsg, ok := compiled.Messages[2].(llm.ToolMessage)
 	if !ok {
-		t.Fatalf("messages[3] should implement ToolMessage, got %T", compiled.Messages[3])
+		t.Fatalf("messages[2] should implement ToolMessage, got %T", compiled.Messages[2])
 	}
 	if toolMsg.ID() != "toolu_01" {
 		t.Errorf("tool message id = %q, want toolu_01", toolMsg.ID())

@@ -262,6 +262,15 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 
 			message := openai.ChatCompletionAssistantMessageParam{}
 
+			// Preserve any text the assistant emitted alongside its tool calls.
+			// Without it the replayed history shows unexplained calls, which
+			// leads models to re-plan and repeat calls they already made.
+			if content := m.Content(); content != "" {
+				message.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+					OfString: openai.String(content),
+				}
+			}
+
 			toolCalls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(toolCallsMessage.ToolCalls()))
 			for _, tc := range toolCallsMessage.ToolCalls() {
 				// Some models emit malformed arguments (e.g. several JSON objects

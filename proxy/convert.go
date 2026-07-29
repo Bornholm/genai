@@ -32,6 +32,55 @@ type openAIChatRequest struct {
 	ReasoningEffort string             `json:"reasoning_effort,omitempty"` // e.g. "low","medium","high"
 }
 
+// handledRequestFields lists the request keys ParseChatCompletionRequest maps to
+// explicit llm options, plus the ones the provider layer owns. Everything else
+// is forwarded verbatim (see passthroughRequestFields), so that parameters this
+// struct does not model — parallel_tool_calls, top_p, stop, frequency_penalty,
+// presence_penalty, user… — are not silently dropped on the way to the provider.
+var handledRequestFields = map[string]struct{}{
+	"model":            {},
+	"messages":         {},
+	"tools":            {},
+	"temperature":      {},
+	"max_tokens":       {},
+	"stream":           {},
+	"seed":             {},
+	"response_format":  {},
+	"reasoning_effort": {},
+
+	// Owned by the provider layer: the OpenAI SDK sets stream_options itself
+	// (include_usage) and overriding it here would break usage tracking.
+	"stream_options": {},
+	// The proxy exposes a single choice; forwarding n>1 would produce a
+	// response the response formatters cannot represent.
+	"n": {},
+}
+
+// passthroughRequestFields returns the request body fields that have no
+// explicit mapping, to be forwarded verbatim as provider extra fields.
+//
+// tool_choice is a special case: the string forms are mapped to llm.ToolChoice
+// and dropped here, but the object form ({"type":"function",...}) has no llm
+// equivalent, so it is passed through to preserve the constraint.
+func passthroughRequestFields(body json.RawMessage) map[string]any {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil
+	}
+
+	for k := range handledRequestFields {
+		delete(raw, k)
+	}
+	if _, isString := raw["tool_choice"].(string); isString {
+		delete(raw, "tool_choice")
+	}
+
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
+}
+
 type openAIResponseFmt struct {
 	Type string `json:"type"` // "text" | "json_object" | "json_schema"
 }
@@ -43,6 +92,66 @@ type openAIMessage struct {
 	ToolCallID       string           `json:"tool_call_id,omitempty"`
 	Name             string           `json:"name,omitempty"`
 	ReasoningContent string           `json:"reasoning_content,omitempty"` // reasoning tokens in response / multi-turn
+	// ReasoningDetails is the structured form of the reasoning content, using
+	// the OpenRouter convention. Clients built on the Vercel AI SDK replay
+	// reasoning through this field rather than reasoning_content; dropping it
+	// loses the model's reasoning across turns.
+	ReasoningDetails []openAIReasoningDetail `json:"reasoning_details,omitempty"`
+}
+
+// openAIReasoningDetail mirrors OpenRouter's reasoning_details block, the de
+// facto standard for carrying structured reasoning over the OpenAI wire format.
+type openAIReasoningDetail struct {
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Format    string `json:"format,omitempty"`
+	Index     int    `json:"index,omitempty"`
+	Signature string `json:"signature,omitempty"`
+}
+
+// toLLMReasoningDetails converts wire reasoning details to their llm form.
+func toLLMReasoningDetails(details []openAIReasoningDetail) []llm.ReasoningDetail {
+	if len(details) == 0 {
+		return nil
+	}
+	out := make([]llm.ReasoningDetail, 0, len(details))
+	for _, d := range details {
+		out = append(out, llm.ReasoningDetail{
+			ID:        d.ID,
+			Type:      llm.ReasoningDetailType(d.Type),
+			Text:      d.Text,
+			Summary:   d.Summary,
+			Data:      d.Data,
+			Format:    d.Format,
+			Index:     d.Index,
+			Signature: d.Signature,
+		})
+	}
+	return out
+}
+
+// fromLLMReasoningDetails converts llm reasoning details to their wire form.
+func fromLLMReasoningDetails(details []llm.ReasoningDetail) []openAIReasoningDetail {
+	if len(details) == 0 {
+		return nil
+	}
+	out := make([]openAIReasoningDetail, 0, len(details))
+	for _, d := range details {
+		out = append(out, openAIReasoningDetail{
+			ID:        d.ID,
+			Type:      string(d.Type),
+			Text:      d.Text,
+			Summary:   d.Summary,
+			Data:      d.Data,
+			Format:    d.Format,
+			Index:     d.Index,
+			Signature: d.Signature,
+		})
+	}
+	return out
 }
 
 type openAITool struct {
@@ -111,6 +220,8 @@ type openAIStreamDelta struct {
 	Content          string                 `json:"content,omitempty"`
 	ToolCalls        []openAIStreamToolCall `json:"tool_calls,omitempty"`
 	ReasoningContent string                 `json:"reasoning_content,omitempty"`
+
+	ReasoningDetails []openAIReasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 // openAIStreamToolCall is the tool call format used inside streaming deltas.
@@ -239,6 +350,12 @@ func ParseChatCompletionRequest(body json.RawMessage) (model string, stream bool
 			case "required":
 				opts = append(opts, llm.WithToolChoice(llm.ToolChoiceRequired))
 			}
+		default:
+			// Object form: {"type":"function","function":{"name":"..."}}.
+			// llm.ToolChoice cannot name a function, so require a call here and
+			// let the verbatim tool_choice pass-through carry the exact
+			// constraint to the provider.
+			opts = append(opts, llm.WithToolChoice(llm.ToolChoiceRequired))
 		}
 	} else if len(req.Tools) > 0 {
 		// OpenAI's API defaults to "auto" when tools are provided without an
@@ -246,6 +363,12 @@ func ParseChatCompletionRequest(body json.RawMessage) (model string, stream bool
 		// ToolChoiceNone, which would silently prevent the model from ever
 		// calling a tool.
 		opts = append(opts, llm.WithToolChoice(llm.ToolChoiceAuto))
+	}
+
+	// Forward every parameter without an explicit mapping. Appended last so a
+	// caller layering its own WithExtraFields on top still wins.
+	if extra := passthroughRequestFields(body); len(extra) > 0 {
+		opts = append(opts, llm.WithExtraFields(extra))
 	}
 
 	return model, stream, opts, nil
@@ -274,18 +397,20 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 
 		case "assistant":
 			content := extractTextContent(m.Content)
+			details := toLLMReasoningDetails(m.ReasoningDetails)
+			hasReasoning := m.ReasoningContent != "" || len(details) > 0
 			if len(m.ToolCalls) > 0 {
 				calls := make([]llm.ToolCall, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {
 					calls = append(calls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 				}
-				if m.ReasoningContent != "" {
-					out = append(out, llm.NewReasoningToolCallsMessage(m.ReasoningContent, nil, calls...))
+				if hasReasoning {
+					out = append(out, llm.NewReasoningToolCallsMessageWithContent(content, m.ReasoningContent, details, calls...))
 				} else {
-					out = append(out, llm.NewToolCallsMessage(calls...))
+					out = append(out, llm.NewToolCallsMessageWithContent(content, calls...))
 				}
-			} else if m.ReasoningContent != "" {
-				out = append(out, llm.NewAssistantReasoningMessage(content, m.ReasoningContent, nil))
+			} else if hasReasoning {
+				out = append(out, llm.NewAssistantReasoningMessage(content, m.ReasoningContent, details))
 			} else {
 				out = append(out, llm.NewMessage(llm.RoleAssistant, content))
 			}
@@ -792,6 +917,7 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 
 	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok {
 		oMsg.ReasoningContent = rr.Reasoning()
+		oMsg.ReasoningDetails = fromLLMReasoningDetails(rr.ReasoningDetails())
 	}
 
 	finishReason := "stop"
@@ -818,7 +944,12 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 			})
 		}
 		oMsg.ToolCalls = tcs
-		oMsg.Content = nil
+		// Keep any text emitted alongside the tool calls: clients replay the
+		// assistant turn verbatim, and blanking it here strips the rationale
+		// from the history the model sees on the next turn.
+		if msg.Content() == "" {
+			oMsg.Content = nil
+		}
 	}
 
 	usage := res.Usage()
@@ -846,9 +977,15 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 // FormatStreamChunk converts a llm.StreamChunk to an OpenAI SSE data payload.
 //
 // sawToolCalls must be true if any prior chunk in the same stream carried tool
-// calls. It is used to decide the finish_reason on the terminal chunk:
-//   - tool_calls stream → empty choices, usage only (finish_reason already sent)
-//   - text stream       → finish_reason:"stop" so clients know the turn is done
+// calls. It selects the finish_reason emitted on the terminal chunk:
+//   - tool_calls stream → finish_reason:"tool_calls"
+//   - text stream       → finish_reason:"stop"
+//
+// finish_reason is only ever emitted on the terminal chunk. Tool call arguments
+// are streamed across several deltas, and OpenAI-compatible clients treat the
+// first non-null finish_reason as the end of the turn: setting it on an
+// intermediate tool-call chunk makes them close the turn on truncated
+// arguments, then retry the call — an agent loop that repeats the same tools.
 func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls bool) any {
 	if chunk.IsComplete() {
 		c := openAIStreamChunk{
@@ -857,17 +994,12 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 			Created: time.Now().Unix(),
 			Model:   model,
 		}
+		finish := "stop"
 		if sawToolCalls {
-			// finish_reason:"tool_calls" was already sent on the tool-call chunk;
-			// emit usage-only with empty choices to avoid overwriting it.
-			c.Choices = []openAIStreamChoice{}
-		} else {
-			// Text response: emit finish_reason:"stop" so the client knows the
-			// turn is complete.
-			stop := "stop"
-			c.Choices = []openAIStreamChoice{
-				{Index: 0, Delta: openAIStreamDelta{}, FinishReason: &stop},
-			}
+			finish = "tool_calls"
+		}
+		c.Choices = []openAIStreamChoice{
+			{Index: 0, Delta: openAIStreamDelta{}, FinishReason: &finish},
 		}
 		if usage := chunk.Usage(); usage != nil {
 			c.Usage = &openAIUsage{
@@ -879,8 +1011,6 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 		return c
 	}
 
-	finishReason := (*string)(nil)
-
 	delta := openAIStreamDelta{}
 	if d := chunk.Delta(); d != nil {
 		delta.Content = d.Content()
@@ -890,13 +1020,18 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 
 		if rd, ok := d.(llm.ReasoningStreamDelta); ok {
 			delta.ReasoningContent = rd.Reasoning()
+			delta.ReasoningDetails = fromLLMReasoningDetails(rd.ReasoningDetails())
 		}
 
 		if len(d.ToolCalls()) > 0 {
 			tcs := make([]openAIStreamToolCall, 0, len(d.ToolCalls()))
-			for i, tc := range d.ToolCalls() {
+			for _, tc := range d.ToolCalls() {
+				// Use the provider's index, not the position in this chunk:
+				// clients key their accumulator on it, so renumbering per
+				// chunk merges parallel tool calls into one and concatenates
+				// their arguments into invalid JSON.
 				tcs = append(tcs, openAIStreamToolCall{
-					Index: i,
+					Index: tc.Index(),
 					ID:    tc.ID(),
 					Type:  "function",
 					Function: openAIFunctionCall{
@@ -906,8 +1041,6 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 				})
 			}
 			delta.ToolCalls = tcs
-			fr := "tool_calls"
-			finishReason = &fr
 		}
 	}
 
@@ -918,9 +1051,11 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 		Model:   model,
 		Choices: []openAIStreamChoice{
 			{
-				Index:        0,
-				Delta:        delta,
-				FinishReason: finishReason,
+				Index: 0,
+				Delta: delta,
+				// Intentionally nil: finish_reason belongs to the terminal
+				// chunk only (see the doc comment above).
+				FinishReason: nil,
 			},
 		},
 	}

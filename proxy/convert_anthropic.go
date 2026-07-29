@@ -378,13 +378,13 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		return out, nil
 	}
 
-	if text != "" {
-		out = append(out, llm.NewMessage(llm.RoleAssistant, text))
-	}
+	// Carry the assistant's text on the tool calls message itself rather than
+	// emitting it as a separate assistant message: two consecutive assistant
+	// messages are rejected by some providers.
 	if hasReasoning {
-		out = append(out, llm.NewReasoningToolCallsMessage(reasoningText, details, toolCalls...))
+		out = append(out, llm.NewReasoningToolCallsMessageWithContent(text, reasoningText, details, toolCalls...))
 	} else {
-		out = append(out, llm.NewToolCallsMessage(toolCalls...))
+		out = append(out, llm.NewToolCallsMessageWithContent(text, toolCalls...))
 	}
 
 	return out, nil

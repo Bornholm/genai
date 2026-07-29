@@ -418,10 +418,19 @@ var _ ToolCallsMessage = &BaseToolCallsMessage{}
 var _ ReasoningMessage = &BaseToolCallsMessage{}
 
 func NewToolCallsMessage(toolCalls ...ToolCall) *BaseToolCallsMessage {
+	return NewToolCallsMessageWithContent("", toolCalls...)
+}
+
+// NewToolCallsMessageWithContent creates a tool calls message that also carries
+// the assistant's textual content. Models frequently emit a short rationale
+// alongside their tool calls ("let me check X first"); dropping it makes the
+// replayed history look like a sequence of unexplained calls, which pushes the
+// model to re-derive its plan — and re-issue calls it already made.
+func NewToolCallsMessageWithContent(content string, toolCalls ...ToolCall) *BaseToolCallsMessage {
 	return &BaseToolCallsMessage{
 		BaseMessage: BaseMessage{
 			role:    RoleToolCalls,
-			content: "",
+			content: content,
 		},
 		toolCalls: toolCalls,
 	}
@@ -432,10 +441,17 @@ func NewToolCallsMessage(toolCalls ...ToolCall) *BaseToolCallsMessage {
 // conversations with reasoning models (e.g. Claude, GPT-5) that involve tool use,
 // as the reasoning context must be preserved across API calls.
 func NewReasoningToolCallsMessage(reasoning string, reasoningDetails []ReasoningDetail, toolCalls ...ToolCall) *BaseToolCallsMessage {
+	return NewReasoningToolCallsMessageWithContent("", reasoning, reasoningDetails, toolCalls...)
+}
+
+// NewReasoningToolCallsMessageWithContent combines NewToolCallsMessageWithContent
+// and NewReasoningToolCallsMessage: it preserves both the assistant's textual
+// content and its reasoning across turns.
+func NewReasoningToolCallsMessageWithContent(content, reasoning string, reasoningDetails []ReasoningDetail, toolCalls ...ToolCall) *BaseToolCallsMessage {
 	return &BaseToolCallsMessage{
 		BaseMessage: BaseMessage{
 			role:    RoleToolCalls,
-			content: "",
+			content: content,
 		},
 		toolCalls:        toolCalls,
 		reasoning:        reasoning,
