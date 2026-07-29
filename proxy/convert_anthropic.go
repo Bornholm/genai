@@ -417,46 +417,81 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 		return v, nil, nil, nil
 	case []any:
 		var buf strings.Builder
-		for _, item := range v {
+		for i, item := range v {
 			block, ok := item.(map[string]any)
 			if !ok {
+				if s, ok := item.(string); ok {
+					buf.WriteString(s)
+					continue
+				}
+				slog.Warn("proxy: ignoring unsupported anthropic content block",
+					slog.Int("index", i), slog.String("goType", fmt.Sprintf("%T", item)))
 				continue
 			}
 
-			switch block["type"] {
-			case "text":
+			blockType := partTypeOf(block)
+			switch blockType {
+			case "text", "input_text", "output_text":
 				if t, ok := block["text"].(string); ok {
 					buf.WriteString(t)
 				}
-			case "image":
-				source, ok := block["source"].(map[string]any)
-				if !ok {
-					continue
-				}
-				att, attErr := convertAnthropicSource(llm.AttachmentTypeImage, source)
+
+			case "image", "image_url", "input_image":
+				att, attErr := convertImagePart(block)
 				if attErr != nil {
+					slog.Error("proxy: could not convert anthropic image block",
+						slog.Int("index", i), slog.Any("error", attErr))
 					return "", nil, nil, errors.Wrap(attErr, "could not convert image block")
 				}
-				attachments = append(attachments, att)
-			case "document":
-				source, ok := block["source"].(map[string]any)
-				if !ok {
+				if att == nil {
+					slog.Warn("proxy: anthropic image block carries no usable payload, dropping it",
+						slog.Int("index", i), slog.Any("keys", mapKeys(block)))
 					continue
 				}
-				switch source["type"] {
-				case "base64", "url":
-					att, attErr := convertAnthropicSource(llm.AttachmentTypeDocument, source)
-					if attErr != nil {
-						return "", nil, nil, errors.Wrap(attErr, "could not convert document block")
-					}
-					attachments = append(attachments, att)
-				case "text":
-					// Plain-text document source — inline its content as text.
-					// "content" (PDF made of nested blocks) is not supported.
-					if t, ok := source["data"].(string); ok {
-						buf.WriteString(t)
-					}
+				attachments = append(attachments, att)
+
+			case "audio", "input_audio":
+				att, attErr := convertAudioPart(block)
+				if attErr != nil {
+					slog.Error("proxy: could not convert anthropic audio block",
+						slog.Int("index", i), slog.Any("error", attErr))
+					return "", nil, nil, errors.Wrap(attErr, "could not convert audio block")
 				}
+				if att == nil {
+					slog.Warn("proxy: anthropic audio block carries no usable payload, dropping it",
+						slog.Int("index", i), slog.Any("keys", mapKeys(block)))
+					continue
+				}
+				attachments = append(attachments, att)
+
+			case "document", "file", "input_file":
+				// A "content" source (a PDF split into nested blocks) has no
+				// payload of its own and is not supported.
+				att, inlined, attErr := convertFilePart(block)
+				if attErr != nil {
+					slog.Error("proxy: could not convert anthropic document block",
+						slog.Int("index", i), slog.Any("error", attErr))
+					return "", nil, nil, errors.Wrap(attErr, "could not convert document block")
+				}
+				switch {
+				case att != nil:
+					attachments = append(attachments, att)
+				case inlined != "":
+					buf.WriteString(inlined)
+				default:
+					slog.Warn("proxy: anthropic document block carries no inlinable payload, dropping it",
+						slog.Int("index", i), slog.Any("keys", mapKeys(block)))
+				}
+
+			case "tool_use", "tool_result", "thinking", "redacted_thinking", "server_tool_use", "web_search_tool_result":
+				// Handled by the caller, or carrying nothing to forward here.
+				slog.Debug("proxy: skipping structural anthropic block",
+					slog.Int("index", i), slog.String("type", blockType))
+
+			default:
+				slog.Warn("proxy: unsupported anthropic content block type, dropping it",
+					slog.Int("index", i), slog.String("type", blockType),
+					slog.Any("keys", mapKeys(block)))
 			}
 
 			if cc := extractCacheControl(block["cache_control"]); cc != nil {
@@ -470,32 +505,26 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 }
 
 // convertAnthropicSource creates an llm.Attachment from an Anthropic content
-// block "source" object (base64 or url).
+// block "source" object. The declared source type is only a hint: clients do
+// omit it, and some send a data URL under "data" or raw base64 under "url", so
+// the payload itself decides how it is decoded.
 func convertAnthropicSource(attachmentType llm.AttachmentType, source map[string]any) (llm.Attachment, error) {
+	declared := declaredMIMEType(source)
+
 	switch source["type"] {
-	case "base64":
-		mediaType, _ := source["media_type"].(string)
-		data, _ := source["data"].(string)
-		if data == "" {
-			return nil, errors.New("missing base64 data")
-		}
-		return llm.NewBase64Attachment(attachmentType, mediaType, data)
 	case "url":
-		url, _ := source["url"].(string)
+		url := firstString(source, "url", "data")
 		if url == "" {
 			return nil, errors.New("missing source url")
 		}
-		mediaType, _ := source["media_type"].(string)
-		if mediaType == "" {
-			if attachmentType == llm.AttachmentTypeDocument {
-				mediaType = "application/octet-stream"
-			} else {
-				mediaType = "image/*"
-			}
-		}
-		return llm.NewURLAttachment(attachmentType, mediaType, url)
+		return newPayloadAttachment(attachmentType, url, declared)
 	default:
-		return nil, errors.Errorf("unsupported source type %v", source["type"])
+		// "base64", "file", or unset.
+		data := firstString(source, "data", "url", "file_data")
+		if data == "" {
+			return nil, errors.New("missing attachment data")
+		}
+		return newPayloadAttachment(attachmentType, data, declared)
 	}
 }
 
