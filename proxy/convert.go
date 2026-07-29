@@ -1,8 +1,13 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"mime"
+	neturl "net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -329,7 +334,22 @@ func extractTextContent(raw any) string {
 
 // extractContentParts extracts text and attachments from a message content field.
 // For string content it returns the string with no attachments.
-// For array content it parses text and image_url parts.
+//
+// For array content it accepts every content-part dialect an OpenAI-compatible
+// client may realistically emit, since clients differ widely in how they encode
+// binary payloads:
+//
+//   - Chat Completions: "text", "image_url", "input_audio", "file"
+//   - Responses API: "input_text", "output_text", "input_image", "input_file"
+//   - Vercel AI SDK: "file" with "data"/"mediaType"
+//   - Anthropic-shaped blocks ("image"/"document" with a "source" object) sent
+//     to the OpenAI endpoint by clients that reuse a single message encoder
+//
+// A part whose type is unknown, or whose payload cannot be located, is skipped
+// with a warning rather than silently dropped: a missing attachment is
+// otherwise invisible to the caller and surfaces only as the model claiming it
+// cannot see the file. A part that is recognised but malformed fails the whole
+// request, so the client gets a real error instead of a degraded answer.
 func extractContentParts(raw any) (text string, attachments []llm.Attachment, cacheControl *llm.CacheControl, err error) {
 	if raw == nil {
 		return "", nil, nil, nil
@@ -339,55 +359,373 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 		return v, nil, nil, nil
 	case []any:
 		var buf strings.Builder
-		for _, part := range v {
+		for i, part := range v {
 			partMap, ok := part.(map[string]any)
 			if !ok {
+				// A bare string inside the array is a text part in some dialects.
+				if s, ok := part.(string); ok {
+					buf.WriteString(s)
+					continue
+				}
+				slog.Warn("proxy: ignoring unsupported content part",
+					slog.Int("index", i), slog.String("goType", fmt.Sprintf("%T", part)))
 				continue
 			}
-			switch partMap["type"] {
-			case "text":
+
+			if cc := extractCacheControl(partMap["cache_control"]); cc != nil {
+				cacheControl = cc
+			}
+
+			partType := partTypeOf(partMap)
+			switch partType {
+			case "text", "input_text", "output_text":
 				if t, ok := partMap["text"].(string); ok {
 					buf.WriteString(t)
 				}
-				if cc := extractCacheControl(partMap["cache_control"]); cc != nil {
-					cacheControl = cc
-				}
-			case "image_url":
-				imgURL, ok := partMap["image_url"].(map[string]any)
-				if !ok {
-					continue
-				}
-				url, _ := imgURL["url"].(string)
-				if url == "" {
-					continue
-				}
-				att, attErr := convertImageURL(url)
+
+			case "image_url", "input_image", "image":
+				att, attErr := convertImagePart(partMap)
 				if attErr != nil {
-					return "", nil, nil, errors.Wrapf(attErr, "could not convert image_url")
+					slog.Error("proxy: could not convert image content part",
+						slog.Int("index", i), slog.String("type", partType), slog.Any("error", attErr))
+					return "", nil, nil, errors.Wrapf(attErr, "could not convert %s content part", partType)
+				}
+				if att == nil {
+					slog.Warn("proxy: image content part carries no usable payload, dropping it",
+						slog.Int("index", i), slog.String("type", partType),
+						slog.Any("keys", mapKeys(partMap)))
+					continue
 				}
 				attachments = append(attachments, att)
-			case "input_audio":
-				audio, ok := partMap["input_audio"].(map[string]any)
-				if !ok {
-					continue
-				}
-				data, _ := audio["data"].(string)
-				format, _ := audio["format"].(string)
-				if data == "" {
-					continue
-				}
-				mimeType := "audio/" + format
-				att, attErr := llm.NewBase64Attachment(llm.AttachmentTypeAudio, mimeType, data)
+
+			case "input_audio", "audio":
+				att, attErr := convertAudioPart(partMap)
 				if attErr != nil {
-					return "", nil, nil, errors.Wrapf(attErr, "could not convert input_audio")
+					slog.Error("proxy: could not convert audio content part",
+						slog.Int("index", i), slog.String("type", partType), slog.Any("error", attErr))
+					return "", nil, nil, errors.Wrapf(attErr, "could not convert %s content part", partType)
+				}
+				if att == nil {
+					slog.Warn("proxy: audio content part carries no usable payload, dropping it",
+						slog.Int("index", i), slog.String("type", partType),
+						slog.Any("keys", mapKeys(partMap)))
+					continue
 				}
 				attachments = append(attachments, att)
+
+			case "file", "input_file", "document":
+				att, inlined, attErr := convertFilePart(partMap)
+				if attErr != nil {
+					slog.Error("proxy: could not convert file content part",
+						slog.Int("index", i), slog.String("type", partType), slog.Any("error", attErr))
+					return "", nil, nil, errors.Wrapf(attErr, "could not convert %s content part", partType)
+				}
+				switch {
+				case att != nil:
+					attachments = append(attachments, att)
+				case inlined != "":
+					buf.WriteString(inlined)
+				default:
+					// A file referenced by provider-side id (e.g. "file_id") has no
+					// payload we can forward — the upstream provider would have to
+					// resolve it, which the proxy cannot do on the client's behalf.
+					slog.Warn("proxy: file content part carries no inlinable payload, dropping it",
+						slog.Int("index", i), slog.String("type", partType),
+						slog.Any("keys", mapKeys(partMap)))
+				}
+
+			case "refusal", "thinking", "redacted_thinking", "tool_use", "tool_result":
+				// Structural blocks with no textual payload to forward here; the
+				// caller handles them (or they are meaningless upstream).
+				slog.Debug("proxy: skipping structural content part",
+					slog.Int("index", i), slog.String("type", partType))
+
+			default:
+				slog.Warn("proxy: unsupported content part type, dropping it",
+					slog.Int("index", i), slog.String("type", partType),
+					slog.Any("keys", mapKeys(partMap)))
 			}
 		}
 		return buf.String(), attachments, cacheControl, nil
 	default:
 		return fmt.Sprintf("%v", raw), nil, nil, nil
 	}
+}
+
+// partTypeOf returns the declared "type" of a content part, falling back to
+// inferring it from the part's shape when the field is absent — some clients
+// omit it for single-kind arrays.
+func partTypeOf(part map[string]any) string {
+	if t, ok := part["type"].(string); ok && t != "" {
+		return t
+	}
+	switch {
+	case part["image_url"] != nil:
+		return "image_url"
+	case part["input_audio"] != nil:
+		return "input_audio"
+	case part["source"] != nil:
+		return "image"
+	case part["text"] != nil:
+		return "text"
+	case part["file"] != nil, part["file_data"] != nil, part["data"] != nil:
+		return "file"
+	default:
+		return "unknown"
+	}
+}
+
+// mapKeys returns the keys of a content part, for diagnostics. Values are never
+// logged: they may hold megabytes of base64 payload.
+func mapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// firstString returns the first non-empty string found under the given keys.
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// declaredMIMEType reads the MIME type of a part under any of the spellings in
+// use across clients (mediaType, media_type, mimeType, mime_type, mime).
+func declaredMIMEType(m map[string]any) string {
+	return firstString(m, "mediaType", "media_type", "mimeType", "mime_type", "mime", "content_type", "contentType")
+}
+
+// convertImagePart builds an image attachment from any of the known image part
+// encodings. It returns (nil, nil) when the part holds no usable payload.
+func convertImagePart(part map[string]any) (llm.Attachment, error) {
+	// Anthropic-shaped block: {"type":"image","source":{...}}
+	if source, ok := part["source"].(map[string]any); ok {
+		return convertAnthropicSource(llm.AttachmentTypeImage, source)
+	}
+
+	declared := declaredMIMEType(part)
+
+	// Chat Completions: {"image_url":{"url":"...","detail":"..."}}
+	if imgURL, ok := part["image_url"].(map[string]any); ok {
+		if declared == "" {
+			declared = declaredMIMEType(imgURL)
+		}
+		value := firstString(imgURL, "url", "data")
+		if value == "" {
+			return nil, nil
+		}
+		return newPayloadAttachment(llm.AttachmentTypeImage, value, declared)
+	}
+
+	// Responses API and shorthand variants: the payload sits directly on the part,
+	// either as {"image_url":"data:..."} or {"data":"..."}/{"url":"..."}.
+	value := firstString(part, "image_url", "url", "data", "image", "b64_json", "file_data")
+	if value == "" {
+		return nil, nil
+	}
+	return newPayloadAttachment(llm.AttachmentTypeImage, value, declared)
+}
+
+// convertAudioPart builds an audio attachment from the known audio encodings.
+func convertAudioPart(part map[string]any) (llm.Attachment, error) {
+	if source, ok := part["source"].(map[string]any); ok {
+		return convertAnthropicSource(llm.AttachmentTypeAudio, source)
+	}
+
+	container := part
+	if audio, ok := part["input_audio"].(map[string]any); ok {
+		container = audio
+	} else if audio, ok := part["audio"].(map[string]any); ok {
+		container = audio
+	}
+
+	value := firstString(container, "data", "url", "audio_url")
+	if value == "" {
+		return nil, nil
+	}
+
+	mimeType := declaredMIMEType(container)
+	if mimeType == "" {
+		// OpenAI encodes the codec as a bare "format" field ("wav", "mp3"…).
+		if format := firstString(container, "format"); format != "" {
+			mimeType = "audio/" + format
+		}
+	}
+	return newPayloadAttachment(llm.AttachmentTypeAudio, value, mimeType)
+}
+
+// convertFilePart builds an attachment from a file part. Text payloads are
+// returned as inlined text instead, since no provider accepts them as binary
+// attachments. Returns (nil, "", nil) when the part holds no forwardable
+// payload (e.g. a provider-side file id).
+func convertFilePart(part map[string]any) (att llm.Attachment, inlined string, err error) {
+	if source, ok := part["source"].(map[string]any); ok {
+		// Anthropic "document" block with a plain-text source.
+		if source["type"] == "text" {
+			t, _ := source["data"].(string)
+			return nil, t, nil
+		}
+		a, err := convertAnthropicSource(llm.AttachmentTypeDocument, source)
+		if err != nil {
+			return nil, "", err
+		}
+		return a, "", nil
+	}
+
+	container := part
+	if file, ok := part["file"].(map[string]any); ok {
+		container = file
+	}
+
+	declared := declaredMIMEType(container)
+	if declared == "" {
+		declared = declaredMIMEType(part)
+	}
+
+	value := firstString(container, "file_data", "data", "url", "file_url")
+	if value == "" {
+		// Nothing but a filename/file_id: unusable without provider-side lookup.
+		return nil, "", nil
+	}
+
+	// A filename is often the only hint about the payload's nature.
+	if declared == "" {
+		if filename := firstString(container, "filename", "name"); filename != "" {
+			declared = mime.TypeByExtension(path.Ext(filename))
+		}
+	}
+
+	a, err := newPayloadAttachment(attachmentTypeForMIME(declared), value, declared)
+	if err != nil {
+		return nil, "", err
+	}
+	return a, "", nil
+}
+
+// attachmentTypeForMIME maps a MIME type to the attachment type it belongs to,
+// defaulting to document for anything non-media.
+func attachmentTypeForMIME(mimeType string) llm.AttachmentType {
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return llm.AttachmentTypeImage
+	case strings.HasPrefix(mimeType, "audio/"):
+		return llm.AttachmentTypeAudio
+	case strings.HasPrefix(mimeType, "video/"):
+		return llm.AttachmentTypeVideo
+	default:
+		return llm.AttachmentTypeDocument
+	}
+}
+
+// newPayloadAttachment builds an attachment from a payload that may be a data
+// URL, a remote URL or a bare base64 blob. declared is the MIME type announced
+// by the client, if any; it is used when the payload carries none.
+func newPayloadAttachment(attachmentType llm.AttachmentType, value, declared string) (llm.Attachment, error) {
+	if withoutScheme, ok := strings.CutPrefix(value, "data:"); ok {
+		meta, data, ok := strings.Cut(withoutScheme, ",")
+		if !ok {
+			return nil, errors.New("invalid data URL: missing comma")
+		}
+
+		mimeType := normalizeMIMEType(firstNonEmpty(mimeFromDataURLMeta(meta), declared))
+		if mimeType == "" {
+			return nil, errors.New("invalid data URL: missing media type")
+		}
+
+		// A data URL without the ";base64" flag holds percent-encoded text.
+		if !dataURLIsBase64(meta) {
+			decoded, err := neturl.PathUnescape(data)
+			if err != nil {
+				return nil, errors.Wrap(err, "invalid data URL: malformed percent encoding")
+			}
+			data = base64.StdEncoding.EncodeToString([]byte(decoded))
+		}
+
+		return llm.NewBase64Attachment(attachmentType, mimeType, data)
+	}
+
+	if isRemoteURL(value) {
+		return llm.NewURLAttachment(attachmentType, remoteMIMEType(declared, value, attachmentType), value)
+	}
+
+	// Bare payload: treat it as raw base64, which is how the Vercel AI SDK and
+	// several clients encode "file" parts.
+	mimeType := normalizeMIMEType(declared)
+	if mimeType == "" {
+		return nil, errors.Errorf("attachment payload has no media type and none could be inferred")
+	}
+	return llm.NewBase64Attachment(attachmentType, mimeType, value)
+}
+
+// mimeFromDataURLMeta extracts the media type from a data URL's metadata
+// segment ("image/png;base64" → "image/png").
+func mimeFromDataURLMeta(meta string) string {
+	mimeType, _, _ := strings.Cut(meta, ";")
+	return strings.TrimSpace(mimeType)
+}
+
+func dataURLIsBase64(meta string) bool {
+	for _, param := range strings.Split(meta, ";")[1:] {
+		if strings.EqualFold(strings.TrimSpace(param), "base64") {
+			return true
+		}
+	}
+	return false
+}
+
+// isRemoteURL reports whether value looks like an absolute URL the provider can
+// fetch, as opposed to a base64 blob.
+func isRemoteURL(value string) bool {
+	parsed, err := neturl.Parse(value)
+	return err == nil && parsed.Scheme != "" && parsed.Host != ""
+}
+
+// remoteMIMEType determines the media type to attach to a remote URL. The
+// client rarely declares one, so it is inferred from the URL's extension; when
+// that fails a conventional default is assumed, because llm.Attachment requires
+// a syntactically valid type and providers fetching the URL determine the real
+// one themselves.
+func remoteMIMEType(declared, url string, attachmentType llm.AttachmentType) string {
+	if mimeType := normalizeMIMEType(declared); mimeType != "" && mimeType != "image/*" {
+		return mimeType
+	}
+
+	trimmed := url
+	if idx := strings.IndexAny(trimmed, "?#"); idx >= 0 {
+		trimmed = trimmed[:idx]
+	}
+	if ext := path.Ext(trimmed); ext != "" {
+		if mimeType, _, err := mime.ParseMediaType(mime.TypeByExtension(ext)); err == nil && mimeType != "" {
+			return mimeType
+		}
+	}
+
+	fallback := defaultMIMETypes[attachmentType]
+	slog.Warn("proxy: could not determine media type of remote attachment, assuming a default",
+		slog.String("url", url), slog.String("assumed", fallback))
+	return fallback
+}
+
+var defaultMIMETypes = map[llm.AttachmentType]string{
+	llm.AttachmentTypeImage:    "image/jpeg",
+	llm.AttachmentTypeAudio:    "audio/mpeg",
+	llm.AttachmentTypeVideo:    "video/mp4",
+	llm.AttachmentTypeDocument: "application/octet-stream",
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // extractCacheControl parses an optional cache_control annotation from a
@@ -411,21 +749,7 @@ func extractCacheControl(raw any) *llm.CacheControl {
 // convertImageURL creates an llm.Attachment from an OpenAI image_url value.
 // It handles both data URLs (data:mime;base64,<data>) and regular https:// URLs.
 func convertImageURL(url string) (llm.Attachment, error) {
-	if withoutScheme, ok := strings.CutPrefix(url, "data:"); ok {
-		// Format: data:<mimeType>;base64,<data>
-		meta, data, ok := strings.Cut(withoutScheme, ",")
-		if !ok {
-			return nil, errors.New("invalid data URL: missing comma")
-		}
-
-		mimeType, _, _ := strings.Cut(meta, ";")
-		mimeType = normalizeMIMEType(mimeType)
-
-		return llm.NewBase64Attachment(llm.AttachmentTypeImage, mimeType, data)
-	}
-
-	// Regular URL — MIME type unknown, use generic image/* placeholder.
-	return llm.NewImageAttachment("image/*", url, true)
+	return newPayloadAttachment(llm.AttachmentTypeImage, url, "")
 }
 
 // normalizeMIMEType maps common non-standard MIME type aliases to their canonical forms.
@@ -435,9 +759,24 @@ var mimeTypeAliases = map[string]string{
 	"image/tiff": "image/tiff",
 }
 
+// normalizeMIMEType canonicalises a client-provided media type, dropping any
+// parameters ("image/png; charset=binary") and wildcards, which are not valid
+// attachment media types.
 func normalizeMIMEType(mimeType string) string {
-	if canonical, ok := mimeTypeAliases[strings.ToLower(mimeType)]; ok {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	if mimeType == "" {
+		return ""
+	}
+	if parsed, _, err := mime.ParseMediaType(mimeType); err == nil && parsed != "" {
+		mimeType = parsed
+	} else if base, _, found := strings.Cut(mimeType, ";"); found {
+		mimeType = strings.TrimSpace(base)
+	}
+	if canonical, ok := mimeTypeAliases[mimeType]; ok {
 		return canonical
+	}
+	if strings.HasSuffix(mimeType, "/*") {
+		return ""
 	}
 	return mimeType
 }
