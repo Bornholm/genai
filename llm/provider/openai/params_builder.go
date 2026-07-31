@@ -242,15 +242,33 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 			// do not return reasoning tokens in responses, so there is nothing to preserve.
 			messages = append(messages, openai.AssistantMessage(m.Content()))
 		case llm.RoleTool:
-			if len(m.Attachments()) > 0 {
-				return errors.Errorf("tool messages cannot have attachments")
-			}
 			toolMessage, ok := m.(llm.ToolMessage)
 			if !ok {
 				return errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
 			messages = append(messages, openai.ToolMessage(toolMessage.Content(), toolMessage.ID()))
+
+			// The API accepts text only under the "tool" role, yet a tool may
+			// legitimately answer with an image (an MCP server serving the
+			// screenshot it was asked for). Rejecting the message would lose
+			// it; the media are therefore carried by a user message right
+			// after the tool result, the usual way to feed a tool's output to
+			// a vision model.
+			if len(m.Attachments()) > 0 {
+				contentParts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(m.Attachments()))
+
+				for _, attachment := range m.Attachments() {
+					contentPart, err := ConvertAttachmentToContentPart(attachment)
+					if err != nil {
+						return errors.Wrapf(err, "failed to convert tool result attachment to content part")
+					}
+
+					contentParts = append(contentParts, contentPart)
+				}
+
+				messages = append(messages, openai.UserMessage(contentParts))
+			}
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
 				return errors.Errorf("tool calls messages cannot have attachments")
