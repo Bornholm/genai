@@ -184,7 +184,7 @@ func (c *Client) toTool(t *goMCP.Tool) (llm.Tool, error) {
 		return nil, errors.Wrapf(err, "could not initialize tool '%s'", t.Name)
 	}
 
-	return llm.NewFuncTool(
+	tool := llm.NewFuncTool(
 		t.Name,
 		t.Description,
 		parameters,
@@ -196,7 +196,21 @@ func (c *Client) toTool(t *goMCP.Tool) (llm.Tool, error) {
 
 			return toToolResult(ctx, res), nil
 		},
-	), nil
+	)
+
+	// Carry the readOnlyHint annotation through to the caller, who may use it
+	// to decide whether a tool needs confirmation before running.
+	//
+	// Only set it when the server actually sent annotations. ReadOnlyHint is
+	// a plain bool with omitempty in the protocol types, so an absent
+	// annotation and an explicit "this tool writes" are indistinguishable
+	// once Annotations exists; a nil Annotations is the one reliable signal
+	// that the server declared nothing at all.
+	if t.Annotations != nil {
+		tool = tool.WithReadOnlyHint(t.Annotations.ReadOnlyHint)
+	}
+
+	return tool, nil
 }
 
 // toToolResult turns the content blocks of a tool call into a [llm.ToolResult].

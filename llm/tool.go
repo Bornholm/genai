@@ -16,6 +16,29 @@ type Tool interface {
 	Execute(ctx context.Context, params map[string]any) (ToolResult, error)
 }
 
+// AnnotatedTool is implemented by tools carrying protocol-level hints about
+// their behaviour, such as the MCP readOnlyHint annotation.
+//
+// It is deliberately a separate, optional interface rather than an addition
+// to [Tool]: every existing implementation keeps working, and callers that
+// care about hints discover them with a type assertion.
+//
+// These hints are declarative and unverified. A server states them about
+// itself and nothing checks them, so they can inform a decision but must
+// never justify skipping a safety measure.
+type AnnotatedTool interface {
+	Tool
+
+	// ReadOnly reports whether the tool is annotated as leaving its
+	// environment unchanged.
+	//
+	// known is false when the tool carries no such annotation at all. That
+	// case must stay distinct from an explicit "this tool writes": a server
+	// annotating nothing would otherwise look like a server declaring every
+	// one of its tools a writer.
+	ReadOnly() (readOnly bool, known bool)
+}
+
 type ToolResult interface {
 	Text() string
 	Attachments() []Attachment
@@ -50,6 +73,10 @@ type FuncTool struct {
 	description string
 	parameters  map[string]any
 	execute     ExecuteFunc
+	// readOnly holds the readOnlyHint annotation when the source declared
+	// one. nil means the tool carries no annotation, which differs from an
+	// explicit false.
+	readOnly *bool
 }
 
 type ExecuteFunc func(ctx context.Context, params map[string]any) (ToolResult, error)
@@ -81,6 +108,25 @@ func (f *FuncTool) Parameters() map[string]any {
 	return f.parameters
 }
 
+// ReadOnly implements [AnnotatedTool].
+func (f *FuncTool) ReadOnly() (readOnly bool, known bool) {
+	if f.readOnly == nil {
+		return false, false
+	}
+
+	return *f.readOnly, true
+}
+
+// WithReadOnlyHint records the readOnlyHint annotation declared by the source
+// of this tool, and returns f to allow chaining at construction.
+//
+// Leave it unset when the source declares nothing: consumers must be able to
+// tell "not annotated" from "annotated as writing".
+func (f *FuncTool) WithReadOnlyHint(readOnly bool) *FuncTool {
+	f.readOnly = &readOnly
+	return f
+}
+
 func NewFuncTool(name, description string, parameters map[string]any, fn ExecuteFunc) *FuncTool {
 	return &FuncTool{
 		name:        name,
@@ -90,7 +136,10 @@ func NewFuncTool(name, description string, parameters map[string]any, fn Execute
 	}
 }
 
-var _ Tool = &FuncTool{}
+var (
+	_ Tool          = &FuncTool{}
+	_ AnnotatedTool = &FuncTool{}
+)
 
 func ExecuteToolCall(ctx context.Context, tc ToolCall, tools ...Tool) (ToolMessage, error) {
 	var tool Tool
