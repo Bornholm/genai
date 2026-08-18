@@ -90,7 +90,12 @@ func NewChatCompletionOptions(funcs ...ChatCompletionOptionFunc) *ChatCompletion
 		Temperature:    0.6,
 		ResponseFormat: ResponseFormatDefault,
 		ResponseSchema: nil,
-		ToolChoice:     ToolChoiceNone,
+		// Auto, not None: with None as the default, any caller providing
+		// tools without an explicit WithToolChoice would silently forbid the
+		// model from ever calling them ("tool_choice":"none" on the wire) —
+		// the opposite of what providing tools means. Auto matches the
+		// providers' own default when tools are present.
+		ToolChoice: ToolChoiceAuto,
 	}
 	for _, fn := range funcs {
 		fn(opts)
