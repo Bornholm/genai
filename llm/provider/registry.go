@@ -27,9 +27,10 @@ type providerEntry struct {
 }
 
 type Registry struct {
-	chatCompletionEntries map[Name]providerEntry
-	embeddingsEntries     map[Name]providerEntry
-	transcriptionEntries  map[Name]providerEntry
+	chatCompletionEntries  map[Name]providerEntry
+	embeddingsEntries      map[Name]providerEntry
+	transcriptionEntries   map[Name]providerEntry
+	imageGenerationEntries map[Name]providerEntry
 }
 
 // RegisterChatCompletion enregistre un provider de chat completion dans le registry global.
@@ -74,6 +75,29 @@ func RegisterTranscription[T any](
 			return factory(ctx, opts.(*T))
 		},
 	}
+}
+
+// RegisterImageGeneration enregistre un provider de génération d'images dans le registry global.
+func RegisterImageGeneration[T any](
+	name Name,
+	newOptions func() *T,
+	factory func(ctx context.Context, opts *T) (llm.ImageGenerationClient, error),
+) {
+	defaultRegistry.imageGenerationEntries[name] = providerEntry{
+		newOptions: func() any { return newOptions() },
+		createClient: func(ctx context.Context, opts any) (any, error) {
+			return factory(ctx, opts.(*T))
+		},
+	}
+}
+
+// NewImageGenerationProviderOptions retourne une instance d'options (avec les defaults)
+// pour le provider de génération d'images donné, ou nil si le provider n'est pas enregistré.
+func NewImageGenerationProviderOptions(name Name) any {
+	if entry, ok := defaultRegistry.imageGenerationEntries[name]; ok {
+		return entry.newOptions()
+	}
+	return nil
 }
 
 // NewChatCompletionProviderOptions retourne une instance d'options (avec les defaults)
@@ -125,11 +149,16 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 		return nil, errors.WithStack(err)
 	}
 
-	if chatCompletion == nil && embeddings == nil && transcription == nil {
+	imageGeneration, err := createClientFromResolved[llm.ImageGenerationClient](ctx, opts.ImageGeneration, r.imageGenerationEntries)
+	if err != nil && !errors.Is(err, ErrNotConfigured) {
+		return nil, errors.WithStack(err)
+	}
+
+	if chatCompletion == nil && embeddings == nil && transcription == nil && imageGeneration == nil {
 		return nil, errors.WithStack(ErrNotConfigured)
 	}
 
-	return NewClient(chatCompletion, embeddings, transcription), nil
+	return NewClientWithImageGeneration(chatCompletion, embeddings, transcription, imageGeneration), nil
 }
 
 // createClientFromResolved crée un client T à partir des options résolues.
@@ -171,9 +200,10 @@ func createClientFromResolved[T any](
 
 func newRegistry() *Registry {
 	return &Registry{
-		chatCompletionEntries: map[Name]providerEntry{},
-		embeddingsEntries:     map[Name]providerEntry{},
-		transcriptionEntries:  map[Name]providerEntry{},
+		chatCompletionEntries:  map[Name]providerEntry{},
+		embeddingsEntries:      map[Name]providerEntry{},
+		transcriptionEntries:   map[Name]providerEntry{},
+		imageGenerationEntries: map[Name]providerEntry{},
 	}
 }
 

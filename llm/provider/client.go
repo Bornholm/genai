@@ -8,9 +8,10 @@ import (
 )
 
 type Client struct {
-	chatCompletion llm.ChatCompletionClient
-	embeddings     llm.EmbeddingsClient
-	transcription  llm.TranscriptionClient
+	chatCompletion  llm.ChatCompletionClient
+	embeddings      llm.EmbeddingsClient
+	transcription   llm.TranscriptionClient
+	imageGeneration llm.ImageGenerationClient
 }
 
 // ChatCompletion implements llm.Client.
@@ -70,6 +71,24 @@ func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.T
 	return response, nil
 }
 
+// ImageGeneration implements [llm.ImageGenerationClient].
+//
+// That interface is deliberately NOT part of [llm.Client]: adding a method
+// there breaks every existing implementation. Callers reach it with a type
+// assertion on the concrete client returned by Create.
+func (c *Client) ImageGeneration(ctx context.Context, prompt string, funcs ...llm.ImageGenerationOptionFunc) (llm.ImageGenerationResponse, error) {
+	if c.imageGeneration == nil {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+
+	response, err := c.imageGeneration.ImageGeneration(ctx, prompt, funcs...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return response, nil
+}
+
 func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient, transcription llm.TranscriptionClient) *Client {
 	return &Client{
 		chatCompletion: chatCompletion,
@@ -78,4 +97,15 @@ func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.Embedding
 	}
 }
 
-var _ llm.Client = &Client{}
+// NewClientWithImageGeneration builds a client that also generates images.
+// Kept separate from NewClient so existing callers keep compiling.
+func NewClientWithImageGeneration(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient, transcription llm.TranscriptionClient, imageGeneration llm.ImageGenerationClient) *Client {
+	client := NewClient(chatCompletion, embeddings, transcription)
+	client.imageGeneration = imageGeneration
+	return client
+}
+
+var (
+	_ llm.Client                = &Client{}
+	_ llm.ImageGenerationClient = &Client{}
+)

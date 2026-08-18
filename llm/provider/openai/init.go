@@ -59,4 +59,20 @@ func init() {
 			return NewTranscriptionClient(client, opts.Model), nil
 		},
 	)
+
+	provider.RegisterImageGeneration(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.ImageGenerationClient, error) {
+			options := []option.RequestOption{
+				option.WithBaseURL(opts.BaseURL),
+				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
+			}
+			if opts.APIKey != "" {
+				options = append(options, option.WithAPIKey(opts.APIKey))
+			}
+			client := openaisdk.NewClient(options...)
+			return NewImageGenerationClient(client, opts.Model), nil
+		},
+	)
 }

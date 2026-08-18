@@ -37,4 +37,12 @@ func init() {
 			return NewTranscriptionClient(client, opts.Model), nil
 		},
 	)
+
+	provider.RegisterImageGeneration(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.ImageGenerationClient, error) {
+			return NewImageGenerationClient(nil, opts.BaseURL, opts.APIKey, opts.Model), nil
+		},
+	)
 }

@@ -24,9 +24,10 @@ type ResolvedClientOptions struct {
 
 // Options regroupe les options résolues pour chat completion, embeddings et transcription.
 type Options struct {
-	ChatCompletion *ResolvedClientOptions
-	Embeddings     *ResolvedClientOptions
-	Transcription  *ResolvedClientOptions
+	ChatCompletion  *ResolvedClientOptions
+	Embeddings      *ResolvedClientOptions
+	Transcription   *ResolvedClientOptions
+	ImageGeneration *ResolvedClientOptions
 }
 
 // Validator est une interface optionnelle que les structs d'options peuvent implémenter.
@@ -106,6 +107,27 @@ func WithEmbeddings[T any](name Name, opts T) OptionFunc {
 func WithTranscription[T any](name Name, opts T) OptionFunc {
 	return func(o *Options) error {
 		o.Transcription = &ResolvedClientOptions{
+			Provider: name,
+			Specific: &opts,
+		}
+		return nil
+	}
+}
+
+// WithImageGeneration returns an OptionFunc that configures image generation
+// options for a specific provider. The opts value is copied to ensure
+// immutability of the original.
+//
+// Example:
+//
+//	client, err := provider.Create(ctx,
+//	    provider.WithImageGeneration("openai", openai.Options{
+//	        Model: "gpt-image-1",
+//	    }),
+//	)
+func WithImageGeneration[T any](name Name, opts T) OptionFunc {
+	return func(o *Options) error {
+		o.ImageGeneration = &ResolvedClientOptions{
 			Provider: name,
 			Specific: &opts,
 		}
