@@ -135,9 +135,14 @@ func TestParseChatCompletionRequest_ToolChoiceDefaultsToAuto(t *testing.T) {
 	}
 }
 
-// TestParseChatCompletionRequest_NoToolsToolChoiceNone verifies that without
-// any tools, ToolChoice keeps its default value of "none".
-func TestParseChatCompletionRequest_NoToolsToolChoiceNone(t *testing.T) {
+// TestParseChatCompletionRequest_NoToolsKeepsDefaultToolChoice verifies that
+// without any tools, the parser forces no tool choice: the value seen
+// downstream is whatever llm.NewChatCompletionOptions defaults to.
+//
+// That default is now ToolChoiceAuto. It used to be ToolChoiceNone, which
+// silently prevented models from ever calling a tool when a caller relied on
+// the default — the reason it was changed.
+func TestParseChatCompletionRequest_NoToolsKeepsDefaultToolChoice(t *testing.T) {
 	body := json.RawMessage(`{
 		"model": "gpt-4",
 		"messages": [{"role": "user", "content": "Hi"}]
@@ -149,8 +154,8 @@ func TestParseChatCompletionRequest_NoToolsToolChoiceNone(t *testing.T) {
 	}
 
 	compiled := llm.NewChatCompletionOptions(opts...)
-	if compiled.ToolChoice != llm.ToolChoiceNone {
-		t.Errorf("tool choice = %q, want %q", compiled.ToolChoice, llm.ToolChoiceNone)
+	if compiled.ToolChoice != llm.NewChatCompletionOptions().ToolChoice {
+		t.Errorf("tool choice = %q, want the library default %q", compiled.ToolChoice, llm.NewChatCompletionOptions().ToolChoice)
 	}
 }
 

@@ -39,8 +39,8 @@ type resolverHook struct {
 	model  string
 }
 
-func (r *resolverHook) Name() string     { return "test.resolver" }
-func (r *resolverHook) Priority() int    { return 0 }
+func (r *resolverHook) Name() string  { return "test.resolver" }
+func (r *resolverHook) Priority() int { return 0 }
 func (r *resolverHook) ResolveModel(_ context.Context, _ *ProxyRequest) (llm.Client, string, error) {
 	return r.client, r.model, nil
 }

@@ -373,9 +373,12 @@ func TestParseMessagesRequest_ToolChoiceDefaultsToAuto(t *testing.T) {
 	}
 }
 
-// TestParseMessagesRequest_NoToolsToolChoiceNone verifies that without any
-// tools, ToolChoice keeps its default value of "none".
-func TestParseMessagesRequest_NoToolsToolChoiceNone(t *testing.T) {
+// TestParseMessagesRequest_NoToolsKeepsDefaultToolChoice verifies that
+// without any tools, the parser forces no tool choice: the value seen
+// downstream is whatever llm.NewChatCompletionOptions defaults to.
+//
+// That default is now ToolChoiceAuto (see the chat completion counterpart).
+func TestParseMessagesRequest_NoToolsKeepsDefaultToolChoice(t *testing.T) {
 	body := json.RawMessage(`{
 		"model": "m",
 		"max_tokens": 100,
@@ -388,8 +391,8 @@ func TestParseMessagesRequest_NoToolsToolChoiceNone(t *testing.T) {
 	}
 
 	compiled := llm.NewChatCompletionOptions(opts...)
-	if compiled.ToolChoice != llm.ToolChoiceNone {
-		t.Errorf("tool choice = %q, want %q", compiled.ToolChoice, llm.ToolChoiceNone)
+	if compiled.ToolChoice != llm.NewChatCompletionOptions().ToolChoice {
+		t.Errorf("tool choice = %q, want the library default %q", compiled.ToolChoice, llm.NewChatCompletionOptions().ToolChoice)
 	}
 }
 

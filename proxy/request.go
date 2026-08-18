@@ -38,7 +38,7 @@ type ProxyRequest struct {
 // ProxyResponse encapsulates the response before sending it to the client.
 type ProxyResponse struct {
 	StatusCode int
-	Body       any         // will be serialized to JSON in OpenAI format
+	Body       any // will be serialized to JSON in OpenAI format
 	Headers    http.Header
 	TokensUsed *TokenUsage // filled after the LLM call
 }
