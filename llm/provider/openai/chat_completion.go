@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"sync/atomic"
 
@@ -68,12 +69,28 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		toolCalls = append(toolCalls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 	}
 
-	usage := llm.NewChatCompletionUsageWithCache(
+	// OpenAI compatible gateways (OpenRouter, LiteLLM) report what the call
+	// actually cost in a non standard "cost" field of the usage object.
+	// Reading it turns a billing guess into a measurement — but only when
+	// the caller asked for it: OpenRouter needs `usage: {include: true}`,
+	// which travels through ExtraFields.
+	var usage llm.ChatCompletionUsage = llm.NewChatCompletionUsageWithCache(
 		completion.Usage.PromptTokens,
 		completion.Usage.CompletionTokens,
 		completion.Usage.TotalTokens,
 		completion.Usage.PromptTokensDetails.CachedTokens,
 	)
+
+	if cost, ok := extraCost(completion.Usage.JSON.ExtraFields); ok {
+		usage = llm.NewChatCompletionUsageWithCost(
+			completion.Usage.PromptTokens,
+			completion.Usage.CompletionTokens,
+			completion.Usage.TotalTokens,
+			completion.Usage.PromptTokensDetails.CachedTokens,
+			cost,
+			costCurrency,
+		)
+	}
 
 	if reasoning != "" {
 		return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, nil, toolCalls...), nil
@@ -119,6 +136,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		completionTokens atomic.Int64
 		totalTokens      atomic.Int64
 		cachedTokens     atomic.Int64
+		cost             atomic.Uint64 // float64 bits, see math.Float64bits/Float64frombits
+		costReported     atomic.Bool
 	)
 
 	go func() {
@@ -137,6 +156,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				completionTokens.Store(chunk.Usage.CompletionTokens)
 				totalTokens.Store(chunk.Usage.TotalTokens)
 				cachedTokens.Store(chunk.Usage.PromptTokensDetails.CachedTokens)
+
+				if reported, ok := extraCost(chunk.Usage.JSON.ExtraFields); ok {
+					cost.Store(math.Float64bits(reported))
+					costReported.Store(true)
+				}
 			}
 
 			if len(chunk.Choices) == 0 {
@@ -193,6 +217,18 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		// Send completion chunk
+		if costReported.Load() {
+			chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsageWithCost(
+				promptTokens.Load(),
+				completionTokens.Load(),
+				totalTokens.Load(),
+				cachedTokens.Load(),
+				math.Float64frombits(cost.Load()),
+				costCurrency,
+			))
+			return
+		}
+
 		chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsageWithCache(
 			promptTokens.Load(),
 			completionTokens.Load(),
