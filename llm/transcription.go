@@ -89,6 +89,8 @@ type BaseTranscriptionUsage struct {
 	outputTokens int64
 	totalTokens  int64
 	audioSeconds float64
+	cost         *float64
+	costCurrency string
 }
 
 // InputTokens implements TranscriptionUsage.
@@ -120,7 +122,32 @@ func NewTranscriptionUsage(inputTokens, outputTokens, totalTokens int64, audioSe
 	}
 }
 
-var _ TranscriptionUsage = &BaseTranscriptionUsage{}
+// NewTranscriptionUsageWithCost reports what the transcription actually
+// cost, as gateways such as OpenRouter do. Use CostReportingUsage to read
+// it back: billing from seconds or tokens is a guess, this is not.
+func NewTranscriptionUsageWithCost(inputTokens, outputTokens, totalTokens int64, audioSeconds float64, cost float64, currency string) *BaseTranscriptionUsage {
+	return &BaseTranscriptionUsage{
+		inputTokens:  inputTokens,
+		outputTokens: outputTokens,
+		totalTokens:  totalTokens,
+		audioSeconds: audioSeconds,
+		cost:         &cost,
+		costCurrency: currency,
+	}
+}
+
+// Cost implements CostReportingUsage.
+func (u *BaseTranscriptionUsage) Cost() (amount float64, currency string, ok bool) {
+	if u.cost == nil {
+		return 0, "", false
+	}
+	return *u.cost, u.costCurrency, true
+}
+
+var (
+	_ TranscriptionUsage = &BaseTranscriptionUsage{}
+	_ CostReportingUsage = &BaseTranscriptionUsage{}
+)
 
 type BaseTranscriptionResponse struct {
 	text     string

@@ -862,8 +862,8 @@ func NewChatCompletionClient(funcs ...OptionFunc) (*ChatCompletionClient, error)
 		minP:            0.0,
 		presencePenalty: 2.0,
 		penaltyLastN:    64,
-		predictSize: 32768,
-		verbose:     false,
+		predictSize:     32768,
+		verbose:         false,
 	}
 
 	for _, fn := range funcs {

@@ -120,6 +120,8 @@ type BaseImageGenerationUsage struct {
 	inputTokens  int64
 	outputTokens int64
 	totalTokens  int64
+	cost         *float64
+	costCurrency string
 }
 
 // InputTokens implements ImageGenerationUsage.
@@ -135,7 +137,31 @@ func NewImageGenerationUsage(inputTokens, outputTokens, totalTokens int64) *Base
 	return &BaseImageGenerationUsage{inputTokens: inputTokens, outputTokens: outputTokens, totalTokens: totalTokens}
 }
 
-var _ ImageGenerationUsage = &BaseImageGenerationUsage{}
+// NewImageGenerationUsageWithCost reports what the generation actually
+// cost. Images are billed per output, not per token: an estimate built
+// from token counts is far off, and gateways state the real price.
+func NewImageGenerationUsageWithCost(inputTokens, outputTokens, totalTokens int64, cost float64, currency string) *BaseImageGenerationUsage {
+	return &BaseImageGenerationUsage{
+		inputTokens:  inputTokens,
+		outputTokens: outputTokens,
+		totalTokens:  totalTokens,
+		cost:         &cost,
+		costCurrency: currency,
+	}
+}
+
+// Cost implements CostReportingUsage.
+func (u *BaseImageGenerationUsage) Cost() (amount float64, currency string, ok bool) {
+	if u.cost == nil {
+		return 0, "", false
+	}
+	return *u.cost, u.costCurrency, true
+}
+
+var (
+	_ ImageGenerationUsage = &BaseImageGenerationUsage{}
+	_ CostReportingUsage   = &BaseImageGenerationUsage{}
+)
 
 type BaseImageGenerationResponse struct {
 	images []GeneratedImage

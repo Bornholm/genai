@@ -103,3 +103,42 @@ func TestAudioMimeType(t *testing.T) {
 		}
 	}
 }
+
+// Gateways bill transcriptions per second and state the price in the usage
+// object. Dropping it forces the caller back onto an estimate, which is
+// what a reported cost exists to replace.
+func TestParseTranscriptionMetadata_ReportsCost(t *testing.T) {
+	_, usage := parseTranscriptionMetadata([]byte(
+		`{"text":"bonjour","usage":{"seconds":1,"total_tokens":379,"input_tokens":3,"output_tokens":1,"cost":0.00005}}`))
+
+	reporting, ok := usage.(llm.CostReportingUsage)
+	if !ok {
+		t.Fatal("usage does not report cost")
+	}
+
+	amount, currency, ok := reporting.Cost()
+	if !ok {
+		t.Fatal("cost not reported")
+	}
+	if amount != 0.00005 {
+		t.Errorf("cost = %v, want 0.00005", amount)
+	}
+	if currency != "USD" {
+		t.Errorf("currency = %q, want USD", currency)
+	}
+}
+
+// Without a cost in the payload, nothing is claimed: a zero would read as a
+// free call and silence the estimate that should take over.
+func TestParseTranscriptionMetadata_NoCostReported(t *testing.T) {
+	_, usage := parseTranscriptionMetadata([]byte(
+		`{"text":"bonjour","usage":{"seconds":1,"total_tokens":379}}`))
+
+	reporting, ok := usage.(llm.CostReportingUsage)
+	if !ok {
+		t.Fatal("usage does not implement CostReportingUsage")
+	}
+	if _, _, ok := reporting.Cost(); ok {
+		t.Error("a cost was reported although the payload carried none")
+	}
+}

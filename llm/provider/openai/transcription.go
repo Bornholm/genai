@@ -88,6 +88,10 @@ type rawTranscriptionMetadata struct {
 		CompletionTokens   int64   `json:"completion_tokens"`
 		PromptAudioSeconds float64 `json:"prompt_audio_seconds"`
 		Seconds            float64 `json:"seconds"`
+		// Cost is reported by OpenAI compatible gateways (OpenRouter bills
+		// transcriptions per second and states the price outright). A
+		// pointer tells "not reported" from "free".
+		Cost *float64 `json:"cost"`
 	} `json:"usage"`
 }
 
@@ -120,6 +124,13 @@ func parseTranscriptionMetadata(raw []byte) (string, llm.TranscriptionUsage) {
 	}
 	if audioSeconds == 0 {
 		audioSeconds = meta.Duration
+	}
+
+	if meta.Usage.Cost != nil && *meta.Usage.Cost >= 0 {
+		return meta.Language, llm.NewTranscriptionUsageWithCost(
+			inputTokens, outputTokens, meta.Usage.TotalTokens, audioSeconds,
+			*meta.Usage.Cost, costCurrency,
+		)
 	}
 
 	return meta.Language, llm.NewTranscriptionUsage(inputTokens, outputTokens, meta.Usage.TotalTokens, audioSeconds)

@@ -48,6 +48,9 @@ type imageGenerationResponse struct {
 		PromptTokens     int64 `json:"prompt_tokens"`
 		CompletionTokens int64 `json:"completion_tokens"`
 		TotalTokens      int64 `json:"total_tokens"`
+		// Cost is what OpenRouter charged for the generation, in USD. A
+		// pointer tells "not reported" from "free".
+		Cost *float64 `json:"cost"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -134,7 +137,13 @@ func (c *ImageGenerationClient) ImageGeneration(ctx context.Context, prompt stri
 		images = append(images, llm.NewGeneratedImage(data, mediaType, img.RevisedPrompt))
 	}
 
-	usage := llm.NewImageGenerationUsage(parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, parsed.Usage.TotalTokens)
+	var usage llm.ImageGenerationUsage = llm.NewImageGenerationUsage(parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, parsed.Usage.TotalTokens)
+	if parsed.Usage.Cost != nil && *parsed.Usage.Cost >= 0 {
+		usage = llm.NewImageGenerationUsageWithCost(
+			parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, parsed.Usage.TotalTokens,
+			*parsed.Usage.Cost, "USD", // OpenRouter always reports cost in USD
+		)
+	}
 
 	return llm.NewImageGenerationResponse(images, usage), nil
 }
