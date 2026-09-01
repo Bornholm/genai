@@ -168,6 +168,21 @@ func ConfigureTools(ctx context.Context, opts *llm.ChatCompletionOptions, params
 		params.Tools = tools
 	}
 
+	// Scoped to requests that actually declare tools. The default options set
+	// ToolChoice to "auto" (llm.ChatCompletionOptions), so a caller that never
+	// declares a tool still reaches this point with a choice — and sending
+	// "tool_choice" without "tools" is rejected outright:
+	//
+	//	400 {"error":{"code":"invalid_request_error",
+	//	     "message":"'tool_choice' is only allowed when 'tools' are specified"}}
+	//
+	// The assignment above is already guarded; this switch was not, so every
+	// tool-less call failed while the tool-carrying ones went through. A choice
+	// among no tools has no meaning anyway.
+	if len(opts.Tools) == 0 {
+		return nil
+	}
+
 	switch opts.ToolChoice {
 	case llm.ToolChoiceAuto:
 		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
