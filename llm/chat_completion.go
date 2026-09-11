@@ -30,10 +30,14 @@ type AudioOutputConfig struct {
 }
 
 type ChatCompletionOptions struct {
-	Messages            []Message
-	Tools               []Tool
-	ToolChoice          ToolChoice
-	Temperature         float64
+	Messages   []Message
+	Tools      []Tool
+	ToolChoice ToolChoice
+	// Temperature is nil when the caller did not set one: the provider then
+	// omits the field and lets the upstream apply its own default. Sending a
+	// value unconditionally breaks models that only accept their default
+	// (OpenAI reasoning models reject anything but 1).
+	Temperature         *float64
 	ResponseFormat      ResponseFormat
 	ResponseSchema      ResponseSchema
 	Seed                *int
@@ -50,7 +54,7 @@ type ChatCompletionOptions struct {
 
 // Validate checks if the ChatCompletionOptions are valid
 func (opts *ChatCompletionOptions) Validate() error {
-	if opts.Temperature < 0 || opts.Temperature > 2 {
+	if opts.Temperature != nil && (*opts.Temperature < 0 || *opts.Temperature > 2) {
 		return NewValidationError("temperature", "temperature must be between 0 and 2")
 	}
 	if opts.MaxCompletionTokens != nil && *opts.MaxCompletionTokens <= 0 {
@@ -87,7 +91,6 @@ func NewChatCompletionOptions(funcs ...ChatCompletionOptionFunc) *ChatCompletion
 	opts := &ChatCompletionOptions{
 		Messages:       make([]Message, 0),
 		Tools:          make([]Tool, 0),
-		Temperature:    0.6,
 		ResponseFormat: ResponseFormatDefault,
 		ResponseSchema: nil,
 		// Auto, not None: with None as the default, any caller providing
@@ -113,7 +116,7 @@ func WithToolChoice(choice ToolChoice) ChatCompletionOptionFunc {
 
 func WithTemperature(temperature float64) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
-		opts.Temperature = temperature
+		opts.Temperature = &temperature
 	}
 }
 
@@ -182,10 +185,40 @@ type ResponseSchema interface {
 	Schema() any
 }
 
+// StrictResponseSchema is optionally implemented by a ResponseSchema to
+// control the provider's strict mode (OpenAI's "strict": true, which forces
+// the output to match the schema exactly). Schemas that do not implement it
+// are sent in strict mode.
+type StrictResponseSchema interface {
+	ResponseSchema
+	Strict() bool
+}
+
+// IsStrictResponseSchema reports the strict mode requested by schema,
+// defaulting to true when the schema does not implement StrictResponseSchema.
+func IsStrictResponseSchema(schema ResponseSchema) bool {
+	if s, ok := schema.(StrictResponseSchema); ok {
+		return s.Strict()
+	}
+	return true
+}
+
 type BaseResponseSchema struct {
 	name        string
 	description string
 	schema      any
+	strict      bool
+}
+
+// Strict implements StrictResponseSchema.
+func (b *BaseResponseSchema) Strict() bool {
+	return b.strict
+}
+
+// WithStrict sets the strict mode of the schema and returns it.
+func (b *BaseResponseSchema) WithStrict(strict bool) *BaseResponseSchema {
+	b.strict = strict
+	return b
 }
 
 // Description implements ResponseSchema.
@@ -203,13 +236,16 @@ func (b *BaseResponseSchema) Schema() any {
 	return b.schema
 }
 
-var _ ResponseSchema = &BaseResponseSchema{}
+var _ StrictResponseSchema = &BaseResponseSchema{}
 
+// NewResponseSchema returns a strict response schema; use WithStrict(false)
+// to relax it.
 func NewResponseSchema(name string, description string, schema any) *BaseResponseSchema {
 	return &BaseResponseSchema{
 		name:        name,
 		description: description,
 		schema:      schema,
+		strict:      true,
 	}
 }
 

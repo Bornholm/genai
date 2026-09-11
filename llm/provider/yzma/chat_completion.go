@@ -83,7 +83,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	// Create sampler
 	sp := llama.DefaultSamplerParams()
-	sp.Temp = float32(opts.Temperature)
+	sp.Temp = float32(c.samplingTemperature(opts))
 	sp.TopK = int32(c.topK)
 	sp.TopP = float32(c.topP)
 	sp.MinP = float32(c.minP)
@@ -198,7 +198,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 		// Create sampler
 		sp := llama.DefaultSamplerParams()
-		sp.Temp = float32(opts.Temperature)
+		sp.Temp = float32(c.samplingTemperature(opts))
 		sp.TopK = int32(c.topK)
 		sp.TopP = float32(c.topP)
 		sp.MinP = float32(c.minP)
@@ -776,6 +776,15 @@ func WithUBatchSize(size int) OptionFunc {
 		c.uBatchSize = size
 		return nil
 	}
+}
+
+// samplingTemperature returns the request temperature, or the client's
+// configured one when the request does not set any.
+func (c *ChatCompletionClient) samplingTemperature(opts *llm.ChatCompletionOptions) float64 {
+	if opts.Temperature != nil {
+		return *opts.Temperature
+	}
+	return c.temperature
 }
 
 // WithTemperature sets the sampling temperature

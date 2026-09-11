@@ -288,10 +288,10 @@ func TestChatCompletionOptionsValidation(t *testing.T) {
 		imageAttachment,
 	)
 
-	opts := &ChatCompletionOptions{
-		Messages:    []Message{messageWithOnlyAttachments},
-		Temperature: 0.7,
-	}
+	opts := NewChatCompletionOptions(
+		WithMessages(messageWithOnlyAttachments),
+		WithTemperature(0.7),
+	)
 
 	err = opts.Validate()
 	if err != nil {

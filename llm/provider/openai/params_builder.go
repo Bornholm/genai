@@ -63,8 +63,14 @@ func ConfigureParams(ctx context.Context, opts *llm.ChatCompletionOptions, funcs
 	return params, nil
 }
 
+// ConfigureTemperature forwards the temperature only when the caller set one,
+// so models that only accept their default (OpenAI reasoning models) keep
+// working for callers that leave it out.
 func ConfigureTemperature(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
-	params.Temperature = openai.Float(opts.Temperature)
+	if opts.Temperature == nil {
+		return nil
+	}
+	params.Temperature = openai.Float(*opts.Temperature)
 	return nil
 }
 
@@ -83,20 +89,27 @@ func ConfigureResponseFormat(ctx context.Context, opts *llm.ChatCompletionOption
 		return nil
 	}
 
-	jsonFormat := openai.ResponseFormatJSONSchemaParam{}
-
-	if opts.ResponseSchema != nil {
-		jsonFormat.JSONSchema = openai.ResponseFormatJSONSchemaJSONSchemaParam{
-			Name:        opts.ResponseSchema.Name(),
-			Description: openai.Opt(opts.ResponseSchema.Description()),
-			Schema:      opts.ResponseSchema.Schema(),
-			Strict:      openai.Bool(true),
+	// Without a schema, OpenAI's json_schema format is invalid (a name is
+	// required): fall back to the plain JSON mode.
+	if opts.ResponseSchema == nil {
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		}
+		return nil
+	}
+
+	jsonSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
+		Name:   opts.ResponseSchema.Name(),
+		Schema: opts.ResponseSchema.Schema(),
+		Strict: openai.Bool(llm.IsStrictResponseSchema(opts.ResponseSchema)),
+	}
+	if desc := opts.ResponseSchema.Description(); desc != "" {
+		jsonSchema.Description = openai.Opt(desc)
 	}
 
 	params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
 		OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
-			JSONSchema: jsonFormat.JSONSchema,
+			JSONSchema: jsonSchema,
 		},
 	}
 

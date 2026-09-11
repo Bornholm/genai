@@ -341,12 +341,12 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		return nil, errors.WithStack(err)
 	}
 
-	temperature := float32(opts.Temperature)
-
 	req := openrouter.ChatCompletionRequest{
-		Model:       c.model,
-		Temperature: temperature,
-		Usage:       &openrouter.IncludeUsage{Include: true},
+		Model: c.model,
+		Usage: &openrouter.IncludeUsage{Include: true},
+	}
+	if opts.Temperature != nil {
+		req.Temperature = float32(*opts.Temperature)
 	}
 
 	// Configure reasoning if requested
@@ -364,7 +364,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 				Name:        opts.ResponseSchema.Name(),
 				Description: opts.ResponseSchema.Description(),
 				Schema:      jsonMarshaller{opts.ResponseSchema.Schema()},
-				Strict:      true,
+				Strict:      llm.IsStrictResponseSchema(opts.ResponseSchema),
 			}
 		}
 
@@ -512,14 +512,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		return nil, errors.WithStack(err)
 	}
 
-	temperature := float32(opts.Temperature)
-
 	req := openrouter.ChatCompletionRequest{
 		Model:         c.model,
-		Temperature:   temperature,
 		Stream:        true, // Enable streaming
 		StreamOptions: &openrouter.StreamOptions{IncludeUsage: true},
 		Usage:         &openrouter.IncludeUsage{Include: true},
+	}
+	if opts.Temperature != nil {
+		req.Temperature = float32(*opts.Temperature)
 	}
 
 	// Configure reasoning if requested
@@ -537,7 +537,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				Name:        opts.ResponseSchema.Name(),
 				Description: opts.ResponseSchema.Description(),
 				Schema:      jsonMarshaller{opts.ResponseSchema.Schema()},
-				Strict:      true,
+				Strict:      llm.IsStrictResponseSchema(opts.ResponseSchema),
 			}
 		}
 
