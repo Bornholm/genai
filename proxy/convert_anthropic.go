@@ -97,12 +97,21 @@ func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts
 		opts = append(opts, llm.WithTemperature(*req.Temperature))
 	}
 
-	if len(req.StopSequences) > 0 || req.TopP != nil || req.TopK != nil {
-		slog.Debug("ignoring unsupported anthropic request fields",
-			slog.Any("stop_sequences", req.StopSequences),
-			slog.Any("top_p", req.TopP),
-			slog.Any("top_k", req.TopK),
-		)
+	// top_p and stop_sequences have direct OpenAI equivalents and travel as
+	// extra fields. top_k has none: OpenAI rejects unknown arguments, so it is
+	// dropped rather than risk a 400 on every request.
+	extra := map[string]any{}
+	if req.TopP != nil {
+		extra["top_p"] = *req.TopP
+	}
+	if len(req.StopSequences) > 0 {
+		extra["stop"] = req.StopSequences
+	}
+	if len(extra) > 0 {
+		opts = append(opts, llm.WithExtraFields(extra))
+	}
+	if req.TopK != nil {
+		slog.Debug("ignoring unsupported anthropic request field", slog.Int("top_k", *req.TopK))
 	}
 
 	if len(req.Tools) > 0 {

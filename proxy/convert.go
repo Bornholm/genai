@@ -20,16 +20,19 @@ import (
 
 // openAIChatRequest mirrors the OpenAI /v1/chat/completions request body.
 type openAIChatRequest struct {
-	Model           string             `json:"model"`
-	Messages        []openAIMessage    `json:"messages"`
-	Tools           []openAITool       `json:"tools,omitempty"`
-	ToolChoice      any                `json:"tool_choice,omitempty"`
-	Temperature     *float64           `json:"temperature,omitempty"`
-	MaxTokens       *int               `json:"max_tokens,omitempty"`
-	Stream          bool               `json:"stream"`
-	Seed            *int               `json:"seed,omitempty"`
-	ResponseFmt     *openAIResponseFmt `json:"response_format,omitempty"`
-	ReasoningEffort string             `json:"reasoning_effort,omitempty"` // e.g. "low","medium","high"
+	Model       string          `json:"model"`
+	Messages    []openAIMessage `json:"messages"`
+	Tools       []openAITool    `json:"tools,omitempty"`
+	ToolChoice  any             `json:"tool_choice,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	// MaxCompletionTokens is the current name of max_tokens; it wins when both
+	// are given, as it does at OpenAI.
+	MaxCompletionTokens *int               `json:"max_completion_tokens,omitempty"`
+	Stream              bool               `json:"stream"`
+	Seed                *int               `json:"seed,omitempty"`
+	ResponseFmt         *openAIResponseFmt `json:"response_format,omitempty"`
+	ReasoningEffort     string             `json:"reasoning_effort,omitempty"` // e.g. "low","medium","high"
 }
 
 // handledRequestFields lists the request keys ParseChatCompletionRequest maps to
@@ -38,15 +41,16 @@ type openAIChatRequest struct {
 // struct does not model — parallel_tool_calls, top_p, stop, frequency_penalty,
 // presence_penalty, user… — are not silently dropped on the way to the provider.
 var handledRequestFields = map[string]struct{}{
-	"model":            {},
-	"messages":         {},
-	"tools":            {},
-	"temperature":      {},
-	"max_tokens":       {},
-	"stream":           {},
-	"seed":             {},
-	"response_format":  {},
-	"reasoning_effort": {},
+	"model":                 {},
+	"messages":              {},
+	"tools":                 {},
+	"temperature":           {},
+	"max_tokens":            {},
+	"max_completion_tokens": {},
+	"stream":                {},
+	"seed":                  {},
+	"response_format":       {},
+	"reasoning_effort":      {},
 
 	// Owned by the provider layer: the OpenAI SDK sets stream_options itself
 	// (include_usage) and overriding it here would break usage tracking.
@@ -82,7 +86,24 @@ func passthroughRequestFields(body json.RawMessage) map[string]any {
 }
 
 type openAIResponseFmt struct {
-	Type string `json:"type"` // "text" | "json_object" | "json_schema"
+	Type       string            `json:"type"` // "text" | "json_object" | "json_schema"
+	JSONSchema *openAIJSONSchema `json:"json_schema,omitempty"`
+}
+
+// openAIJSONSchema mirrors response_format.json_schema.
+type openAIJSONSchema struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Schema      any    `json:"schema,omitempty"`
+	Strict      *bool  `json:"strict,omitempty"`
+}
+
+// toLLMResponseSchema converts the wire json_schema block into an
+// llm.ResponseSchema, honouring the client's strict flag (OpenAI defaults it
+// to false).
+func (js *openAIJSONSchema) toLLMResponseSchema() llm.ResponseSchema {
+	strict := js.Strict != nil && *js.Strict
+	return llm.NewResponseSchema(js.Name, js.Description, js.Schema).WithStrict(strict)
 }
 
 type openAIMessage struct {
@@ -294,7 +315,10 @@ func ParseChatCompletionRequest(body json.RawMessage) (model string, stream bool
 	if req.Temperature != nil {
 		opts = append(opts, llm.WithTemperature(*req.Temperature))
 	}
-	if req.MaxTokens != nil {
+	switch {
+	case req.MaxCompletionTokens != nil:
+		opts = append(opts, llm.WithMaxCompletionTokens(*req.MaxCompletionTokens))
+	case req.MaxTokens != nil:
 		opts = append(opts, llm.WithMaxCompletionTokens(*req.MaxTokens))
 	}
 	if req.Seed != nil {
@@ -310,6 +334,11 @@ func ParseChatCompletionRequest(body json.RawMessage) (model string, stream bool
 		switch req.ResponseFmt.Type {
 		case "json_object":
 			opts = append(opts, llm.WithResponseFormat(llm.ResponseFormatJSON))
+		case "json_schema":
+			if req.ResponseFmt.JSONSchema == nil {
+				return "", false, nil, errors.New("response_format.json_schema is required when type is json_schema")
+			}
+			opts = append(opts, llm.WithJSONResponse(req.ResponseFmt.JSONSchema.toLLMResponseSchema()))
 		}
 	}
 

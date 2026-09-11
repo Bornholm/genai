@@ -81,7 +81,7 @@ func TestParseMessagesRequest_Basic(t *testing.T) {
 	if compiled.MaxCompletionTokens == nil || *compiled.MaxCompletionTokens != 1024 {
 		t.Errorf("max completion tokens = %v, want 1024", compiled.MaxCompletionTokens)
 	}
-	if compiled.Temperature != 0.5 {
+	if compiled.Temperature == nil || *compiled.Temperature != 0.5 {
 		t.Errorf("temperature = %v, want 0.5", compiled.Temperature)
 	}
 }
