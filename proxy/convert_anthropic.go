@@ -165,8 +165,8 @@ func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts
 
 // ConvertAnthropicMessagesJSON converts a JSON array of Anthropic Messages
 // API turns into genai's internal []llm.Message representation. The "system"
-// prompt (if any) is expected to be carried separately and is not handled
-// here.
+// prompt (if any) is expected to be carried separately, by
+// ConvertAnthropicSystemJSON.
 func ConvertAnthropicMessagesJSON(messagesJSON json.RawMessage) ([]llm.Message, error) {
 	var messages []anthropicMessage
 	if err := json.Unmarshal(messagesJSON, &messages); err != nil {
@@ -174,6 +174,32 @@ func ConvertAnthropicMessagesJSON(messagesJSON json.RawMessage) ([]llm.Message, 
 	}
 
 	return convertAnthropicMessages(nil, messages)
+}
+
+// ConvertAnthropicSystemJSON converts the top-level "system" field of an
+// Anthropic Messages request into system messages. It is the counterpart of
+// ConvertAnthropicMessagesJSON, which converts the conversation turns and
+// leaves the system prompt to this function.
+//
+// It exists for callers that rebuild the messages of a request themselves,
+// after rewriting them: ParseMessagesRequest handles both halves at once, but a
+// caller that goes through ConvertAnthropicMessagesJSON has to convert the
+// system prompt too, or drop it.
+//
+// systemJSON is the raw value of the field, either a string or an array of text
+// blocks that may each carry a cache_control breakpoint. A nil or empty value
+// yields no message, since the field is optional.
+func ConvertAnthropicSystemJSON(systemJSON json.RawMessage) ([]llm.Message, error) {
+	if len(systemJSON) == 0 {
+		return nil, nil
+	}
+
+	var system any
+	if err := json.Unmarshal(systemJSON, &system); err != nil {
+		return nil, errors.Wrap(err, "could not unmarshal system prompt")
+	}
+
+	return convertAnthropicSystem(system)
 }
 
 // convertAnthropicMessages converts the system prompt and conversation

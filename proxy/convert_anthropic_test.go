@@ -580,3 +580,132 @@ func TestEstimateTokenCount_Image(t *testing.T) {
 		t.Errorf("image should add at least %d tokens: without=%d, with=%d", estimatedTokensPerImage, withoutCount, withCount)
 	}
 }
+
+func TestConvertAnthropicSystemJSON_String(t *testing.T) {
+	messages, err := ConvertAnthropicSystemJSON(json.RawMessage(`"You are Claude."`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %d, want 1", len(messages))
+	}
+	if messages[0].Role() != llm.RoleSystem {
+		t.Errorf("role = %q, want system", messages[0].Role())
+	}
+	if messages[0].Content() != "You are Claude." {
+		t.Errorf("content = %q", messages[0].Content())
+	}
+}
+
+func TestConvertAnthropicSystemJSON_BlocksWithCacheControl(t *testing.T) {
+	messages, err := ConvertAnthropicSystemJSON(json.RawMessage(`[
+		{"type": "text", "text": "first"},
+		{"type": "text", "text": "second", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+	]`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(messages))
+	}
+	if messages[0].Content() != "first" || messages[1].Content() != "second" {
+		t.Fatalf("contents = (%q, %q)", messages[0].Content(), messages[1].Content())
+	}
+
+	ccMsg, ok := messages[1].(llm.CacheControlMessage)
+	if !ok {
+		t.Fatal("system message should implement CacheControlMessage")
+	}
+	cc := ccMsg.CacheControl()
+	if cc == nil || cc.Type != "ephemeral" {
+		t.Fatalf("cache control = %+v, want ephemeral", cc)
+	}
+	if cc.TTL == nil || *cc.TTL != "1h" {
+		t.Errorf("cache control ttl = %v, want 1h", cc.TTL)
+	}
+
+	if first, ok := messages[0].(llm.CacheControlMessage); ok && first.CacheControl() != nil {
+		t.Errorf("first block has no cache_control, got %+v", first.CacheControl())
+	}
+}
+
+// The field is optional, and a caller reading it off a request body gets
+// nothing at all when it is absent.
+func TestConvertAnthropicSystemJSON_Absent(t *testing.T) {
+	for name, raw := range map[string]json.RawMessage{
+		"nil":          nil,
+		"empty":        json.RawMessage(``),
+		"null":         json.RawMessage(`null`),
+		"empty string": json.RawMessage(`""`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			messages, err := ConvertAnthropicSystemJSON(raw)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(messages) != 0 {
+				t.Errorf("messages = %d, want 0", len(messages))
+			}
+		})
+	}
+}
+
+func TestConvertAnthropicSystemJSON_Errors(t *testing.T) {
+	for name, raw := range map[string]json.RawMessage{
+		"malformed":        json.RawMessage(`{`),
+		"unsupported type": json.RawMessage(`42`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ConvertAnthropicSystemJSON(raw); err == nil {
+				t.Error("expected an error, got none")
+			}
+		})
+	}
+}
+
+// ParseMessagesRequest and ConvertAnthropicSystemJSON must agree, or a rewritten
+// request would reach the provider with a different system prompt than the same
+// request left untouched.
+func TestConvertAnthropicSystemJSON_MatchesParseMessagesRequest(t *testing.T) {
+	body := json.RawMessage(`{
+		"model": "m",
+		"max_tokens": 100,
+		"system": [
+			{"type": "text", "text": "You are Claude.", "cache_control": {"type": "ephemeral"}}
+		],
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`)
+
+	_, _, opts, err := ParseMessagesRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	fromParse := llm.NewChatCompletionOptions(opts...).Messages[0]
+
+	var envelope struct {
+		System json.RawMessage `json:"system"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	fromConvert, err := ConvertAnthropicSystemJSON(envelope.System)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fromConvert) != 1 {
+		t.Fatalf("messages = %d, want 1", len(fromConvert))
+	}
+
+	if fromParse.Role() != fromConvert[0].Role() || fromParse.Content() != fromConvert[0].Content() {
+		t.Errorf("(%q, %q) != (%q, %q)", fromParse.Role(), fromParse.Content(), fromConvert[0].Role(), fromConvert[0].Content())
+	}
+
+	parseCC, _ := fromParse.(llm.CacheControlMessage)
+	convertCC, _ := fromConvert[0].(llm.CacheControlMessage)
+	if parseCC == nil || convertCC == nil {
+		t.Fatal("both messages should implement CacheControlMessage")
+	}
+	if parseCC.CacheControl().Type != convertCC.CacheControl().Type {
+		t.Errorf("cache control %+v != %+v", parseCC.CacheControl(), convertCC.CacheControl())
+	}
+}
