@@ -418,13 +418,13 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 	out := make([]llm.Message, 0, len(msgs))
 
 	for _, m := range msgs {
-		switch m.Role {
-		case "tool":
+		switch normalizeRole(m.Role) {
+		case llm.RoleTool:
 			content := extractTextContent(m.Content)
 			msg := llm.NewToolMessage(m.ToolCallID, llm.NewToolResult(content))
 			out = append(out, msg)
 
-		case "assistant":
+		case llm.RoleAssistant:
 			content := extractTextContent(m.Content)
 			details := toLLMReasoningDetails(m.ReasoningDetails)
 			hasReasoning := m.ReasoningContent != "" || len(details) > 0
@@ -445,7 +445,7 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 			}
 
 		default:
-			role := llm.Role(m.Role)
+			role := normalizeRole(m.Role)
 			text, attachments, cacheControl, err := extractContentParts(m.Content)
 			if err != nil {
 				return nil, errors.Wrapf(err, "could not convert content parts for role %s", m.Role)
@@ -1168,4 +1168,17 @@ func FormatModelsResponse(models []ModelInfo) any {
 		Object: "list",
 		Data:   data,
 	}
+}
+
+// normalizeRole maps a wire-level role name to its llm.Role equivalent.
+//
+// OpenAI clients increasingly send "developer" instead of "system" for their
+// instruction messages. Providers only know the roles declared in llm, so the
+// alias is resolved here, at the proxy boundary, rather than in each provider.
+func normalizeRole(role string) llm.Role {
+	if role == "developer" {
+		return llm.RoleSystem
+	}
+
+	return llm.Role(role)
 }

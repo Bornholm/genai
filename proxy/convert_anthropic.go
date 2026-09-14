@@ -232,7 +232,7 @@ func convertAnthropicMessages(system any, messages []anthropicMessage) ([]llm.Me
 			if err != nil {
 				return nil, errors.Wrapf(err, "could not convert content for role %s", m.Role)
 			}
-			out = append(out, newMessageWithParts(llm.Role(m.Role), text, attachments, cacheControl))
+			out = append(out, newMessageWithParts(normalizeRole(m.Role), text, attachments, cacheControl))
 		}
 	}
 

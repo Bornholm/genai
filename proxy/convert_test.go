@@ -239,3 +239,44 @@ func TestFormatModelsResponse(t *testing.T) {
 		t.Errorf("id = %v", entry["id"])
 	}
 }
+
+func TestConvertOpenAIMessagesJSON_DeveloperRole(t *testing.T) {
+	messagesJSON := json.RawMessage(`[
+		{"role": "developer", "content": "You are helpful."},
+		{"role": "user", "content": "Hello"}
+	]`)
+
+	msgs, err := ConvertOpenAIMessagesJSON(messagesJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2", len(msgs))
+	}
+	if msgs[0].Role() != llm.RoleSystem {
+		t.Errorf("first message role = %q, want system", msgs[0].Role())
+	}
+	if msgs[0].Content() != "You are helpful." {
+		t.Errorf("first message content = %q, want %q", msgs[0].Content(), "You are helpful.")
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_DeveloperRoleWithContentParts(t *testing.T) {
+	messagesJSON := json.RawMessage(`[
+		{"role": "developer", "content": [{"type": "text", "text": "Be brief."}]}
+	]`)
+
+	msgs, err := ConvertOpenAIMessagesJSON(messagesJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want 1", len(msgs))
+	}
+	if msgs[0].Role() != llm.RoleSystem {
+		t.Errorf("role = %q, want system", msgs[0].Role())
+	}
+	if msgs[0].Content() != "Be brief." {
+		t.Errorf("content = %q, want %q", msgs[0].Content(), "Be brief.")
+	}
+}
