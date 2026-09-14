@@ -49,7 +49,7 @@ func configureMistralMaxTokens(ctx context.Context, opts *llm.ChatCompletionOpti
 	if opts.MaxCompletionTokens == nil {
 		return nil
 	}
-	params.WithExtraFields(map[string]any{
+	genai.MergeExtraFields(params, map[string]any{
 		"max_tokens": *opts.MaxCompletionTokens,
 	})
 	return nil
@@ -60,7 +60,7 @@ func configureRandomSeed(ctx context.Context, opts *llm.ChatCompletionOptions, p
 		return nil
 	}
 
-	params.WithExtraFields(map[string]any{
+	genai.MergeExtraFields(params, map[string]any{
 		"random_seed": *opts.Seed,
 	})
 	return nil
@@ -82,7 +82,7 @@ func configurePromptMode(ctx context.Context, opts *llm.ChatCompletionOptions, p
 	// If users want to opt out, they would need to set extra_fields manually
 	// For now, we default to "reasoning" for reasoning models
 	if opts.Reasoning != nil {
-		params.WithExtraFields(map[string]any{
+		genai.MergeExtraFields(params, map[string]any{
 			"prompt_mode": string(promptModeReasoning),
 		})
 	}

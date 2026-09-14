@@ -135,7 +135,7 @@ func ConfigureReasoning(ctx context.Context, opts *llm.ChatCompletionOptions, pa
 	}
 
 	if opts.Reasoning.Effort != nil {
-		params.WithExtraFields(map[string]any{
+		MergeExtraFields(params, map[string]any{
 			"reasoning_effort": string(*opts.Reasoning.Effort),
 		})
 	}
@@ -148,20 +148,28 @@ func ConfigureReasoning(ctx context.Context, opts *llm.ChatCompletionOptions, pa
 // configurators (e.g. reasoning_effort) instead of overwriting them, so it must
 // run last in the chain. Caller-provided keys win on conflict.
 func ConfigureExtraFields(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
-	if len(opts.ExtraFields) == 0 {
-		return nil
+	MergeExtraFields(params, opts.ExtraFields)
+	return nil
+}
+
+// MergeExtraFields adds fields to the request body without discarding the ones
+// already set. params.WithExtraFields replaces the whole map rather than adding
+// to it, despite its name, so calling it directly from several configurators
+// silently drops all but the last.
+func MergeExtraFields(params *openai.ChatCompletionNewParams, fields map[string]any) {
+	if len(fields) == 0 {
+		return
 	}
 
 	merged := map[string]any{}
 	for k, v := range params.GetExtraFields() {
 		merged[k] = v
 	}
-	for k, v := range opts.ExtraFields {
+	for k, v := range fields {
 		merged[k] = v
 	}
 
 	params.WithExtraFields(merged)
-	return nil
 }
 
 func ConfigureTools(ctx context.Context, opts *llm.ChatCompletionOptions, params *openai.ChatCompletionNewParams) error {
