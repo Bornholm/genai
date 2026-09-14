@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"syscall"
 
 	"github.com/bornholm/genai/llm"
 )
@@ -88,20 +92,25 @@ func (s *Server) streamChatCompletion(
 
 	tracker := llm.NewStreamingUsageTracker()
 	hadStreamError := false
+	// Once a write to the response fails the SSE stream is unrecoverable:
+	// stop emitting instead of burning the rest of the upstream stream on a
+	// connection nobody reads.
+	writeFailed := false
 
 	tracker.Update(firstChunk)
 	if err := emitter.EmitFirst(w, firstChunk); err != nil {
-		slog.ErrorContext(ctx, "could not emit first stream chunk", slog.Any("error", err))
+		logStreamWriteError(ctx, "could not emit first stream chunk", err)
+		writeFailed = true
 	}
 	flush()
 
-	if !firstChunk.IsComplete() {
+	if !writeFailed && !firstChunk.IsComplete() {
 		for chunk := range chunks {
 			if chunk.Error() != nil {
 				slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
 				// Headers already sent; forward the error as an event.
 				if err := emitter.EmitError(w, chunk.Error()); err != nil {
-					slog.ErrorContext(ctx, "could not emit stream error", slog.Any("error", err))
+					logStreamWriteError(ctx, "could not emit stream error", err)
 				}
 				flush()
 				hadStreamError = true
@@ -110,8 +119,9 @@ func (s *Server) streamChatCompletion(
 
 			tracker.Update(chunk)
 			if err := emitter.Emit(w, chunk); err != nil {
-				slog.ErrorContext(ctx, "could not emit stream chunk", slog.Any("error", err))
-				continue
+				logStreamWriteError(ctx, "could not emit stream chunk", err)
+				writeFailed = true
+				break
 			}
 			flush()
 
@@ -126,10 +136,15 @@ func (s *Server) streamChatCompletion(
 		return
 	}
 
-	if err := emitter.Finalize(w, tracker.Usage()); err != nil {
-		slog.ErrorContext(ctx, "could not finalize stream", slog.Any("error", err))
+	// A client that went away still consumed whatever the provider produced
+	// before it did, so usage is reported below; only the closing events are
+	// skipped, since writing them would fail again.
+	if !writeFailed {
+		if err := emitter.Finalize(w, tracker.Usage()); err != nil {
+			logStreamWriteError(ctx, "could not finalize stream", err)
+		}
+		flush()
 	}
-	flush()
 
 	usage := tracker.Usage()
 	streamTokensUsed := &TokenUsage{
@@ -155,4 +170,31 @@ func (s *Server) streamChatCompletion(
 	if err := s.chain.RunPostResponse(ctx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
 	}
+}
+
+// logStreamWriteError reports a failed write to the SSE response. A client
+// hanging up mid-stream — a closed tab, an aborted request, a reverse proxy
+// timing out — is ordinary traffic rather than a server fault, so it is logged
+// at debug level and without the stack trace.
+func logStreamWriteError(ctx context.Context, msg string, err error) {
+	if isClientGone(ctx, err) {
+		slog.DebugContext(ctx, msg+": client went away", slog.String("error", err.Error()))
+		return
+	}
+	slog.ErrorContext(ctx, msg, slog.Any("error", err))
+}
+
+// isClientGone reports whether err means the HTTP client is no longer there to
+// read the response.
+func isClientGone(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, context.Canceled)
 }
