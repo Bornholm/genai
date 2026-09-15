@@ -274,13 +274,14 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 
 // Usage returns the current usage as a ChatCompletionUsage
 func (t *StreamingUsageTracker) Usage() ChatCompletionUsage {
+	var usage *BaseChatCompletionUsage
 	if t.cost != nil {
-		return NewChatCompletionUsageWithCost(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, *t.cost, t.costCurrency)
+		usage = NewChatCompletionUsageWithCost(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, *t.cost, t.costCurrency)
+	} else {
+		usage = NewChatCompletionUsageWithCache(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens)
 	}
-	if t.cacheCreationTokens > 0 {
-		return NewChatCompletionUsageWithCacheCreation(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, t.cacheCreationTokens)
-	}
-	return NewChatCompletionUsageWithCache(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens)
+	usage.cacheCreationTokens = t.cacheCreationTokens
+	return usage
 }
 
 // NewStreamingUsageTracker creates a new streaming usage tracker

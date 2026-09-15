@@ -26,7 +26,7 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			return
 		}
 		if n := len(messages); n > 0 && messages[n-1].Role == role {
-			messages[n-1].Content = append(messages[n-1].Content, blocks...)
+			messages[n-1].Content = orderTurn(role, append(messages[n-1].Content, blocks...))
 			return
 		}
 		messages = append(messages, anthropicsdk.MessageParam{Role: role, Content: blocks})
@@ -116,6 +116,35 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 	}
 
 	return system, messages, nil
+}
+
+// orderTurn restores the block order the API expects inside a turn that
+// was assembled from several messages: thinking blocks lead an assistant
+// turn, tool results lead a user turn. The relative order within each group
+// is preserved.
+func orderTurn(role anthropicsdk.MessageParamRole, blocks []anthropicsdk.ContentBlockParamUnion) []anthropicsdk.ContentBlockParamUnion {
+	leads := func(b anthropicsdk.ContentBlockParamUnion) bool {
+		switch role {
+		case anthropicsdk.MessageParamRoleAssistant:
+			return b.OfThinking != nil || b.OfRedactedThinking != nil
+		case anthropicsdk.MessageParamRoleUser:
+			return b.OfToolResult != nil
+		}
+		return false
+	}
+
+	ordered := make([]anthropicsdk.ContentBlockParamUnion, 0, len(blocks))
+	for _, b := range blocks {
+		if leads(b) {
+			ordered = append(ordered, b)
+		}
+	}
+	for _, b := range blocks {
+		if !leads(b) {
+			ordered = append(ordered, b)
+		}
+	}
+	return ordered
 }
 
 // userBlocks builds the content of a user turn: its text first, then one

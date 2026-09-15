@@ -43,12 +43,14 @@ func init() {
 
 // normalizeBaseURL strips a trailing "/v1" from the configured base URL: the
 // SDK appends "v1/messages" itself, and operators used to OpenAI-compatible
-// providers routinely configure "https://api.anthropic.com/v1".
+// providers routinely configure "https://api.anthropic.com/v1". An empty
+// value falls back to the production API: the registry hands Options built
+// by the caller straight to the factory, without merging the defaults.
 func normalizeBaseURL(baseURL string) string {
 	trimmed := strings.TrimRight(baseURL, "/")
 	trimmed = strings.TrimSuffix(trimmed, "/v1")
 	if trimmed == "" {
-		return baseURL
+		return defaultOptions().BaseURL + "/"
 	}
 	return trimmed + "/"
 }

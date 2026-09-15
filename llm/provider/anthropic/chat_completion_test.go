@@ -257,7 +257,7 @@ func TestChatCompletionStream(t *testing.T) {
 	var (
 		content     strings.Builder
 		reasoning   strings.Builder
-		signatures  []string
+		details     []llm.ReasoningDetail
 		toolID      string
 		toolName    string
 		toolIndexes = map[int]bool{}
@@ -276,11 +276,7 @@ func TestChatCompletionStream(t *testing.T) {
 		content.WriteString(delta.Content())
 		if rd, ok := delta.(llm.ReasoningStreamDelta); ok {
 			reasoning.WriteString(rd.Reasoning())
-			for _, d := range rd.ReasoningDetails() {
-				if d.Signature != "" {
-					signatures = append(signatures, d.Signature)
-				}
-			}
+			details = append(details, rd.ReasoningDetails()...)
 		}
 		for _, tc := range delta.ToolCalls() {
 			toolIndexes[tc.Index()] = true
@@ -300,8 +296,24 @@ func TestChatCompletionStream(t *testing.T) {
 	if reasoning.String() != "Let me think." {
 		t.Errorf("unexpected accumulated reasoning: %q", reasoning.String())
 	}
-	if len(signatures) != 1 || signatures[0] != "sig-1" {
-		t.Errorf("signature not streamed: %v", signatures)
+	if len(details) != 1 || details[0].Signature != "sig-1" || details[0].Text != "Let me think." || details[0].Index != 0 {
+		t.Errorf("the streamed detail must carry the full text with its signature: %+v", details)
+	}
+
+	// Replaying what the stream accumulated must yield a complete thinking
+	// block: a signature only verifies the text it was computed over.
+	_, replayed, err := buildMessages([]llm.Message{
+		llm.NewMessage(llm.RoleUser, "Weather in Paris?"),
+		llm.NewReasoningToolCallsMessage(reasoning.String(), details,
+			llm.NewToolCall(toolID, toolName, toolArgs.String())),
+		llm.NewToolMessage(toolID, llm.NewToolResult("Sunny")),
+	})
+	if err != nil {
+		t.Fatalf("could not replay the streamed turn: %+v", err)
+	}
+	thinking := replayed[1].Content[0].OfThinking
+	if thinking == nil || thinking.Thinking != "Let me think." || thinking.Signature != "sig-1" {
+		t.Errorf("replayed thinking block is incomplete: %+v", replayed[1].Content[0])
 	}
 	if toolID != "toolu_1" || toolName != "get_weather" || toolArgs.String() != `{"location":"Paris"}` {
 		t.Errorf("unexpected tool call stream: id=%q name=%q args=%q", toolID, toolName, toolArgs.String())
@@ -343,5 +355,69 @@ func TestChatCompletionStream_Error(t *testing.T) {
 	var httpErr *llm.HTTPError
 	if !errors.As(streamErr, &httpErr) || httpErr.StatusCode != http.StatusInternalServerError {
 		t.Errorf("HTTPError not propagated: %v", streamErr)
+	}
+}
+
+func TestChatCompletionStream_ErrorEventMidStreamIsRetryable(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"error", map[string]any{"type": "error", "error": map[string]any{"type": "overloaded_error", "message": "Overloaded"}}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatalf("ChatCompletionStream error: %+v", err)
+	}
+	var streamErr error
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			streamErr = chunk.Error()
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected an error chunk")
+	}
+	var httpErr *llm.HTTPError
+	if !errors.As(streamErr, &httpErr) {
+		t.Fatalf("HTTPError not propagated: %v", streamErr)
+	}
+	if httpErr.StatusCode == http.StatusOK {
+		t.Errorf("an error event must not inherit the 200 of the stream: %v", streamErr)
+	}
+	if !llm.IsRetryable(streamErr) {
+		t.Errorf("an overloaded upstream must be retryable: %v", streamErr)
+	}
+	if !strings.Contains(httpErr.Body, "Overloaded") {
+		t.Errorf("error body lost: %v", httpErr.Body)
+	}
+}
+
+func TestChatCompletion_RateLimitErrorTypeMidStream(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"error", map[string]any{"type": "error", "error": map[string]any{"type": "rate_limit_error", "message": "slow down"}}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if !errors.Is(err, llm.ErrRateLimit) {
+		t.Errorf("a rate_limit_error event must be reported as ErrRateLimit, got %v", err)
+	}
+}
+
+func TestChatCompletion_EmptyStreamIsNoMessage(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 0}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if !errors.Is(err, llm.ErrNoMessage) {
+		t.Errorf("a stream without content must be ErrNoMessage, got %v", err)
 	}
 }

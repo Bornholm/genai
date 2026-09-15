@@ -195,6 +195,33 @@ func TestBuildParams_Thinking(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit max_tokens is a ceiling: the budget is clamped under it", func(t *testing.T) {
+		budget := 6000
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithMaxCompletionTokens(3000),
+			llm.WithReasoning(&llm.ReasoningOptions{MaxTokens: &budget}),
+		)
+		if body["max_tokens"] != float64(3000) {
+			t.Errorf("the caller's max_tokens must be respected, got %v", body["max_tokens"])
+		}
+		thinking, _ := body["thinking"].(map[string]any)
+		if thinking["budget_tokens"] != float64(2999) {
+			t.Errorf("budget must be clamped under max_tokens, got %v", body["thinking"])
+		}
+	})
+
+	t.Run("explicit max_tokens too small for the minimum budget is an error", func(t *testing.T) {
+		_, err := buildParams(llm.NewChatCompletionOptions(
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithMaxCompletionTokens(1000),
+			llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
+		), "claude-sonnet-5", DefaultMaxTokens)
+		if err == nil {
+			t.Fatal("expected an error when max_tokens cannot hold the minimum budget")
+		}
+	})
+
 	t.Run("budget is clamped to the API minimum", func(t *testing.T) {
 		body := marshalParams(t,
 			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
@@ -291,6 +318,46 @@ func TestBuildParams_JSONSchemaOutput(t *testing.T) {
 	}
 }
 
+func TestBuildParams_JSONWithoutSchemaIsRejected(t *testing.T) {
+	_, err := buildParams(llm.NewChatCompletionOptions(
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithResponseFormat(llm.ResponseFormatJSON),
+	), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected an error: the Messages API has no schema-less JSON mode")
+	}
+}
+
+func TestBuildParams_MergedTurnsKeepTheAPIBlockOrder(t *testing.T) {
+	call := llm.NewToolCall("call_1", "get_weather", `{}`)
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		// A plain assistant message followed by a reasoning tool call: the
+		// merged assistant turn must still start with the thinking block.
+		llm.NewMessage(llm.RoleAssistant, "Sure."),
+		llm.NewReasoningToolCallsMessage("", []llm.ReasoningDetail{
+			{Type: llm.ReasoningDetailTypeText, Text: "thinking", Signature: "sig"},
+		}, call),
+		// A user message slipped between the tool call and its result: the
+		// merged user turn must still start with the tool_result.
+		llm.NewMessage(llm.RoleUser, "Hurry up."),
+		llm.NewToolMessage("call_1", llm.NewToolResult("Sunny")),
+	))
+
+	messages := messagesOf(t, body)
+	if len(messages) != 3 {
+		t.Fatalf("expected user/assistant/user, got %v", messages)
+	}
+	assistant := blocksOf(t, messages[1])
+	if len(assistant) != 3 || assistant[0]["type"] != "thinking" || assistant[1]["type"] != "text" || assistant[2]["type"] != "tool_use" {
+		t.Errorf("assistant turn must be [thinking, text, tool_use], got %v", assistant)
+	}
+	user := blocksOf(t, messages[2])
+	if len(user) != 2 || user[0]["type"] != "tool_result" || user[1]["type"] != "text" {
+		t.Errorf("user turn must be [tool_result, text], got %v", user)
+	}
+}
+
 func TestBuildParams_ExtraFields(t *testing.T) {
 	body := marshalParams(t,
 		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
@@ -355,6 +422,7 @@ func TestNormalizeBaseURL(t *testing.T) {
 		"https://api.anthropic.com/":    "https://api.anthropic.com/",
 		"https://api.anthropic.com/v1":  "https://api.anthropic.com/",
 		"https://api.anthropic.com/v1/": "https://api.anthropic.com/",
+		"":                              "https://api.anthropic.com/",
 		"https://proxy.local/anthropic": "https://proxy.local/anthropic/",
 	}
 	for input, expected := range cases {

@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/bornholm/genai/llm"
@@ -33,7 +34,10 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 		params.MaxTokens = int64(*opts.MaxCompletionTokens)
 	}
 
-	thinking := configureThinking(params, opts.Reasoning)
+	thinking, err := configureThinking(params, opts.Reasoning, opts.MaxCompletionTokens != nil)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
 
 	// The API rejects any temperature but the default once thinking is on;
 	// dropping it beats a 400 the caller cannot act on.
@@ -59,8 +63,12 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 	}
 
 	// Structured output is only expressible with a schema: the Messages API
-	// has no schema-less "json mode".
-	if opts.ResponseFormat == llm.ResponseFormatJSON && opts.ResponseSchema != nil {
+	// has no schema-less "json mode". Failing loudly beats handing free text
+	// to a caller that will try to parse it.
+	if opts.ResponseFormat == llm.ResponseFormatJSON {
+		if opts.ResponseSchema == nil {
+			return nil, llm.NewValidationError("response_schema", "the anthropic provider requires a response schema for the JSON response format")
+		}
 		schema, err := toMap(opts.ResponseSchema.Schema())
 		if err != nil {
 			return nil, errors.Wrap(err, "could not convert response schema")
@@ -85,19 +93,22 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 // configureThinking maps llm.ReasoningOptions to the thinking configuration
 // and reports whether thinking ended up enabled.
 //
-// An explicit MaxTokens becomes budget_tokens verbatim. An effort level is
-// converted to a share of max_tokens. Either way the budget is clamped to
-// the API minimum and max_tokens is raised when it would not leave room for
-// the answer, since the API requires budget_tokens < max_tokens.
-func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.ReasoningOptions) bool {
+// An explicit MaxTokens becomes budget_tokens verbatim; an effort level is
+// converted to a share of max_tokens. The API requires
+// minThinkingBudget <= budget_tokens < max_tokens. When the caller chose
+// max_tokens, that ceiling is respected and the budget is clamped under it,
+// with an error when the minimum cannot fit; when max_tokens is only the
+// provider default, it is raised instead so the budget the caller asked for
+// is honoured.
+func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.ReasoningOptions, explicitMaxTokens bool) (bool, error) {
 	if reasoning == nil {
-		return false
+		return false, nil
 	}
 	if reasoning.Enabled != nil && !*reasoning.Enabled {
-		return false
+		return false, nil
 	}
 	if reasoning.Effort != nil && *reasoning.Effort == llm.ReasoningEffortNone {
-		return false
+		return false, nil
 	}
 
 	var budget int64
@@ -113,19 +124,27 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 	case reasoning.Enabled != nil && *reasoning.Enabled:
 		budget = int64(float64(params.MaxTokens) * effortRatios[llm.ReasoningEffortMedium])
 	default:
-		return false
+		return false, nil
 	}
 
 	if budget < minThinkingBudget {
 		budget = minThinkingBudget
 	}
 	if params.MaxTokens <= budget {
-		params.MaxTokens = budget + DefaultMaxTokens
+		if explicitMaxTokens {
+			budget = params.MaxTokens - 1
+			if budget < minThinkingBudget {
+				return false, llm.NewValidationError("max_completion_tokens",
+					fmt.Sprintf("max completion tokens must exceed %d to leave room for reasoning", minThinkingBudget))
+			}
+		} else {
+			params.MaxTokens = budget + DefaultMaxTokens
+		}
 	}
 
 	params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
 
-	return true
+	return true, nil
 }
 
 // toolParam converts an llm.Tool to a Messages API tool definition. The

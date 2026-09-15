@@ -2,8 +2,10 @@ package anthropic
 
 import (
 	"context"
+	"net/http"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/shared"
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
 )
@@ -44,6 +46,14 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	}
 	if err := stream.Err(); err != nil {
 		return nil, errors.WithStack(mapError(err))
+	}
+
+	// A stream that ended cleanly without a single content block is the
+	// Messages API counterpart of an empty choices list: report it as
+	// ErrNoMessage, which the retry wrapper knows how to handle, rather than
+	// as a plausible-looking empty assistant turn.
+	if len(message.Content) == 0 {
+		return nil, errors.WithStack(llm.ErrNoMessage)
 	}
 
 	return fromMessage(&message, excludeReasoning(opts)), nil
@@ -87,6 +97,12 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 }
 
 // streamEmitter translates Messages API events into genai stream chunks.
+//
+// Thinking text is streamed incrementally through Reasoning() for display,
+// and the complete block (text plus signature) is emitted once as a
+// ReasoningDetail when the block closes: a signature only verifies the exact
+// text it was computed over, so a detail carrying one without the other
+// cannot be replayed.
 type streamEmitter struct {
 	chunks           chan<- llm.StreamChunk
 	excludeReasoning bool
@@ -96,10 +112,21 @@ type streamEmitter struct {
 	toolIndexes map[int64]int
 	toolCount   int
 
+	// thinking buffers the open thinking blocks by content block index.
+	thinking map[int64]*thinkingBlock
+	// detailCount numbers the reasoning details in emission order, the
+	// same convention fromMessage uses.
+	detailCount int
+
 	inputTokens         int64
 	outputTokens        int64
 	cacheReadTokens     int64
 	cacheCreationTokens int64
+}
+
+type thinkingBlock struct {
+	text      string
+	signature string
 }
 
 func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *streamEmitter {
@@ -107,7 +134,15 @@ func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *str
 		chunks:           chunks,
 		excludeReasoning: excludeReasoning,
 		toolIndexes:      map[int64]int{},
+		thinking:         map[int64]*thinkingBlock{},
 	}
+}
+
+// emitDetail sends one complete reasoning detail, numbered in emission order.
+func (e *streamEmitter) emitDetail(detail llm.ReasoningDetail) {
+	detail.Index = e.detailCount
+	e.detailCount++
+	e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", "", []llm.ReasoningDetail{detail}))
 }
 
 func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
@@ -141,16 +176,32 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			e.chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "",
 				llm.NewToolCallDelta(index, block.ID, block.Name, ""),
 			))
+		case "thinking":
+			e.thinking[event.Index] = &thinkingBlock{text: block.Thinking, signature: block.Signature}
 		case "redacted_thinking":
 			if e.excludeReasoning {
 				return
 			}
-			e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", "", []llm.ReasoningDetail{{
-				Type:  llm.ReasoningDetailTypeEncrypted,
-				Data:  block.Data,
-				Index: int(event.Index),
-			}}))
+			e.emitDetail(llm.ReasoningDetail{
+				Type: llm.ReasoningDetailTypeEncrypted,
+				Data: block.Data,
+			})
 		}
+
+	case "content_block_stop":
+		block, open := e.thinking[event.Index]
+		if !open {
+			return
+		}
+		delete(e.thinking, event.Index)
+		if e.excludeReasoning {
+			return
+		}
+		e.emitDetail(llm.ReasoningDetail{
+			Type:      llm.ReasoningDetailTypeText,
+			Text:      block.text,
+			Signature: block.signature,
+		})
 
 	case "content_block_delta":
 		delta := event.Delta
@@ -166,19 +217,17 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 				llm.NewToolCallDelta(index, "", "", delta.PartialJSON),
 			))
 		case "thinking_delta":
+			if block, open := e.thinking[event.Index]; open {
+				block.text += delta.Thinking
+			}
 			if e.excludeReasoning || delta.Thinking == "" {
 				return
 			}
 			e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", delta.Thinking, nil))
 		case "signature_delta":
-			if e.excludeReasoning || delta.Signature == "" {
-				return
+			if block, open := e.thinking[event.Index]; open {
+				block.signature += delta.Signature
 			}
-			e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", "", []llm.ReasoningDetail{{
-				Type:      llm.ReasoningDetailTypeText,
-				Signature: delta.Signature,
-				Index:     int(event.Index),
-			}}))
 		}
 	}
 }
@@ -266,16 +315,31 @@ func excludeReasoning(opts *llm.ChatCompletionOptions) bool {
 
 // mapError surfaces the upstream HTTP status through llm.HTTPError so the
 // retry and rate limit machinery can act on it.
+//
+// An error event received in the middle of a stream (an overloaded_error,
+// typically) inherits the 200 of the response that carried it; such an
+// error is reported as a 503 so it stays retryable, and a rate limit error
+// type is reported as a 429 whatever the transport status.
 func mapError(err error) error {
 	var apiErr *anthropicsdk.Error
-	if errors.As(err, &apiErr) {
-		body := apiErr.RawJSON()
-		if body == "" {
-			body = apiErr.Error()
-		}
-		return llm.RateLimitError(apiErr.StatusCode, body)
+	if !errors.As(err, &apiErr) {
+		return err
 	}
-	return err
+
+	body := apiErr.RawJSON()
+	if body == "" {
+		body = apiErr.Error()
+	}
+
+	status := apiErr.StatusCode
+	switch {
+	case apiErr.Type() == shared.ErrorTypeRateLimitError:
+		status = http.StatusTooManyRequests
+	case status < http.StatusBadRequest:
+		status = http.StatusServiceUnavailable
+	}
+
+	return llm.RateLimitError(status, body)
 }
 
 func NewChatCompletionClient(client anthropicsdk.Client, model string, maxTokens int64) *ChatCompletionClient {
