@@ -12,6 +12,13 @@ import (
 // minThinkingBudget is the smallest budget_tokens the Messages API accepts.
 const minThinkingBudget int64 = 1024
 
+// minOutputMargin is the smallest number of tokens kept for the visible
+// answer when a thinking budget has to fit under a caller-chosen max_tokens.
+const minOutputMargin int64 = 1024
+
+// maxTemperature is the upper bound of the Messages API temperature range.
+const maxTemperature = 1.0
+
 // effortRatios maps an OpenAI-style reasoning effort to the share of
 // max_tokens granted to thinking, as documented on llm.ReasoningEffort.
 var effortRatios = map[llm.ReasoningEffort]float64{
@@ -34,21 +41,27 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 		params.MaxTokens = int64(*opts.MaxCompletionTokens)
 	}
 
-	thinking, err := configureThinking(params, opts.Reasoning, opts.MaxCompletionTokens != nil)
+	thinking, err := configureThinking(params, opts.Reasoning, opts.MaxCompletionTokens != nil, defaultMaxTokens)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	// The API rejects any temperature but the default once thinking is on;
-	// dropping it beats a 400 the caller cannot act on.
+	// dropping it beats a 400 the caller cannot act on. It also caps the
+	// range at 1 where the shared options allow up to 2 (the OpenAI range),
+	// so a value above it is clamped rather than refused upstream.
 	if opts.Temperature != nil && !thinking {
-		params.Temperature = anthropicsdk.Float(*opts.Temperature)
+		params.Temperature = anthropicsdk.Float(min(*opts.Temperature, maxTemperature))
 	}
 
 	if len(opts.Tools) > 0 {
 		tools := make([]anthropicsdk.ToolUnionParam, 0, len(opts.Tools))
 		for _, t := range opts.Tools {
-			tools = append(tools, anthropicsdk.ToolUnionParam{OfTool: toolParam(t)})
+			tool, err := toolParam(t)
+			if err != nil {
+				return nil, errors.Wrapf(err, "invalid tool '%s'", t.Name())
+			}
+			tools = append(tools, anthropicsdk.ToolUnionParam{OfTool: tool})
 		}
 		params.Tools = tools
 
@@ -80,6 +93,9 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	if len(messages) == 0 {
+		return nil, llm.NewValidationError("messages", "at least one non-system message is required")
+	}
 	params.System = system
 	params.Messages = messages
 
@@ -96,11 +112,13 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 // An explicit MaxTokens becomes budget_tokens verbatim; an effort level is
 // converted to a share of max_tokens. The API requires
 // minThinkingBudget <= budget_tokens < max_tokens. When the caller chose
-// max_tokens, that ceiling is respected and the budget is clamped under it,
-// with an error when the minimum cannot fit; when max_tokens is only the
-// provider default, it is raised instead so the budget the caller asked for
-// is honoured.
-func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.ReasoningOptions, explicitMaxTokens bool) (bool, error) {
+// max_tokens, that ceiling is respected: the budget is clamped so that an
+// output margin (a quarter of max_tokens, at least minOutputMargin) stays
+// available for the answer, with an error when margin and minimum budget
+// cannot both fit. When max_tokens is only the provider default, it is
+// raised by that default instead so the budget the caller asked for is
+// honoured.
+func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.ReasoningOptions, explicitMaxTokens bool, defaultMaxTokens int64) (bool, error) {
 	if reasoning == nil {
 		return false, nil
 	}
@@ -130,16 +148,18 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 	if budget < minThinkingBudget {
 		budget = minThinkingBudget
 	}
-	if params.MaxTokens <= budget {
-		if explicitMaxTokens {
-			budget = params.MaxTokens - 1
-			if budget < minThinkingBudget {
-				return false, llm.NewValidationError("max_completion_tokens",
-					fmt.Sprintf("max completion tokens must exceed %d to leave room for reasoning", minThinkingBudget))
-			}
-		} else {
-			params.MaxTokens = budget + DefaultMaxTokens
+
+	if explicitMaxTokens {
+		margin := max(params.MaxTokens/4, minOutputMargin)
+		if budget > params.MaxTokens-margin {
+			budget = params.MaxTokens - margin
 		}
+		if budget < minThinkingBudget {
+			return false, llm.NewValidationError("max_completion_tokens",
+				fmt.Sprintf("max completion tokens must be at least %d to hold a reasoning budget and an answer", minThinkingBudget+minOutputMargin))
+		}
+	} else if params.MaxTokens <= budget {
+		params.MaxTokens = budget + defaultMaxTokens
 	}
 
 	params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)
@@ -151,7 +171,7 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 // JSON schema returned by Parameters() is split into the typed
 // properties/required fields, every other keyword travelling as an extra
 // field so nothing is lost.
-func toolParam(t llm.Tool) *anthropicsdk.ToolParam {
+func toolParam(t llm.Tool) (*anthropicsdk.ToolParam, error) {
 	tool := &anthropicsdk.ToolParam{
 		Name: t.Name(),
 	}
@@ -168,7 +188,11 @@ func toolParam(t llm.Tool) *anthropicsdk.ToolParam {
 		case "properties":
 			schema.Properties = value
 		case "required":
-			schema.Required = toStringSlice(value)
+			required, err := toStringSlice(value)
+			if err != nil {
+				return nil, errors.Wrap(err, "invalid 'required' keyword")
+			}
+			schema.Required = required
 		default:
 			extra[key] = value
 		}
@@ -181,23 +205,30 @@ func toolParam(t llm.Tool) *anthropicsdk.ToolParam {
 	}
 	tool.InputSchema = schema
 
-	return tool
+	return tool, nil
 }
 
-func toStringSlice(value any) []string {
+// toStringSlice decodes a JSON schema "required" array. A malformed entry
+// is an error rather than a silently dropped requirement: the model would
+// otherwise be told a mandatory argument is optional.
+func toStringSlice(value any) ([]string, error) {
 	switch typed := value.(type) {
+	case nil:
+		return nil, nil
 	case []string:
-		return typed
+		return typed, nil
 	case []any:
 		result := make([]string, 0, len(typed))
 		for _, item := range typed {
-			if s, ok := item.(string); ok {
-				result = append(result, s)
+			s, ok := item.(string)
+			if !ok {
+				return nil, errors.Errorf("expected a string, got %T", item)
 			}
+			result = append(result, s)
 		}
-		return result
+		return result, nil
 	}
-	return nil
+	return nil, errors.Errorf("expected an array of strings, got %T", value)
 }
 
 // toMap round-trips an arbitrary schema value through JSON to obtain the

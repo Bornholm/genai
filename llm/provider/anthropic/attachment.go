@@ -19,11 +19,18 @@ func attachmentBlock(attachment llm.Attachment) (anthropicsdk.ContentBlockParamU
 
 	switch attachment.Type() {
 	case llm.AttachmentTypeImage:
+		if !supportedImageMimeTypes[mimeType] {
+			return anthropicsdk.ContentBlockParamUnion{}, errors.Errorf("unsupported image MIME type: %s (supported: image/png, image/jpeg, image/gif, image/webp)", attachment.MimeType())
+		}
 		switch attachment.Source() {
 		case llm.AttachmentSourceBase64:
+			data, err := stripDataURL(attachment.Data())
+			if err != nil {
+				return anthropicsdk.ContentBlockParamUnion{}, err
+			}
 			return anthropicsdk.ContentBlockParamUnion{OfImage: &anthropicsdk.ImageBlockParam{
 				Source: anthropicsdk.ImageBlockParamSourceUnion{OfBase64: &anthropicsdk.Base64ImageSourceParam{
-					Data:      stripDataURL(attachment.Data()),
+					Data:      data,
 					MediaType: anthropicsdk.Base64ImageSourceMediaType(mimeType),
 				}},
 			}}, nil
@@ -40,9 +47,13 @@ func attachmentBlock(attachment llm.Attachment) (anthropicsdk.ContentBlockParamU
 		case mimeType == "application/pdf":
 			switch attachment.Source() {
 			case llm.AttachmentSourceBase64:
+				data, err := stripDataURL(attachment.Data())
+				if err != nil {
+					return anthropicsdk.ContentBlockParamUnion{}, err
+				}
 				return anthropicsdk.ContentBlockParamUnion{OfDocument: &anthropicsdk.DocumentBlockParam{
 					Source: anthropicsdk.DocumentBlockParamSourceUnion{OfBase64: &anthropicsdk.Base64PDFSourceParam{
-						Data: stripDataURL(attachment.Data()),
+						Data: data,
 					}},
 				}}, nil
 			case llm.AttachmentSourceURL:
@@ -57,7 +68,11 @@ func attachmentBlock(attachment llm.Attachment) (anthropicsdk.ContentBlockParamU
 			if attachment.Source() != llm.AttachmentSourceBase64 {
 				return anthropicsdk.ContentBlockParamUnion{}, errors.New("URL-based text documents are not supported; please download and embed the content as base64")
 			}
-			decoded, err := base64.StdEncoding.DecodeString(stripDataURL(attachment.Data()))
+			payload, err := stripDataURL(attachment.Data())
+			if err != nil {
+				return anthropicsdk.ContentBlockParamUnion{}, err
+			}
+			decoded, err := base64.StdEncoding.DecodeString(payload)
 			if err != nil {
 				return anthropicsdk.ContentBlockParamUnion{}, errors.Wrap(err, "could not decode text document")
 			}
@@ -91,14 +106,28 @@ func toolResultBlockContent(attachment llm.Attachment) (anthropicsdk.ToolResultB
 	return anthropicsdk.ToolResultBlockParamContentUnion{}, errors.Errorf("unsupported tool result attachment type '%s'", attachment.Type())
 }
 
-// stripDataURL returns the payload of a "data:<mime>;base64,<payload>" URL, or
-// the input unchanged when it is already a bare base64 string.
-func stripDataURL(data string) string {
+// supportedImageMimeTypes lists the image formats the Messages API accepts.
+var supportedImageMimeTypes = map[string]bool{
+	"image/png":  true,
+	"image/jpeg": true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// stripDataURL returns the payload of a "data:<mime>;base64,<payload>" URL,
+// or the input unchanged when it is already a bare base64 string. A data
+// URL without the base64 marker carries a raw payload the API cannot take
+// as-is, so it is refused rather than forwarded as corrupt bytes.
+func stripDataURL(data string) (string, error) {
 	if !strings.HasPrefix(data, "data:") {
-		return data
+		return data, nil
 	}
-	if _, payload, found := strings.Cut(data, ","); found {
-		return payload
+	header, payload, found := strings.Cut(data, ",")
+	if !found {
+		return "", errors.New("malformed data URL: no payload")
 	}
-	return data
+	if !strings.HasSuffix(header, ";base64") {
+		return "", errors.New("unsupported data URL: only base64-encoded payloads are accepted")
+	}
+	return payload, nil
 }

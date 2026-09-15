@@ -594,6 +594,8 @@ var _ ReasoningChatCompletionResponse = &BaseChatCompletionResponse{}
 type CacheCreationReportingUsage interface {
 	// CacheCreationTokens returns the number of prompt tokens written to the
 	// provider's cache by this request. They are included in PromptTokens.
+	// As with CachedTokens, 0 also stands for "not reported": the method is
+	// carried by BaseChatCompletionUsage and therefore by every provider.
 	CacheCreationTokens() int64
 }
 

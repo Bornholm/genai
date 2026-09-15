@@ -9,27 +9,37 @@ import (
 )
 
 // buildMessages converts genai messages to the Messages API shape: system
-// prompts are hoisted into the dedicated system field, and the rest is
-// folded into strictly alternating user/assistant turns.
+// prompts are hoisted into the dedicated system field, wherever they sit in
+// the conversation, and the rest is folded into strictly alternating
+// user/assistant turns.
 //
 // Folding matters beyond cosmetics: a tool_result must live in the user
 // turn that immediately follows the assistant turn carrying its tool_use,
 // so consecutive tool messages have to share one user turn.
+//
+// A cache hint means "cache everything up to and including this message".
+// Turns being reshuffled by the folding, the breakpoint is placed once the
+// turns are final, on the last block of the turn the message ended up in.
 func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthropicsdk.MessageParam, error) {
 	var (
 		system   []anthropicsdk.TextBlockParam
 		messages []anthropicsdk.MessageParam
+		// cached maps a turn index to the cache hint to set on its last block.
+		cached = map[int]*anthropicsdk.CacheControlEphemeralParam{}
 	)
 
-	add := func(role anthropicsdk.MessageParamRole, blocks []anthropicsdk.ContentBlockParamUnion) {
+	add := func(role anthropicsdk.MessageParamRole, blocks []anthropicsdk.ContentBlockParamUnion, cc *anthropicsdk.CacheControlEphemeralParam) {
 		if len(blocks) == 0 {
 			return
 		}
 		if n := len(messages); n > 0 && messages[n-1].Role == role {
 			messages[n-1].Content = orderTurn(role, append(messages[n-1].Content, blocks...))
-			return
+		} else {
+			messages = append(messages, anthropicsdk.MessageParam{Role: role, Content: blocks})
 		}
-		messages = append(messages, anthropicsdk.MessageParam{Role: role, Content: blocks})
+		if cc != nil {
+			cached[len(messages)-1] = cc
+		}
 	}
 
 	for _, m := range msgs {
@@ -51,8 +61,7 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			if err != nil {
 				return nil, nil, errors.WithStack(err)
 			}
-			applyCacheControl(blocks, cc)
-			add(anthropicsdk.MessageParamRoleUser, blocks)
+			add(anthropicsdk.MessageParamRoleUser, blocks, cc)
 
 		case llm.RoleAssistant:
 			if len(m.Attachments()) > 0 {
@@ -62,8 +71,7 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			if content := m.Content(); content != "" {
 				blocks = append(blocks, anthropicsdk.NewTextBlock(content))
 			}
-			applyCacheControl(blocks, cc)
-			add(anthropicsdk.MessageParamRoleAssistant, blocks)
+			add(anthropicsdk.MessageParamRoleAssistant, blocks, cc)
 
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
@@ -84,8 +92,7 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 				}
 				blocks = append(blocks, anthropicsdk.NewToolUseBlock(tc.ID(), input, tc.Name()))
 			}
-			applyCacheControl(blocks, cc)
-			add(anthropicsdk.MessageParamRoleAssistant, blocks)
+			add(anthropicsdk.MessageParamRoleAssistant, blocks, cc)
 
 		case llm.RoleTool:
 			toolMessage, ok := m.(llm.ToolMessage)
@@ -105,14 +112,15 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 				}
 				result.Content = append(result.Content, part)
 			}
-			if cc != nil {
-				result.CacheControl = *cc
-			}
-			add(anthropicsdk.MessageParamRoleUser, []anthropicsdk.ContentBlockParamUnion{{OfToolResult: &result}})
+			add(anthropicsdk.MessageParamRoleUser, []anthropicsdk.ContentBlockParamUnion{{OfToolResult: &result}}, cc)
 
 		default:
 			return nil, nil, errors.Errorf("unsupported message role '%s'", m.Role())
 		}
+	}
+
+	for turn, cc := range cached {
+		applyCacheControl(messages[turn].Content, cc)
 	}
 
 	return system, messages, nil
@@ -236,7 +244,10 @@ func cacheControl(m llm.Message) *anthropicsdk.CacheControlEphemeralParam {
 
 // applyCacheControl sets the cache breakpoint on the last block of a turn,
 // which is where the API expects it: everything up to and including that
-// block becomes the cached prefix.
+// block becomes the cached prefix. Thinking blocks cannot carry one; a turn
+// made of thinking only (an assistant message with no text) therefore
+// drops the hint, which is harmless: such a turn is never the end of a
+// prefix worth caching on its own.
 func applyCacheControl(blocks []anthropicsdk.ContentBlockParamUnion, cc *anthropicsdk.CacheControlEphemeralParam) {
 	if cc == nil || len(blocks) == 0 {
 		return

@@ -215,8 +215,17 @@ func TestChatCompletion_ExcludeReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ChatCompletion error: %+v", err)
 	}
-	if rr, ok := res.(llm.ReasoningChatCompletionResponse); ok && (rr.Reasoning() != "" || len(rr.ReasoningDetails()) != 0) {
-		t.Errorf("reasoning must be withheld when excluded: %q", rr.Reasoning())
+	rr, ok := res.(llm.ReasoningChatCompletionResponse)
+	if !ok {
+		t.Fatal("response does not implement ReasoningChatCompletionResponse")
+	}
+	if rr.Reasoning() != "" {
+		t.Errorf("plaintext reasoning must be withheld when excluded: %q", rr.Reasoning())
+	}
+	// The signed block must stay on the message: the next turn replays it.
+	rm, ok := res.Message().(llm.ReasoningMessage)
+	if !ok || len(rm.ReasoningDetails()) != 1 || rm.ReasoningDetails()[0].Signature != "sig-1" {
+		t.Errorf("signed thinking must be kept for replay even when excluded: %v", res.Message())
 	}
 	if res.Message().Content() != "Hello, world" {
 		t.Errorf("content lost: %q", res.Message().Content())
@@ -419,5 +428,153 @@ func TestChatCompletion_EmptyStreamIsNoMessage(t *testing.T) {
 	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
 	if !errors.Is(err, llm.ErrNoMessage) {
 		t.Errorf("a stream without content must be ErrNoMessage, got %v", err)
+	}
+}
+
+func TestChatCompletionStream_ExcludeReasoningKeepsSignedBlocks(t *testing.T) {
+	fake := &fakeMessagesAPI{events: scriptedReply()}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(),
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithReasoning(&llm.ReasoningOptions{Exclude: true}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		reasoning strings.Builder
+		details   []llm.ReasoningDetail
+	)
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatal(chunk.Error())
+		}
+		if rd, ok := chunk.Delta().(llm.ReasoningStreamDelta); ok {
+			reasoning.WriteString(rd.Reasoning())
+			details = append(details, rd.ReasoningDetails()...)
+		}
+	}
+	if reasoning.String() != "" {
+		t.Errorf("incremental reasoning must be silenced when excluded: %q", reasoning.String())
+	}
+	if len(details) != 1 || details[0].Text != "Let me think." || details[0].Signature != "sig-1" {
+		t.Errorf("the signed block must still be emitted for replay: %+v", details)
+	}
+}
+
+// parallelToolsReply scripts two tool_use blocks plus a redacted thinking
+// block, the second tool carrying its whole input on content_block_start
+// the way some gateways do.
+func parallelToolsReply() []sseEvent {
+	return []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "redacted_thinking", "data": "opaque"}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 1,
+			"content_block": map[string]any{"type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": map[string]any{}}}},
+		{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 1,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": `{"location":"Paris"}`}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 1}},
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 2,
+			"content_block": map[string]any{"type": "tool_use", "id": "toolu_2", "name": "get_weather", "input": map[string]any{"location": "London"}}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 2}},
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "tool_use", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 20}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}
+}
+
+func TestChatCompletionStream_ParallelToolCallsAndRedactedThinking(t *testing.T) {
+	fake := &fakeMessagesAPI{events: parallelToolsReply()}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[int]*strings.Builder{}
+	ids := map[int]string{}
+	var details []llm.ReasoningDetail
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatal(chunk.Error())
+		}
+		if chunk.IsComplete() {
+			continue
+		}
+		if rd, ok := chunk.Delta().(llm.ReasoningStreamDelta); ok {
+			details = append(details, rd.ReasoningDetails()...)
+		}
+		for _, tc := range chunk.Delta().ToolCalls() {
+			if args[tc.Index()] == nil {
+				args[tc.Index()] = &strings.Builder{}
+			}
+			if tc.ID() != "" {
+				ids[tc.Index()] = tc.ID()
+			}
+			args[tc.Index()].WriteString(tc.ParametersDelta())
+		}
+	}
+	if len(details) != 1 || details[0].Type != llm.ReasoningDetailTypeEncrypted || details[0].Data != "opaque" {
+		t.Errorf("redacted thinking not streamed: %+v", details)
+	}
+	if ids[0] != "toolu_1" || ids[1] != "toolu_2" {
+		t.Errorf("tool calls must be indexed 0 and 1 in order, got %v", ids)
+	}
+	if args[0].String() != `{"location":"Paris"}` {
+		t.Errorf("unexpected first tool arguments: %q", args[0].String())
+	}
+	if args[1].String() != `{"location":"London"}` {
+		t.Errorf("input carried by content_block_start must be surfaced: %q", args[1].String())
+	}
+}
+
+func TestChatCompletion_ParallelToolCallsAndRedactedThinking(t *testing.T) {
+	fake := &fakeMessagesAPI{events: parallelToolsReply()}
+	client := newTestClient(t, fake, "")
+
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolCalls()) != 2 || res.ToolCalls()[1].ID() != "toolu_2" {
+		t.Errorf("expected 2 tool calls, got %v", res.ToolCalls())
+	}
+	rm, ok := res.Message().(llm.ReasoningMessage)
+	if !ok || len(rm.ReasoningDetails()) != 1 || rm.ReasoningDetails()[0].Data != "opaque" {
+		t.Errorf("redacted thinking must be kept on the message: %v", res.Message())
+	}
+	// And it must replay as a redacted_thinking block.
+	_, replayed, err := buildMessages([]llm.Message{
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewReasoningToolCallsMessage("", rm.ReasoningDetails(), res.ToolCalls()...),
+		llm.NewToolMessage("toolu_1", llm.NewToolResult("Sunny")),
+		llm.NewToolMessage("toolu_2", llm.NewToolResult("Rainy")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed[1].Content[0].OfRedactedThinking == nil || len(replayed[2].Content) != 2 {
+		t.Errorf("unexpected replay: %+v", replayed)
+	}
+}
+
+func TestChatCompletion_InvalidRequestMidStreamIsNotRetried(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"error", map[string]any{"type": "error", "error": map[string]any{"type": "invalid_request_error", "message": "bad"}}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	var httpErr *llm.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("an invalid_request_error event must map to 400, got %v", err)
+	}
+	if llm.IsRetryable(err) {
+		t.Error("an invalid request must not be retried")
 	}
 }

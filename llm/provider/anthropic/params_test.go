@@ -171,8 +171,10 @@ func TestBuildParams_Thinking(t *testing.T) {
 			llm.WithTemperature(0.2),
 			llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortHigh)),
 		)
+		// 80 % of 10000 is 8000, clamped so a quarter of max_tokens stays
+		// available for the answer.
 		thinking, _ := body["thinking"].(map[string]any)
-		if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(8000) {
+		if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(7500) {
 			t.Errorf("unexpected thinking config: %v", body["thinking"])
 		}
 		if _, present := body["temperature"]; present {
@@ -205,9 +207,10 @@ func TestBuildParams_Thinking(t *testing.T) {
 		if body["max_tokens"] != float64(3000) {
 			t.Errorf("the caller's max_tokens must be respected, got %v", body["max_tokens"])
 		}
+		// A quarter of 3000 is below the minimum margin of 1024, which wins.
 		thinking, _ := body["thinking"].(map[string]any)
-		if thinking["budget_tokens"] != float64(2999) {
-			t.Errorf("budget must be clamped under max_tokens, got %v", body["thinking"])
+		if thinking["budget_tokens"] != float64(3000-1024) {
+			t.Errorf("budget must leave an output margin under max_tokens, got %v", body["thinking"])
 		}
 	})
 
@@ -230,6 +233,20 @@ func TestBuildParams_Thinking(t *testing.T) {
 		thinking, _ := body["thinking"].(map[string]any)
 		if thinking["budget_tokens"] != float64(minThinkingBudget) {
 			t.Errorf("expected minimum budget, got %v", body["thinking"])
+		}
+	})
+
+	t.Run("configured default max_tokens is the raise margin", func(t *testing.T) {
+		budget := 20000
+		params, err := buildParams(llm.NewChatCompletionOptions(
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithReasoning(&llm.ReasoningOptions{MaxTokens: &budget}),
+		), "claude-sonnet-5", 16384)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if params.MaxTokens != 20000+16384 {
+			t.Errorf("max_tokens must be raised by the configured default, got %d", params.MaxTokens)
 		}
 	})
 
@@ -429,5 +446,120 @@ func TestNormalizeBaseURL(t *testing.T) {
 		if got := normalizeBaseURL(input); got != expected {
 			t.Errorf("normalizeBaseURL(%q) = %q, expected %q", input, got, expected)
 		}
+	}
+}
+
+func TestBuildParams_TemperatureIsClampedToOne(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTemperature(1.5),
+	)
+	if body["temperature"] != 1.0 {
+		t.Errorf("temperature above 1 must be clamped, got %v", body["temperature"])
+	}
+}
+
+func TestBuildParams_OnlySystemMessagesIsRejected(t *testing.T) {
+	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessage(llm.RoleSystem, "You are terse."),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected a validation error for a conversation without any turn")
+	}
+}
+
+func TestBuildParams_MalformedRequiredIsRejected(t *testing.T) {
+	tool := llm.NewFuncTool("t", "", map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+		"required":   []any{"a", 42},
+	}, nil)
+	_, err := buildParams(llm.NewChatCompletionOptions(
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTools(tool),
+	), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected an error for a non-string entry in required")
+	}
+}
+
+func TestBuildParams_CacheControlLandsOnTheEndOfTheMergedTurn(t *testing.T) {
+	call := llm.NewToolCall("call_1", "get_weather", `{}`)
+	toolMsg := llm.NewToolMessage("call_1", llm.NewToolResult("Sunny"))
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewToolCallsMessage(call),
+		// The hint is on the tool message, but the user message that
+		// follows shares its turn: the prefix must end after that turn.
+		&cachedToolMessage{BaseToolMessage: toolMsg, cc: &llm.CacheControl{Type: "ephemeral"}},
+		llm.NewMessage(llm.RoleUser, "Thanks."),
+	))
+	user := blocksOf(t, messagesOf(t, body)[2])
+	if len(user) != 2 || user[0]["type"] != "tool_result" || user[1]["type"] != "text" {
+		t.Fatalf("unexpected merged user turn: %v", user)
+	}
+	if _, present := user[0]["cache_control"]; present {
+		t.Errorf("breakpoint must not stop before the end of the turn: %v", user[0])
+	}
+	if cc, _ := user[1]["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("breakpoint must sit on the last block of the merged turn: %v", user[1])
+	}
+}
+
+// cachedToolMessage is a tool message carrying a cache hint.
+type cachedToolMessage struct {
+	*llm.BaseToolMessage
+	cc *llm.CacheControl
+}
+
+func (m *cachedToolMessage) CacheControl() *llm.CacheControl { return m.cc }
+
+func TestBuildParams_ToolResultAttachments(t *testing.T) {
+	image, err := llm.NewImageAttachment("image/png", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "screenshot", `{}`)),
+		llm.NewToolMessage("call_1", llm.NewToolResult("Here it is", image)),
+	))
+	result := blocksOf(t, messagesOf(t, body)[2])[0]
+	content, _ := result["content"].([]any)
+	if result["type"] != "tool_result" || len(content) != 2 {
+		t.Fatalf("expected a tool_result with text + image, got %v", result)
+	}
+	if content[0].(map[string]any)["type"] != "text" || content[1].(map[string]any)["type"] != "image" {
+		t.Errorf("unexpected tool_result content: %v", content)
+	}
+
+	audio, err := llm.NewAudioAttachment("audio/wav", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "record", `{}`)),
+		llm.NewToolMessage("call_1", llm.NewToolResult("", audio)),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected audio tool result attachments to be rejected")
+	}
+}
+
+func TestAttachmentBlock_Rejections(t *testing.T) {
+	svg, err := llm.NewImageAttachment("image/svg+xml", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attachmentBlock(svg); err == nil {
+		t.Error("expected an unsupported image MIME type to be rejected")
+	}
+
+	if _, err := stripDataURL("data:text/plain,hello"); err == nil {
+		t.Error("expected a non-base64 data URL to be rejected")
+	}
+	if payload, err := stripDataURL("data:image/png;base64,aGVsbG8="); err != nil || payload != "aGVsbG8=" {
+		t.Errorf("base64 data URL not decoded: %q, %v", payload, err)
 	}
 }

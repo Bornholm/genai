@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
@@ -59,6 +60,14 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	return fromMessage(&message, excludeReasoning(opts)), nil
 }
 
+// excludeReasoning reports whether the caller asked not to see the
+// reasoning. Thinking stays enabled upstream and the signed blocks are still
+// carried on the message: the next turn of an agent loop has to replay them
+// or the API rejects it. Only the plaintext Reasoning() is withheld.
+func excludeReasoning(opts *llm.ChatCompletionOptions) bool {
+	return opts.Reasoning != nil && opts.Reasoning.Exclude
+}
+
 // ChatCompletionStream implements llm.ChatCompletionStreamingClient.
 func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	opts := llm.NewChatCompletionOptions(funcs...)
@@ -102,7 +111,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 // and the complete block (text plus signature) is emitted once as a
 // ReasoningDetail when the block closes: a signature only verifies the exact
 // text it was computed over, so a detail carrying one without the other
-// cannot be replayed.
+// cannot be replayed. Excluding the reasoning silences the incremental text
+// only; the closing detail is always emitted so the turn can be replayed.
 type streamEmitter struct {
 	chunks           chan<- llm.StreamChunk
 	excludeReasoning bool
@@ -173,15 +183,16 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			index := e.toolCount
 			e.toolCount++
 			e.toolIndexes[event.Index] = index
+			// The official API always streams the arguments as
+			// input_json_delta events and opens the block with an empty
+			// object; some gateways ship the whole input here instead.
+			initial := initialToolInput(block.Input)
 			e.chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "",
-				llm.NewToolCallDelta(index, block.ID, block.Name, ""),
+				llm.NewToolCallDelta(index, block.ID, block.Name, initial),
 			))
 		case "thinking":
 			e.thinking[event.Index] = &thinkingBlock{text: block.Thinking, signature: block.Signature}
 		case "redacted_thinking":
-			if e.excludeReasoning {
-				return
-			}
 			e.emitDetail(llm.ReasoningDetail{
 				Type: llm.ReasoningDetailTypeEncrypted,
 				Data: block.Data,
@@ -194,9 +205,6 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			return
 		}
 		delete(e.thinking, event.Index)
-		if e.excludeReasoning {
-			return
-		}
 		e.emitDetail(llm.ReasoningDetail{
 			Type:      llm.ReasoningDetailTypeText,
 			Text:      block.text,
@@ -243,6 +251,22 @@ func (e *streamEmitter) usage() llm.ChatCompletionUsage {
 	return newUsage(e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens)
 }
 
+// initialToolInput renders the tool input carried by a content_block_start
+// event, or "" when it is the usual empty placeholder.
+func initialToolInput(input any) string {
+	if input == nil {
+		return ""
+	}
+	if m, ok := input.(map[string]any); ok && len(m) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 // fromMessage converts a complete Messages API response.
 func fromMessage(message *anthropicsdk.Message, excludeReasoning bool) llm.ChatCompletionResponse {
 	var (
@@ -282,8 +306,14 @@ func fromMessage(message *anthropicsdk.Message, excludeReasoning bool) llm.ChatC
 		message.Usage.CacheCreationInputTokens,
 	)
 
-	if excludeReasoning || (reasoning == "" && len(details) == 0) {
+	if reasoning == "" && len(details) == 0 {
 		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, content), usage, toolCalls...)
+	}
+
+	// The signed blocks stay on the message whatever the caller asked: they
+	// are what the next turn replays. Excluding only hides the plaintext.
+	if excludeReasoning {
+		reasoning = ""
 	}
 
 	return llm.NewChatCompletionResponseWithReasoning(
@@ -309,17 +339,13 @@ func newUsage(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens in
 	)
 }
 
-func excludeReasoning(opts *llm.ChatCompletionOptions) bool {
-	return opts.Reasoning != nil && opts.Reasoning.Exclude
-}
-
 // mapError surfaces the upstream HTTP status through llm.HTTPError so the
 // retry and rate limit machinery can act on it.
 //
-// An error event received in the middle of a stream (an overloaded_error,
-// typically) inherits the 200 of the response that carried it; such an
-// error is reported as a 503 so it stays retryable, and a rate limit error
-// type is reported as a 429 whatever the transport status.
+// An error event received in the middle of a stream inherits the 200 of the
+// response that carried it. The status is then recovered from the error
+// type, so an overloaded upstream stays retryable while a rejected request
+// is not replayed to the same outcome.
 func mapError(err error) error {
 	var apiErr *anthropicsdk.Error
 	if !errors.As(err, &apiErr) {
@@ -332,14 +358,37 @@ func mapError(err error) error {
 	}
 
 	status := apiErr.StatusCode
-	switch {
-	case apiErr.Type() == shared.ErrorTypeRateLimitError:
-		status = http.StatusTooManyRequests
-	case status < http.StatusBadRequest:
-		status = http.StatusServiceUnavailable
+	if status < http.StatusBadRequest {
+		status = statusForErrorType(apiErr.Type())
 	}
 
 	return llm.RateLimitError(status, body)
+}
+
+// statusForErrorType maps an Anthropic error type to the HTTP status the API
+// documents for it.
+func statusForErrorType(errorType shared.ErrorType) int {
+	switch errorType {
+	case shared.ErrorTypeInvalidRequestError:
+		return http.StatusBadRequest
+	case shared.ErrorTypeAuthenticationError:
+		return http.StatusUnauthorized
+	case shared.ErrorTypeBillingError:
+		return http.StatusPaymentRequired
+	case shared.ErrorTypePermissionError:
+		return http.StatusForbidden
+	case shared.ErrorTypeNotFoundError:
+		return http.StatusNotFound
+	case shared.ErrorTypeTimeoutError:
+		return http.StatusRequestTimeout
+	case shared.ErrorTypeRateLimitError:
+		return http.StatusTooManyRequests
+	case shared.ErrorTypeAPIError:
+		return http.StatusInternalServerError
+	default:
+		// overloaded_error and anything new: transient until proven otherwise.
+		return http.StatusServiceUnavailable
+	}
 }
 
 func NewChatCompletionClient(client anthropicsdk.Client, model string, maxTokens int64) *ChatCompletionClient {
