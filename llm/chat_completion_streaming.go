@@ -241,12 +241,13 @@ func NewToolCallDelta(index int, id, name, parametersDelta string) *BaseToolCall
 
 // StreamingUsageTracker tracks token usage across streaming chunks
 type StreamingUsageTracker struct {
-	promptTokens     int64
-	completionTokens int64
-	totalTokens      int64
-	cachedTokens     int64
-	cost             *float64
-	costCurrency     string
+	promptTokens        int64
+	completionTokens    int64
+	totalTokens         int64
+	cachedTokens        int64
+	cacheCreationTokens int64
+	cost                *float64
+	costCurrency        string
 }
 
 // Update updates the usage tracker with data from a streaming chunk
@@ -258,6 +259,9 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 		type cachedUsage interface{ CachedTokens() int64 }
 		if cu, ok := usage.(cachedUsage); ok {
 			t.cachedTokens = cu.CachedTokens()
+		}
+		if cc, ok := usage.(CacheCreationReportingUsage); ok {
+			t.cacheCreationTokens = cc.CacheCreationTokens()
 		}
 		if cr, ok := usage.(CostReportingUsage); ok {
 			if amount, currency, ok := cr.Cost(); ok {
@@ -272,6 +276,9 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 func (t *StreamingUsageTracker) Usage() ChatCompletionUsage {
 	if t.cost != nil {
 		return NewChatCompletionUsageWithCost(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, *t.cost, t.costCurrency)
+	}
+	if t.cacheCreationTokens > 0 {
+		return NewChatCompletionUsageWithCacheCreation(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, t.cacheCreationTokens)
 	}
 	return NewChatCompletionUsageWithCache(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens)
 }
