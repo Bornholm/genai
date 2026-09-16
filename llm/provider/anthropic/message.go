@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/bornholm/genai/llm"
@@ -30,6 +31,11 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 
 	add := func(role anthropicsdk.MessageParamRole, blocks []anthropicsdk.ContentBlockParamUnion, cc *anthropicsdk.CacheControlEphemeralParam) {
 		if len(blocks) == 0 {
+			// Nothing to send for this message; its cache hint still means
+			// "cache everything so far", so it moves to the previous turn.
+			if cc != nil && len(messages) > 0 {
+				cached[len(messages)-1] = cc
+			}
 			return
 		}
 		if n := len(messages); n > 0 && messages[n-1].Role == role {
@@ -43,7 +49,10 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 	}
 
 	for _, m := range msgs {
-		cc := cacheControl(m)
+		cc, err := cacheControl(m)
+		if err != nil {
+			return nil, nil, errors.WithStack(err)
+		}
 
 		switch m.Role() {
 		case llm.RoleSystem:
@@ -70,6 +79,11 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			blocks := reasoningBlocks(m)
 			if content := m.Content(); content != "" {
 				blocks = append(blocks, anthropicsdk.NewTextBlock(content))
+			}
+			if len(blocks) == 0 && hasReasoning(m) {
+				// Reasoning from another provider, unsigned: dropping the
+				// turn would silently fold the user turns around it.
+				return nil, nil, llm.NewValidationError("messages", "assistant message carries only unsigned reasoning, which the Messages API cannot replay")
 			}
 			add(anthropicsdk.MessageParamRoleAssistant, blocks, cc)
 
@@ -198,6 +212,13 @@ func reasoningBlocks(m llm.Message) []anthropicsdk.ContentBlockParamUnion {
 	return blocks
 }
 
+// hasReasoning reports whether an assistant message carries any reasoning,
+// replayable or not.
+func hasReasoning(m llm.Message) bool {
+	rm, ok := m.(llm.ReasoningMessage)
+	return ok && (rm.Reasoning() != "" || len(rm.ReasoningDetails()) > 0)
+}
+
 // toolCallInput decodes the tool call parameters, kept as a JSON string by
 // genai, into the object the tool_use block carries.
 func toolCallInput(parameters any) (any, error) {
@@ -225,21 +246,31 @@ func toolCallInput(parameters any) (any, error) {
 	return input, nil
 }
 
-// cacheControl converts the cache hint carried by a message, if any.
-func cacheControl(m llm.Message) *anthropicsdk.CacheControlEphemeralParam {
+// cacheControl converts the cache hint carried by a message, if any. The
+// API only knows the ephemeral type with a 5m or 1h TTL; anything else is
+// refused here rather than by a remote 400.
+func cacheControl(m llm.Message) (*anthropicsdk.CacheControlEphemeralParam, error) {
 	cm, ok := m.(llm.CacheControlMessage)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	cc := cm.CacheControl()
 	if cc == nil {
-		return nil
+		return nil, nil
+	}
+	if cc.Type != "" && cc.Type != "ephemeral" {
+		return nil, llm.NewValidationError("cache_control", fmt.Sprintf("unsupported cache control type %q (only ephemeral)", cc.Type))
 	}
 	param := anthropicsdk.NewCacheControlEphemeralParam()
 	if cc.TTL != nil && *cc.TTL != "" {
-		param.TTL = anthropicsdk.CacheControlEphemeralTTL(*cc.TTL)
+		switch ttl := anthropicsdk.CacheControlEphemeralTTL(*cc.TTL); ttl {
+		case anthropicsdk.CacheControlEphemeralTTLTTL5m, anthropicsdk.CacheControlEphemeralTTLTTL1h:
+			param.TTL = ttl
+		default:
+			return nil, llm.NewValidationError("cache_control", fmt.Sprintf("unsupported cache TTL %q (only 5m or 1h)", *cc.TTL))
+		}
 	}
-	return &param
+	return &param, nil
 }
 
 // applyCacheControl sets the cache breakpoint on the last block of a turn,

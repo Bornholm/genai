@@ -578,3 +578,56 @@ func TestChatCompletion_InvalidRequestMidStreamIsNotRetried(t *testing.T) {
 		t.Error("an invalid request must not be retried")
 	}
 }
+
+func TestChatCompletionStream_ThinkingCarriedByBlockStart(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "thinking", "thinking": "All at once.", "signature": "sig"}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 3}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoning strings.Builder
+	var details []llm.ReasoningDetail
+	for chunk := range chunks {
+		if rd, ok := chunk.Delta().(llm.ReasoningStreamDelta); ok {
+			reasoning.WriteString(rd.Reasoning())
+			details = append(details, rd.ReasoningDetails()...)
+		}
+	}
+	if reasoning.String() != "All at once." {
+		t.Errorf("thinking text carried by content_block_start must be streamed: %q", reasoning.String())
+	}
+	if len(details) != 1 || details[0].Text != "All at once." || details[0].Signature != "sig" {
+		t.Errorf("unexpected closing detail: %+v", details)
+	}
+}
+
+func TestChatCompletion_MalformedStreamIsRetryable(t *testing.T) {
+	// A content block starting at index 1 with no block 0 is rejected by
+	// Accumulate; the failure must surface as an upstream error.
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 1,
+			"content_block": map[string]any{"type": "text", "text": ""}}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var httpErr *llm.HTTPError
+	if !errors.As(err, &httpErr) || !llm.IsRetryable(err) {
+		t.Errorf("a malformed stream must be reported as a retryable upstream failure, got %v", err)
+	}
+}

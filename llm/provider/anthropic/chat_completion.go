@@ -40,13 +40,21 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	defer stream.Close()
 
 	message := anthropicsdk.Message{}
+	var accumulateErr error
 	for stream.Next() {
 		if err := message.Accumulate(stream.Current()); err != nil {
-			return nil, errors.WithStack(err)
+			accumulateErr = err
+			break
 		}
 	}
+	// The transport error, when there is one, is the actual cause and
+	// carries the upstream status; an accumulation failure on its own is a
+	// malformed stream, reported as a retryable upstream failure.
 	if err := stream.Err(); err != nil {
 		return nil, errors.WithStack(mapError(err))
+	}
+	if accumulateErr != nil {
+		return nil, errors.WithStack(llm.RateLimitError(http.StatusBadGateway, "malformed message stream: "+accumulateErr.Error()))
 	}
 
 	// A stream that ended cleanly without a single content block is the
@@ -192,6 +200,11 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			))
 		case "thinking":
 			e.thinking[event.Index] = &thinkingBlock{text: block.Thinking, signature: block.Signature}
+			// Same courtesy as for tool inputs: a gateway may open the
+			// block with its whole text.
+			if block.Thinking != "" && !e.excludeReasoning {
+				e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", block.Thinking, nil))
+			}
 		case "redacted_thinking":
 			e.emitDetail(llm.ReasoningDetail{
 				Type: llm.ReasoningDetailTypeEncrypted,
@@ -340,7 +353,9 @@ func newUsage(inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens in
 }
 
 // mapError surfaces the upstream HTTP status through llm.HTTPError so the
-// retry and rate limit machinery can act on it.
+// retry and rate limit machinery can act on it. llm.RateLimitError is the
+// generic constructor for an upstream failure despite its name: it only
+// tags a 429 as a rate limit.
 //
 // An error event received in the middle of a stream inherits the 200 of the
 // response that carried it. The status is then recovered from the error

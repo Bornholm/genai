@@ -236,6 +236,33 @@ func TestBuildParams_Thinking(t *testing.T) {
 		}
 	})
 
+	t.Run("default max_tokens keeps an output margin for high efforts", func(t *testing.T) {
+		for _, effort := range []llm.ReasoningEffort{llm.ReasoningEffortHigh, llm.ReasoningEffortXHigh} {
+			body := marshalParams(t,
+				llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+				llm.WithReasoning(llm.NewReasoningOptions(effort)),
+			)
+			thinking, _ := body["thinking"].(map[string]any)
+			budget := thinking["budget_tokens"].(float64)
+			maxTokens := body["max_tokens"].(float64)
+			if maxTokens-budget < float64(minOutputMargin) {
+				t.Errorf("%s: only %v tokens left for the answer (budget %v, max_tokens %v)", effort, maxTokens-budget, budget, maxTokens)
+			}
+		}
+	})
+
+	t.Run("enabled alone means medium effort", func(t *testing.T) {
+		enabled := true
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithReasoning(&llm.ReasoningOptions{Enabled: &enabled}),
+		)
+		thinking, _ := body["thinking"].(map[string]any)
+		if thinking["budget_tokens"] != float64(DefaultMaxTokens/2) {
+			t.Errorf("expected half of max_tokens, got %v", body["thinking"])
+		}
+	})
+
 	t.Run("configured default max_tokens is the raise margin", func(t *testing.T) {
 		budget := 20000
 		params, err := buildParams(llm.NewChatCompletionOptions(
@@ -561,5 +588,57 @@ func TestAttachmentBlock_Rejections(t *testing.T) {
 	}
 	if payload, err := stripDataURL("data:image/png;base64,aGVsbG8="); err != nil || payload != "aGVsbG8=" {
 		t.Errorf("base64 data URL not decoded: %q, %v", payload, err)
+	}
+}
+
+func TestBuildParams_NonObjectToolSchemaIsRejected(t *testing.T) {
+	tool := llm.NewFuncTool("t", "", map[string]any{"type": "array"}, nil)
+	_, err := buildParams(llm.NewChatCompletionOptions(
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTools(tool),
+	), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected a non-object tool schema to be rejected")
+	}
+}
+
+func TestBuildParams_CacheControlValidation(t *testing.T) {
+	bad := "2h"
+	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessageWithCacheControl(llm.RoleUser, "Hi", &llm.CacheControl{Type: "ephemeral", TTL: &bad}),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Error("expected an unsupported TTL to be rejected")
+	}
+	_, err = buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessageWithCacheControl(llm.RoleUser, "Hi", &llm.CacheControl{Type: "persistent"}),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Error("expected an unsupported cache type to be rejected")
+	}
+}
+
+func TestBuildParams_CacheHintOfAnEmptyMessageMovesToThePreviousTurn(t *testing.T) {
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewMessage(llm.RoleAssistant, "Hello."),
+		llm.NewMessageWithCacheControl(llm.RoleUser, "", &llm.CacheControl{Type: "ephemeral"}),
+		llm.NewMessage(llm.RoleUser, "Next."),
+	))
+	messages := messagesOf(t, body)
+	assistant := blocksOf(t, messages[1])
+	if cc, _ := assistant[0]["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("the hint of an empty message must land on the previous turn: %v", messages)
+	}
+}
+
+func TestBuildParams_UnsignedReasoningOnlyTurnIsRejected(t *testing.T) {
+	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "A"),
+		llm.NewAssistantReasoningMessage("", "thought", nil),
+		llm.NewMessage(llm.RoleUser, "B"),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected an assistant turn made of unsigned reasoning only to be rejected rather than dropped")
 	}
 }

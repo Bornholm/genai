@@ -111,13 +111,13 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 //
 // An explicit MaxTokens becomes budget_tokens verbatim; an effort level is
 // converted to a share of max_tokens. The API requires
-// minThinkingBudget <= budget_tokens < max_tokens. When the caller chose
-// max_tokens, that ceiling is respected: the budget is clamped so that an
-// output margin (a quarter of max_tokens, at least minOutputMargin) stays
-// available for the answer, with an error when margin and minimum budget
-// cannot both fit. When max_tokens is only the provider default, it is
-// raised by that default instead so the budget the caller asked for is
-// honoured.
+// minThinkingBudget <= budget_tokens < max_tokens, and an answer needs room
+// past the budget: an output margin of a quarter of max_tokens, at least
+// minOutputMargin, is always kept. When the caller chose max_tokens, that
+// ceiling is respected and the budget is clamped under the margin, with an
+// error when margin and minimum budget cannot both fit. When max_tokens is
+// only the provider default, it is raised instead so the budget the caller
+// asked for is honoured.
 func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.ReasoningOptions, explicitMaxTokens bool, defaultMaxTokens int64) (bool, error) {
 	if reasoning == nil {
 		return false, nil
@@ -149,8 +149,8 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 		budget = minThinkingBudget
 	}
 
+	margin := max(params.MaxTokens/4, minOutputMargin)
 	if explicitMaxTokens {
-		margin := max(params.MaxTokens/4, minOutputMargin)
 		if budget > params.MaxTokens-margin {
 			budget = params.MaxTokens - margin
 		}
@@ -158,7 +158,8 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 			return false, llm.NewValidationError("max_completion_tokens",
 				fmt.Sprintf("max completion tokens must be at least %d to hold a reasoning budget and an answer", minThinkingBudget+minOutputMargin))
 		}
-	} else if params.MaxTokens <= budget {
+	} else if budget > params.MaxTokens-margin {
+		// The default is ours to grow: keep the whole default for the answer.
 		params.MaxTokens = budget + defaultMaxTokens
 	}
 
@@ -184,7 +185,11 @@ func toolParam(t llm.Tool) (*anthropicsdk.ToolParam, error) {
 	for key, value := range t.Parameters() {
 		switch key {
 		case "type":
-			// Always "object" for a tool input schema.
+			// The API only takes object schemas; anything else would be
+			// silently rewritten as one by the SDK's default.
+			if typ, _ := value.(string); typ != "" && typ != "object" {
+				return nil, errors.Errorf("tool input schema must be of type object, got %q", typ)
+			}
 		case "properties":
 			schema.Properties = value
 		case "required":
