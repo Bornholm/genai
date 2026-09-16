@@ -15,7 +15,7 @@ import (
 // URL; text/* documents are decoded and sent as plain text sources. Audio
 // and video have no equivalent in the Messages API.
 func attachmentBlock(attachment llm.Attachment) (anthropicsdk.ContentBlockParamUnion, error) {
-	mimeType := strings.ToLower(attachment.MimeType())
+	mimeType := normalizeMimeType(attachment.MimeType())
 
 	switch attachment.Type() {
 	case llm.AttachmentTypeImage:
@@ -104,6 +104,17 @@ func toolResultBlockContent(attachment llm.Attachment) (anthropicsdk.ToolResultB
 		return anthropicsdk.ToolResultBlockParamContentUnion{OfDocument: block.OfDocument}, nil
 	}
 	return anthropicsdk.ToolResultBlockParamContentUnion{}, errors.Errorf("unsupported tool result attachment type '%s'", attachment.Type())
+}
+
+// normalizeMimeType lowercases a MIME type, drops its parameters and maps
+// the common image/jpg misspelling to its registered name.
+func normalizeMimeType(mimeType string) string {
+	base, _, _ := strings.Cut(mimeType, ";")
+	base = strings.ToLower(strings.TrimSpace(base))
+	if base == "image/jpg" {
+		return "image/jpeg"
+	}
+	return base
 }
 
 // supportedImageMimeTypes lists the image formats the Messages API accepts.

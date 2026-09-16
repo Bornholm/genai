@@ -18,7 +18,14 @@
 //   - Consecutive messages of the same role are folded into one turn, tool
 //     results leading a user turn and thinking blocks leading an assistant
 //     turn, as the API requires.
-//   - The JSON response format requires a schema.
+//   - The JSON response format uses the API's structured output when a
+//     schema is given; without one, a system instruction asks for a single
+//     JSON object, as the schema-less OpenAI mode expects the prompt to do.
+//   - Only the configured API key is used: the SDK's fallbacks on the host's
+//     environment, profiles and identity federation are disabled.
+//   - When several messages fold into one turn, the cached prefix follows
+//     the wire order of the turn (tool results first), not the order of
+//     the messages.
 package anthropic
 
 import (
@@ -38,14 +45,16 @@ func init() {
 		Name,
 		defaultOptions,
 		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
-			options := []option.RequestOption{
+			// The SDK would otherwise fall back on the host's ambient
+			// identity (ANTHROPIC_API_KEY, auth token, on-disk profiles,
+			// workload identity federation). A gateway carrying one account
+			// per provider must fail on a missing key, not bill the host.
+			client := anthropicsdk.NewClient(
+				option.WithoutEnvironmentDefaults(),
 				option.WithBaseURL(normalizeBaseURL(opts.BaseURL)),
 				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
-			}
-			if opts.APIKey != "" {
-				options = append(options, option.WithAPIKey(opts.APIKey))
-			}
-			client := anthropicsdk.NewClient(options...)
+				option.WithAPIKey(opts.APIKey),
+			)
 
 			maxTokens := opts.MaxTokens
 			if maxTokens <= 0 {

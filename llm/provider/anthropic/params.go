@@ -172,12 +172,18 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 			budget = params.MaxTokens - margin
 		}
 		if budget < minThinkingBudget {
-			return false, llm.NewValidationError("max_completion_tokens",
-				fmt.Sprintf("max completion tokens must be at least %d to hold a reasoning budget and an answer", minThinkingBudget+minOutputMargin))
+			field, source := "max_completion_tokens", "max completion tokens"
+			if !explicitMaxTokens {
+				field, source = "max_tokens", "the provider's MAX_TOKENS default"
+			}
+			return false, llm.NewValidationError(field,
+				fmt.Sprintf("%s must be at least %d to hold a reasoning budget and an answer", source, minThinkingBudget+minOutputMargin))
 		}
 	case budget > params.MaxTokens-margin:
-		// The default is ours to grow: keep the whole default for the answer.
-		params.MaxTokens = budget + defaultMaxTokens
+		// The default is ours to grow, up to what the answer needs: the
+		// smallest raise keeps the result under the output limit of every
+		// model that accepts the budget itself.
+		params.MaxTokens = budget + min(defaultMaxTokens, max(budget/4, minOutputMargin))
 	}
 
 	params.Thinking = anthropicsdk.ThinkingConfigParamOfEnabled(budget)

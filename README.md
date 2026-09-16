@@ -99,9 +99,10 @@ GENAI_CHAT_COMPLETION_ANTHROPIC_MAX_TOKENS=8192
 The Messages API differs from the OpenAI-style options in a few places the
 provider absorbs for you: temperature is capped at 1 and dropped altogether
 when reasoning is enabled, system messages are hoisted into the top-level
-`system` field wherever they sit, and the JSON response format requires a
-schema. See the package documentation of `llm/provider/anthropic` for the
-full list.
+`system` field wherever they sit, and the JSON response format uses the
+structured output of the API when a schema is given (a system instruction
+asks for a JSON object otherwise). See the package documentation of
+`llm/provider/anthropic` for the full list.
 
 ### Audio transcription
 

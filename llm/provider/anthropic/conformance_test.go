@@ -58,6 +58,32 @@ func TestConformance(t *testing.T) {
 	// extended thinking as two independent features; this pins down that
 	// the two can be combined on one request, since the provider does not
 	// refuse the combination locally.
+	// Provider-specific: with extended thinking the API refuses
+	// tool_choice any; the provider falls back to auto, and the model must
+	// still call the tool when the prompt leaves it no other option.
+	t.Run("RequiredToolChoiceWithReasoning", func(t *testing.T) {
+		weather := llm.NewFuncTool("get_weather", "Get the current weather for a given city", map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"location": map[string]any{"type": "string", "description": "The city name"},
+			},
+			"required": []string{"location"},
+		}, nil)
+		res, err := client.ChatCompletion(ctx,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "What is the weather in Paris? Use the tool.")),
+			llm.WithTools(weather),
+			llm.WithToolChoice(llm.ToolChoiceRequired),
+			llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
+			llm.WithMaxCompletionTokens(4096),
+		)
+		if err != nil {
+			t.Fatalf("ChatCompletion error: %v", err)
+		}
+		if len(res.ToolCalls()) == 0 || res.ToolCalls()[0].Name() != "get_weather" {
+			t.Errorf("expected a get_weather tool call, got %v", res.ToolCalls())
+		}
+	})
+
 	t.Run("JSONWithReasoning", func(t *testing.T) {
 		schema := llm.NewResponseSchema("answer", "An arithmetic answer", map[string]any{
 			"type": "object",

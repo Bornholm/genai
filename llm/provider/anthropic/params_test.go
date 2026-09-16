@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -192,8 +193,10 @@ func TestBuildParams_Thinking(t *testing.T) {
 		if thinking["budget_tokens"] != float64(6000) {
 			t.Errorf("unexpected budget: %v", body["thinking"])
 		}
-		if body["max_tokens"] != float64(6000+DefaultMaxTokens) {
-			t.Errorf("max_tokens must exceed the budget, got %v", body["max_tokens"])
+		// Raised by the answer margin (a quarter of the budget), bounded
+		// by the provider default.
+		if body["max_tokens"] != float64(6000+1500) {
+			t.Errorf("max_tokens must exceed the budget by the answer margin, got %v", body["max_tokens"])
 		}
 	})
 
@@ -272,8 +275,8 @@ func TestBuildParams_Thinking(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if params.MaxTokens != 20000+16384 {
-			t.Errorf("max_tokens must be raised by the configured default, got %d", params.MaxTokens)
+		if params.MaxTokens != 20000+5000 {
+			t.Errorf("max_tokens must be raised by a quarter of the budget, got %d", params.MaxTokens)
 		}
 	})
 
@@ -711,5 +714,72 @@ func TestBuildParams_UnsignedReasoningOnlyTurnIsRejected(t *testing.T) {
 	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
 		t.Fatal("expected an assistant turn made of unsigned reasoning only to be rejected rather than dropped")
+	}
+}
+
+func TestBuildParams_BreakpointsAreCountedOncePlaced(t *testing.T) {
+	cc := &llm.CacheControl{Type: "ephemeral"}
+	// Five hints, but two resolve on the same block (empty message after an
+	// annotated one) and one lands on a thinking-only turn: three markers.
+	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessageWithCacheControl(llm.RoleSystem, "s", cc),
+		llm.NewMessageWithCacheControl(llm.RoleUser, "1", cc),
+		llm.NewMessageWithCacheControl(llm.RoleUser, "", cc),
+		&cachedReasoningMessage{BaseAssistantReasoningMessage: llm.NewAssistantReasoningMessage("", "", []llm.ReasoningDetail{
+			{Type: llm.ReasoningDetailTypeText, Text: "t", Signature: "sig"},
+		}), cc: cc},
+		llm.NewMessageWithCacheControl(llm.RoleUser, "3", cc),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err != nil {
+		t.Fatalf("hints producing no marker must not count toward the limit: %v", err)
+	}
+}
+
+// cachedReasoningMessage is an assistant reasoning message carrying a cache hint.
+type cachedReasoningMessage struct {
+	*llm.BaseAssistantReasoningMessage
+	cc *llm.CacheControl
+}
+
+func (m *cachedReasoningMessage) CacheControl() *llm.CacheControl { return m.cc }
+
+func TestBuildParams_ImageMimeTypeNormalisation(t *testing.T) {
+	for _, mime := range []string{"image/jpg", "IMAGE/PNG"} {
+		image, err := llm.NewImageAttachment(mime, "aGVsbG8=", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := attachmentBlock(image); err != nil {
+			t.Errorf("%q must be accepted: %v", mime, err)
+		}
+	}
+	// Parameters are refused upstream by llm's format validation, but the
+	// normalisation copes with them for attachments built otherwise.
+	if got := normalizeMimeType("image/webp; charset=binary"); got != "image/webp" {
+		t.Errorf("parameters must be dropped, got %q", got)
+	}
+}
+
+func TestBuildParams_ReasoningErrorNamesTheProviderDefault(t *testing.T) {
+	_, err := buildParams(llm.NewChatCompletionOptions(
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
+	), "claude-sonnet-5", 1500)
+	if err == nil || !strings.Contains(err.Error(), "MAX_TOKENS") {
+		t.Errorf("the error must point at the provider default, got %v", err)
+	}
+}
+
+func TestBuildParams_RaiseIsBounded(t *testing.T) {
+	budget := 6000
+	params, err := buildParams(llm.NewChatCompletionOptions(
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithReasoning(&llm.ReasoningOptions{MaxTokens: &budget}),
+	), "claude-sonnet-5", DefaultMaxTokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params.MaxTokens != 6000+1500 {
+		t.Errorf("expected budget + a quarter of it, got %d", params.MaxTokens)
 	}
 }

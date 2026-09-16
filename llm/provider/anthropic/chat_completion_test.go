@@ -599,6 +599,9 @@ func TestChatCompletionStream_ThinkingCarriedByBlockStart(t *testing.T) {
 	var reasoning strings.Builder
 	var details []llm.ReasoningDetail
 	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatal(chunk.Error())
+		}
 		if rd, ok := chunk.Delta().(llm.ReasoningStreamDelta); ok {
 			reasoning.WriteString(rd.Reasoning())
 			details = append(details, rd.ReasoningDetails()...)
@@ -661,13 +664,13 @@ func TestChatCompletionStream_EmptyStreamIsNoMessage(t *testing.T) {
 	}
 }
 
-func TestChatCompletionStream_WholeBlockOnStartIsNotDoubledByDeltas(t *testing.T) {
+func TestChatCompletionStream_WholeToolInputOnStartIsNotDoubledByDeltas(t *testing.T) {
 	fake := &fakeMessagesAPI{events: []sseEvent{
 		scriptedReply()[0],
 		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
-			"content_block": map[string]any{"type": "text", "text": "Whole."}}},
+			"content_block": map[string]any{"type": "text", "text": "Who"}}},
 		{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
-			"delta": map[string]any{"type": "text_delta", "text": "Whole."}}},
+			"delta": map[string]any{"type": "text_delta", "text": "le."}}},
 		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
 		{"content_block_start", map[string]any{"type": "content_block_start", "index": 1,
 			"content_block": map[string]any{"type": "tool_use", "id": "toolu_1", "name": "t", "input": map[string]any{"a": 1}}}},
@@ -699,9 +702,53 @@ func TestChatCompletionStream_WholeBlockOnStartIsNotDoubledByDeltas(t *testing.T
 		}
 	}
 	if content.String() != "Whole." {
-		t.Errorf("text doubled: %q", content.String())
+		t.Errorf("text opened with its beginning must keep its deltas: %q", content.String())
 	}
 	if args.String() != `{"a":1}` {
 		t.Errorf("tool input doubled: %q", args.String())
+	}
+}
+
+func TestChatCompletionStream_ThinkingTextOnStartThenSignatureDelta(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "thinking", "thinking": "Whole thought.", "signature": ""}}},
+		{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+			"delta": map[string]any{"type": "signature_delta", "signature": "sig-late"}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 3}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var details []llm.ReasoningDetail
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatal(chunk.Error())
+		}
+		if rd, ok := chunk.Delta().(llm.ReasoningStreamDelta); ok {
+			details = append(details, rd.ReasoningDetails()...)
+		}
+	}
+	if len(details) != 1 || details[0].Signature != "sig-late" || details[0].Text != "Whole thought." {
+		t.Fatalf("a signature arriving after a whole-text start must be kept: %+v", details)
+	}
+	_, replayed, err := buildMessages([]llm.Message{
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewAssistantReasoningMessage("ok", "", details),
+		llm.NewMessage(llm.RoleUser, "Go on."),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed[1].Content[0].OfThinking == nil || replayed[1].Content[0].OfThinking.Signature != "sig-late" {
+		t.Errorf("the streamed block must replay signed: %+v", replayed[1].Content)
 	}
 }

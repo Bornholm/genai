@@ -142,9 +142,12 @@ type streamEmitter struct {
 	// detailCount numbers the reasoning details in emission order, the
 	// same convention fromMessage uses.
 	detailCount int
-	// complete marks the blocks whose start event already carried their
-	// whole payload, so that deltas repeating it are not emitted twice.
-	complete map[int64]bool
+	// completeInput marks the tool_use blocks whose start event already
+	// carried their whole input, so that input deltas repeating it are not
+	// emitted twice. Text and thinking get no such shortcut: a gateway may
+	// open a block with the beginning of its text only, and a thinking
+	// block's signature always arrives as a delta.
+	completeInput map[int64]bool
 	// emitted counts the delta chunks sent so far.
 	emitted int
 
@@ -165,7 +168,7 @@ func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *str
 		excludeReasoning: excludeReasoning,
 		toolIndexes:      map[int64]int{},
 		thinking:         map[int64]*thinkingBlock{},
-		complete:         map[int64]bool{},
+		completeInput:    map[int64]bool{},
 	}
 }
 
@@ -204,7 +207,6 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		switch block.Type {
 		case "text":
 			if block.Text != "" {
-				e.complete[event.Index] = true
 				e.send(llm.NewStreamDelta(llm.RoleAssistant, block.Text))
 			}
 		case "tool_use":
@@ -216,7 +218,7 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			// object; some gateways ship the whole input here instead.
 			initial := initialToolInput(block.Input)
 			if initial != "" {
-				e.complete[event.Index] = true
+				e.completeInput[event.Index] = true
 			}
 			e.send(llm.NewStreamDelta(llm.RoleAssistant, "",
 				llm.NewToolCallDelta(index, block.ID, block.Name, initial),
@@ -225,11 +227,8 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			e.thinking[event.Index] = &thinkingBlock{text: block.Thinking, signature: block.Signature}
 			// Same courtesy as for tool inputs: a gateway may open the
 			// block with its whole text.
-			if block.Thinking != "" {
-				e.complete[event.Index] = true
-				if !e.excludeReasoning {
-					e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", block.Thinking, nil))
-				}
+			if block.Thinking != "" && !e.excludeReasoning {
+				e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", block.Thinking, nil))
 			}
 		case "redacted_thinking":
 			e.emitDetail(llm.ReasoningDetail{
@@ -251,18 +250,15 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		})
 
 	case "content_block_delta":
-		if e.complete[event.Index] {
-			// The block was delivered whole on its start event; a gateway
-			// streaming it again would otherwise double the content.
-			return
-		}
 		delta := event.Delta
 		switch delta.Type {
 		case "text_delta":
 			e.send(llm.NewStreamDelta(llm.RoleAssistant, delta.Text))
 		case "input_json_delta":
 			index, known := e.toolIndexes[event.Index]
-			if !known || delta.PartialJSON == "" {
+			if !known || delta.PartialJSON == "" || e.completeInput[event.Index] {
+				// A gateway that shipped the whole input on the start
+				// event and streams it again would double the JSON.
 				return
 			}
 			e.send(llm.NewStreamDelta(llm.RoleAssistant, "",

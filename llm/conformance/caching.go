@@ -69,6 +69,15 @@ func testCaching(t *testing.T, client any) {
 		}
 
 		second := ask(t, prefix, cc, "Which canal bounds district 5? Answer with the number only.")
+
+		// Both calls carry the same prompt: their prompt token counts must
+		// match closely whether the prefix was written or read. A count
+		// twice as large on the writing call would mean the provider adds
+		// cache writes to an input count that already includes them.
+		if lo, hi := first.PromptTokens(), second.PromptTokens(); lo > hi*11/10 || hi > lo*11/10 {
+			t.Errorf("prompt tokens differ between the cache write (%d) and the cache read (%d) of the same prompt: the usage decomposition double counts", lo, hi)
+		}
+
 		cu, ok := second.(cachedUsage)
 		if !ok {
 			t.Fatal("usage does not report cached tokens")

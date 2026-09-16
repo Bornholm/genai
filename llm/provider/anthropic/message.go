@@ -22,6 +22,9 @@ import (
 // Turns being reshuffled by the folding, the breakpoints are placed once
 // the turns are final, each on the block its message ended with; the API
 // allows maxCacheBreakpoints of them per request, system blocks included.
+// The cached prefix is defined by the wire order of the final turn, so a
+// tool result folded after an annotated user text ends up inside the
+// prefix, ahead of it.
 func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthropicsdk.MessageParam, error) {
 	var (
 		system      []anthropicsdk.TextBlockParam
@@ -137,16 +140,6 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 		}
 	}
 
-	count := len(breakpoints)
-	for _, block := range system {
-		if block.CacheControl.Type != "" {
-			count++
-		}
-	}
-	if count > maxCacheBreakpoints {
-		return nil, nil, llm.NewValidationError("cache_control", fmt.Sprintf("at most %d cache breakpoints per request, got %d", maxCacheBreakpoints, count))
-	}
-
 	for _, bp := range breakpoints {
 		content := messages[bp.turn].Content
 		for i := range content {
@@ -157,7 +150,43 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 		}
 	}
 
+	// Counted once placed: hints that resolved on the same block, or on a
+	// thinking block that cannot carry one, produce no marker on the wire.
+	count := 0
+	for _, block := range system {
+		if block.CacheControl.Type != "" {
+			count++
+		}
+	}
+	for _, turn := range messages {
+		for _, block := range turn.Content {
+			if hasCacheControl(block) {
+				count++
+			}
+		}
+	}
+	if count > maxCacheBreakpoints {
+		return nil, nil, llm.NewValidationError("cache_control", fmt.Sprintf("at most %d cache breakpoints per request, got %d", maxCacheBreakpoints, count))
+	}
+
 	return system, messages, nil
+}
+
+// hasCacheControl reports whether a block carries a cache marker.
+func hasCacheControl(b anthropicsdk.ContentBlockParamUnion) bool {
+	switch {
+	case b.OfText != nil:
+		return b.OfText.CacheControl.Type != ""
+	case b.OfImage != nil:
+		return b.OfImage.CacheControl.Type != ""
+	case b.OfDocument != nil:
+		return b.OfDocument.CacheControl.Type != ""
+	case b.OfToolUse != nil:
+		return b.OfToolUse.CacheControl.Type != ""
+	case b.OfToolResult != nil:
+		return b.OfToolResult.CacheControl.Type != ""
+	}
+	return false
 }
 
 // maxCacheBreakpoints is the number of cache_control markers the API
