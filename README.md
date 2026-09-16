@@ -8,7 +8,7 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 
 ## Features
 
-- Multi-provider support - Use OpenAI (or any OpenAI compatible API), OpenRouter, Mistral, Ollama and other providers with the same interface
+- Multi-provider support - Use OpenAI (or any OpenAI compatible API), Anthropic, OpenRouter, Mistral, Ollama and other providers with the same interface
 - Unified API - Simple and consistent API for all providers
 - Chat Completions - Create conversational AI experiences with ease
 - Audio Transcription - Transcribe audio files (speech-to-text) with OpenAI, Mistral (Voxtral) or OpenRouter
@@ -83,6 +83,28 @@ GENAI_CHAT_COMPLETION_MISTRAL_BASE_URL=https://api.mistral.ai/v1/
 GENAI_CHAT_COMPLETION_MISTRAL_API_KEY=<your_api_key>
 GENAI_CHAT_COMPLETION_MISTRAL_MODEL=mistral-small-latest
 ```
+
+Or, with the Anthropic provider, which talks to the native Messages API
+through the official SDK (prompt caching hints, signed thinking blocks and
+cache read/write token counts are all preserved):
+
+```bash
+GENAI_CHAT_COMPLETION_PROVIDER=anthropic
+GENAI_CHAT_COMPLETION_ANTHROPIC_API_KEY=<your_api_key>
+GENAI_CHAT_COMPLETION_ANTHROPIC_MODEL=claude-sonnet-5
+# Optional: max_tokens sent when the caller does not set one (default 4096)
+GENAI_CHAT_COMPLETION_ANTHROPIC_MAX_TOKENS=8192
+```
+
+The Messages API differs from the OpenAI-style options in a few places the
+provider absorbs for you: temperature is capped at 1 and dropped altogether
+when reasoning is enabled, system messages are hoisted into the top-level
+`system` field wherever they sit, and the JSON response format uses the
+structured output of the API when a schema is given (a system instruction
+asks for a JSON object otherwise). Reasoning recorded by another provider
+is not replayable, as only Anthropic-signed thinking blocks are accepted
+back. See the package documentation of `llm/provider/anthropic` for the
+full list.
 
 ### Audio transcription
 

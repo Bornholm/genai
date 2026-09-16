@@ -32,7 +32,11 @@ type ReasoningOptions struct {
 	MaxTokens *int
 
 	// Exclude controls whether reasoning tokens are returned in the response.
-	// When true, the model still uses reasoning internally but does not include it in the response.
+	// When true, the model still uses reasoning internally but the plaintext
+	// meant for display (Reasoning(), incremental reasoning deltas) is
+	// withheld. Providers whose next turn must replay signed reasoning
+	// blocks (Anthropic) keep those blocks in ReasoningDetails: they are
+	// part of the conversation state, not of the display.
 	// Default is false (reasoning is included in the response when available).
 	Exclude bool
 

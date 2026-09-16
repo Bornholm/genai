@@ -200,3 +200,18 @@ func TestMockStreamingClient(t *testing.T) {
 		t.Errorf("expected total tokens 15, got %d", receivedChunks[2].Usage().TotalTokens())
 	}
 }
+
+func TestStreamingUsageTracker_KeepsCacheCreationWithCost(t *testing.T) {
+	tracker := NewStreamingUsageTracker()
+	usage := NewChatCompletionUsageWithCost(100, 10, 110, 40, 0.5, "USD")
+	usage.cacheCreationTokens = 25
+	tracker.Update(NewCompleteStreamChunk(usage))
+
+	got := tracker.Usage()
+	if cost, _, ok := got.(CostReportingUsage).Cost(); !ok || cost != 0.5 {
+		t.Errorf("cost lost: %v", got)
+	}
+	if got.(CacheCreationReportingUsage).CacheCreationTokens() != 25 {
+		t.Errorf("cache creation tokens lost when a cost is reported: %v", got)
+	}
+}

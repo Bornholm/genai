@@ -347,7 +347,7 @@ func NewMessage(role Role, content string) *BaseMessage {
 }
 
 // NewMessageWithCacheControl creates a message annotated with an explicit
-// cache hint, forwarded to providers that support it (e.g. OpenRouter).
+// cache hint, forwarded to providers that support it (e.g. Anthropic, OpenRouter).
 func NewMessageWithCacheControl(role Role, content string, cc *CacheControl) *BaseMessage {
 	return &BaseMessage{
 		role:         role,
@@ -586,13 +586,27 @@ func NewChatCompletionResponseWithReasoning(message Message, usage ChatCompletio
 var _ ChatCompletionResponse = &BaseChatCompletionResponse{}
 var _ ReasoningChatCompletionResponse = &BaseChatCompletionResponse{}
 
+// CacheCreationReportingUsage is satisfied by usage objects from providers
+// that bill cache writes separately from cache reads (e.g. Anthropic, whose
+// cache_creation_input_tokens cost more than a plain prompt token). Callers can
+// type-assert ChatCompletionUsage to this interface, following the same
+// optional-capability pattern as CachedTokens.
+type CacheCreationReportingUsage interface {
+	// CacheCreationTokens returns the number of prompt tokens written to the
+	// provider's cache by this request. They are included in PromptTokens.
+	// As with CachedTokens, 0 also stands for "not reported": the method is
+	// carried by BaseChatCompletionUsage and therefore by every provider.
+	CacheCreationTokens() int64
+}
+
 type BaseChatCompletionUsage struct {
-	totalTokens      int64
-	promptTokens     int64
-	completionTokens int64
-	cachedTokens     int64
-	cost             *float64
-	costCurrency     string
+	totalTokens         int64
+	promptTokens        int64
+	completionTokens    int64
+	cachedTokens        int64
+	cacheCreationTokens int64
+	cost                *float64
+	costCurrency        string
 }
 
 // CompletionTokens implements ChatCompletionUsage.
@@ -613,6 +627,11 @@ func (u *BaseChatCompletionUsage) TotalTokens() int64 {
 // CachedTokens returns the number of prompt tokens served from the provider's cache.
 func (u *BaseChatCompletionUsage) CachedTokens() int64 {
 	return u.cachedTokens
+}
+
+// CacheCreationTokens implements CacheCreationReportingUsage.
+func (u *BaseChatCompletionUsage) CacheCreationTokens() int64 {
+	return u.cacheCreationTokens
 }
 
 // Cost implements CostReportingUsage.
@@ -640,6 +659,20 @@ func NewChatCompletionUsageWithCache(promptTokens, completionTokens, totalTokens
 	}
 }
 
+// NewChatCompletionUsageWithCacheCreation creates a usage that distinguishes
+// the prompt tokens written to the provider's cache from the ones read from
+// it, for providers that bill the two differently (e.g. Anthropic). Both
+// counts are subsets of promptTokens.
+func NewChatCompletionUsageWithCacheCreation(promptTokens, completionTokens, totalTokens, cachedTokens, cacheCreationTokens int64) *BaseChatCompletionUsage {
+	return &BaseChatCompletionUsage{
+		promptTokens:        promptTokens,
+		completionTokens:    completionTokens,
+		totalTokens:         totalTokens,
+		cachedTokens:        cachedTokens,
+		cacheCreationTokens: cacheCreationTokens,
+	}
+}
+
 // NewChatCompletionUsageWithCost creates a usage that also carries the
 // provider-reported cost of the request, for providers that report it
 // (e.g. OpenRouter). Use CostReportingUsage to retrieve it.
@@ -655,6 +688,7 @@ func NewChatCompletionUsageWithCost(promptTokens, completionTokens, totalTokens,
 }
 
 var _ CostReportingUsage = &BaseChatCompletionUsage{}
+var _ CacheCreationReportingUsage = &BaseChatCompletionUsage{}
 
 var _ ChatCompletionUsage = &BaseChatCompletionUsage{}
 
