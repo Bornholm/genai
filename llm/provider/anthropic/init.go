@@ -21,6 +21,11 @@
 //   - The JSON response format uses the API's structured output when a
 //     schema is given; without one, a system instruction asks for a single
 //     JSON object, as the schema-less OpenAI mode expects the prompt to do.
+//     The strict flag of a schema has no effect: the API has no lenient
+//     structured mode, the schema is always enforced.
+//   - Reasoning from another provider cannot be replayed: it carries no
+//     signature. An assistant message made of such reasoning only is
+//     refused, one that also carries text is replayed as text alone.
 //   - Only the configured API key is used: the SDK's fallbacks on the host's
 //     environment, profiles and identity federation are disabled.
 //   - When several messages fold into one turn, the cached prefix follows

@@ -543,6 +543,9 @@ func TestChatCompletion_ParallelToolCallsAndRedactedThinking(t *testing.T) {
 	if len(res.ToolCalls()) != 2 || res.ToolCalls()[1].ID() != "toolu_2" {
 		t.Errorf("expected 2 tool calls, got %v", res.ToolCalls())
 	}
+	if params, _ := res.ToolCalls()[1].Parameters().(string); params != `{"location":"London"}` {
+		t.Errorf("tool input must come back as its raw JSON, got %v", res.ToolCalls()[1].Parameters())
+	}
 	rm, ok := res.Message().(llm.ReasoningMessage)
 	if !ok || len(rm.ReasoningDetails()) != 1 || rm.ReasoningDetails()[0].Data != "opaque" {
 		t.Errorf("redacted thinking must be kept on the message: %v", res.Message())
@@ -808,5 +811,74 @@ func TestChatCompletionStream_EmptyTextBlockMatchesNonStreamed(t *testing.T) {
 	}
 	if !complete {
 		t.Error("streamed: expected a complete chunk")
+	}
+}
+
+// emptyInputToolReply scripts a parameterless tool call the way the API
+// streams it: an empty object on the start event and no input delta.
+func emptyInputToolReply() []sseEvent {
+	return []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "tool_use", "id": "toolu_1", "name": "todo_read", "input": map[string]any{}}}},
+		{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": ""}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "tool_use", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 2}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}
+}
+
+// A parameterless tool call must be executable whichever entry point
+// produced it: llm.NewToolCall turns empty parameters into "{}", which is
+// what both paths rely on.
+func TestParameterlessToolCall_BothPaths(t *testing.T) {
+	client := newTestClient(t, &fakeMessagesAPI{events: emptyInputToolReply()}, "")
+	tool := llm.NewFuncTool("todo_read", "", map[string]any{"type": "object"},
+		func(ctx context.Context, params map[string]any) (llm.ToolResult, error) {
+			return llm.NewToolResult("ok"), nil
+		})
+
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolCalls()) != 1 || res.ToolCalls()[0].Parameters() != "{}" {
+		t.Fatalf("non-streamed: expected {} parameters, got %v", res.ToolCalls())
+	}
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id, name string
+	var params strings.Builder
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatal(chunk.Error())
+		}
+		if chunk.IsComplete() {
+			continue
+		}
+		for _, tc := range chunk.Delta().ToolCalls() {
+			if tc.ID() != "" {
+				id, name = tc.ID(), tc.Name()
+			}
+			params.WriteString(tc.ParametersDelta())
+		}
+	}
+	// The accumulated deltas are empty; the loop rebuilds the call as
+	// agent/loop does, and the tool must run.
+	streamed := llm.NewToolCall(id, name, params.String())
+	if streamed.Parameters() != "{}" {
+		t.Fatalf("streamed: expected {} parameters, got %q", streamed.Parameters())
+	}
+	for _, call := range []llm.ToolCall{res.ToolCalls()[0], streamed} {
+		result, err := llm.ExecuteToolCall(context.Background(), call, tool)
+		if err != nil || result.Content() != "ok" {
+			t.Errorf("tool call %q must execute: %v / %v", call.ID(), result, err)
+		}
 	}
 }

@@ -101,8 +101,10 @@ provider absorbs for you: temperature is capped at 1 and dropped altogether
 when reasoning is enabled, system messages are hoisted into the top-level
 `system` field wherever they sit, and the JSON response format uses the
 structured output of the API when a schema is given (a system instruction
-asks for a JSON object otherwise). See the package documentation of
-`llm/provider/anthropic` for the full list.
+asks for a JSON object otherwise). Reasoning recorded by another provider
+is not replayable, as only Anthropic-signed thinking blocks are accepted
+back. See the package documentation of `llm/provider/anthropic` for the
+full list.
 
 ### Audio transcription
 

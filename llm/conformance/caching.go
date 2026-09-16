@@ -71,6 +71,20 @@ func testCaching(t *testing.T, client any) {
 
 		second := ask(t, prefix, cc, "Which canal bounds district 5? Answer with the number only.")
 
+		// Raw counters, kept in the log as evidence of the usage
+		// decomposition the provider applies.
+		for label, usage := range map[string]llm.ChatCompletionUsage{"cold": first, "warm": second} {
+			var read, written int64
+			if cu, ok := usage.(cachedUsage); ok {
+				read = cu.CachedTokens()
+			}
+			if cw, ok := usage.(llm.CacheCreationReportingUsage); ok {
+				written = cw.CacheCreationTokens()
+			}
+			t.Logf("%s call: prompt=%d cache_read=%d cache_creation=%d completion=%d",
+				label, usage.PromptTokens(), read, written, usage.CompletionTokens())
+		}
+
 		// Both calls carry the same prompt: their prompt token counts must
 		// match closely whether the prefix was written or read. A count
 		// twice as large on the writing call would mean the provider adds
