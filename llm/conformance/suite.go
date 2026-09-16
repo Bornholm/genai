@@ -16,6 +16,9 @@ const (
 	FeatureReasoning
 	FeatureEmbeddings
 	FeatureTranscription
+	// FeatureCaching: explicit prompt cache hints (llm.CacheControl) are
+	// forwarded and honoured, and cache hits are reported in the usage.
+	FeatureCaching
 )
 
 // Suite runs a set of conformance tests against an llm.Client.
@@ -79,6 +82,11 @@ func (s *Suite) Run(t *testing.T) {
 	if s.has(FeatureReasoning) {
 		t.Run("Reasoning", func(t *testing.T) {
 			testReasoning(t, s.client)
+		})
+	}
+	if s.has(FeatureCaching) {
+		t.Run("Caching", func(t *testing.T) {
+			testCaching(t, s.client)
 		})
 	}
 	if s.has(FeatureEmbeddings) {
