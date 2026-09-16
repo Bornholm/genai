@@ -54,10 +54,6 @@ func TestConformance(t *testing.T) {
 		),
 	).Run(t)
 
-	// Provider-specific: the Messages API documents structured output and
-	// extended thinking as two independent features; this pins down that
-	// the two can be combined on one request, since the provider does not
-	// refuse the combination locally.
 	// Provider-specific: with extended thinking the API refuses
 	// tool_choice any; the provider falls back to auto, and the model must
 	// still call the tool when the prompt leaves it no other option.
@@ -84,6 +80,10 @@ func TestConformance(t *testing.T) {
 		}
 	})
 
+	// Provider-specific: the Messages API documents structured output and
+	// extended thinking as two independent features; this pins down that
+	// the two can be combined on one request, since the provider does not
+	// refuse the combination locally.
 	t.Run("JSONWithReasoning", func(t *testing.T) {
 		schema := llm.NewResponseSchema("answer", "An arithmetic answer", map[string]any{
 			"type": "object",

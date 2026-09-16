@@ -752,3 +752,61 @@ func TestChatCompletionStream_ThinkingTextOnStartThenSignatureDelta(t *testing.T
 		t.Errorf("the streamed block must replay signed: %+v", replayed[1].Content)
 	}
 }
+
+func TestChatCompletionStream_TimeoutMidStreamIsRetryable(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"error", map[string]any{"type": "error", "error": map[string]any{"type": "timeout_error", "message": "too slow"}}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			streamErr = chunk.Error()
+		}
+	}
+	if streamErr == nil || !llm.IsRetryable(streamErr) {
+		t.Errorf("a timeout_error event must be retryable, got %v", streamErr)
+	}
+}
+
+func TestChatCompletionStream_EmptyTextBlockMatchesNonStreamed(t *testing.T) {
+	events := []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "text", "text": ""}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 1}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}
+	client := newTestClient(t, &fakeMessagesAPI{events: events}, "")
+
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil || res.Message().Content() != "" {
+		t.Fatalf("non-streamed: expected an empty response without error, got %v / %v", res, err)
+	}
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var complete bool
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatalf("streamed: the same response must not be an error: %v", chunk.Error())
+		}
+		if chunk.IsComplete() {
+			complete = true
+		}
+	}
+	if !complete {
+		t.Error("streamed: expected a complete chunk")
+	}
+}

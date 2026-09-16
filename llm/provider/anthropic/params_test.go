@@ -783,3 +783,30 @@ func TestBuildParams_RaiseIsBounded(t *testing.T) {
 		t.Errorf("expected budget + a quarter of it, got %d", params.MaxTokens)
 	}
 }
+
+func TestBuildParams_EmptySystemMessageIsSkipped(t *testing.T) {
+	cc := &llm.CacheControl{Type: "ephemeral"}
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleSystem, "You are terse."),
+		llm.NewMessageWithCacheControl(llm.RoleSystem, "", cc),
+		llm.NewMessage(llm.RoleUser, "Hi"),
+	))
+	system, _ := body["system"].([]any)
+	if len(system) != 1 {
+		t.Fatalf("an empty system message must not reach the wire: %v", body["system"])
+	}
+	if c, _ := system[0].(map[string]any)["cache_control"].(map[string]any); c["type"] != "ephemeral" {
+		t.Errorf("its cache hint must move to the previous system block: %v", system[0])
+	}
+}
+
+func TestBuildParams_EmptyAssistantMessageIsRejected(t *testing.T) {
+	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "A"),
+		llm.NewMessage(llm.RoleAssistant, ""),
+		llm.NewMessage(llm.RoleUser, "B"),
+	)), "claude-sonnet-5", DefaultMaxTokens)
+	if err == nil {
+		t.Fatal("expected an empty assistant turn to be rejected rather than folded away")
+	}
+}

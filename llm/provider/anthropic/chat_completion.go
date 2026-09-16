@@ -107,9 +107,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			return
 		}
 
-		// Same rule as ChatCompletion: a clean stream that produced no
-		// content at all is ErrNoMessage, not an empty assistant turn.
-		if emitter.emitted == 0 {
+		// Same rule as ChatCompletion: a clean stream that opened no
+		// content block at all is ErrNoMessage, not an empty assistant
+		// turn. Counting blocks rather than deltas keeps both entry points
+		// in step on a response made of an empty text block.
+		if emitter.blocks == 0 {
 			chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage))
 			return
 		}
@@ -148,8 +150,8 @@ type streamEmitter struct {
 	// open a block with the beginning of its text only, and a thinking
 	// block's signature always arrives as a delta.
 	completeInput map[int64]bool
-	// emitted counts the delta chunks sent so far.
-	emitted int
+	// blocks counts the content blocks opened so far.
+	blocks int
 
 	inputTokens         int64
 	outputTokens        int64
@@ -174,7 +176,6 @@ func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *str
 
 // send emits one delta chunk.
 func (e *streamEmitter) send(delta llm.StreamDelta) {
-	e.emitted++
 	e.chunks <- llm.NewStreamChunk(delta)
 }
 
@@ -191,7 +192,9 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		e.recordUsage(event.Message.Usage)
 
 	case "message_delta":
-		e.outputTokens = event.Usage.OutputTokens
+		if event.Usage.JSON.OutputTokens.Valid() {
+			e.outputTokens = event.Usage.OutputTokens
+		}
 		if event.Usage.JSON.InputTokens.Valid() {
 			e.inputTokens = event.Usage.InputTokens
 		}
@@ -203,6 +206,7 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		}
 
 	case "content_block_start":
+		e.blocks++
 		block := event.ContentBlock
 		switch block.Type {
 		case "text":
@@ -422,7 +426,9 @@ func statusForErrorType(errorType shared.ErrorType) int {
 	case shared.ErrorTypeNotFoundError:
 		return http.StatusNotFound
 	case shared.ErrorTypeTimeoutError:
-		return http.StatusRequestTimeout
+		// Transient, like an overload: a gateway status, which stays
+		// retryable, rather than the client-side 408.
+		return http.StatusGatewayTimeout
 	case shared.ErrorTypeRateLimitError:
 		return http.StatusTooManyRequests
 	case shared.ErrorTypeAPIError:

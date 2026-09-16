@@ -26,6 +26,10 @@
 //   - When several messages fold into one turn, the cached prefix follows
 //     the wire order of the turn (tool results first), not the order of
 //     the messages.
+//   - In a stream, a tool_use block opened with a non-empty input is taken
+//     as complete and its later input deltas are ignored; the API itself
+//     always opens the block empty, this only concerns gateways that ship
+//     the whole input at once.
 package anthropic
 
 import (

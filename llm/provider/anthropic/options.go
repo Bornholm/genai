@@ -7,7 +7,7 @@ import "github.com/bornholm/genai/llm/provider"
 // unlike the OpenAI one where it is optional.
 const DefaultMaxTokens int64 = 4096
 
-// Options contient les options de configuration du provider Anthropic.
+// Options holds the Anthropic provider configuration.
 type Options struct {
 	provider.CommonOptions
 

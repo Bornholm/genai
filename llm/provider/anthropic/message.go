@@ -66,6 +66,15 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			if len(m.Attachments()) > 0 {
 				return nil, nil, errors.New("system messages cannot have attachments")
 			}
+			if m.Content() == "" {
+				// An empty text block is refused by the API; the message
+				// carries nothing but, possibly, a cache hint, which then
+				// covers the system blocks so far.
+				if cc != nil && len(system) > 0 {
+					system[len(system)-1].CacheControl = *cc
+				}
+				continue
+			}
 			block := anthropicsdk.TextBlockParam{Text: m.Content()}
 			if cc != nil {
 				block.CacheControl = *cc
@@ -87,10 +96,15 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			if content := m.Content(); content != "" {
 				blocks = append(blocks, anthropicsdk.NewTextBlock(content))
 			}
-			if len(blocks) == 0 && hasReasoning(m) {
-				// Reasoning from another provider, unsigned: dropping the
-				// turn would silently fold the user turns around it.
-				return nil, nil, llm.NewValidationError("messages", "assistant message carries only unsigned reasoning, which the Messages API cannot replay")
+			if len(blocks) == 0 {
+				// Nothing to replay, whether the message is empty or only
+				// carries unsigned reasoning from another provider:
+				// dropping the turn would silently fold the user turns
+				// around it and hand the model a different history.
+				if hasReasoning(m) {
+					return nil, nil, llm.NewValidationError("messages", "assistant message carries only unsigned reasoning, which the Messages API cannot replay")
+				}
+				return nil, nil, llm.NewValidationError("messages", "assistant message has no content to send")
 			}
 			add(anthropicsdk.MessageParamRoleAssistant, blocks, cc)
 

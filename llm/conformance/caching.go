@@ -11,12 +11,13 @@ import (
 
 // cacheablePrefix builds a system prompt long enough to be cached by every
 // provider: Anthropic requires at least 4096 tokens on Haiku 4.5, the
-// strictest published minimum. Roughly 40 000 characters of prose land well
-// above it whatever the tokenizer.
+// strictest published minimum. Two hundred lines of this prose, about
+// 42 000 characters, land well above it whatever the tokenizer, and the
+// prefix is sent four times per run so it is kept no longer than that.
 func cacheablePrefix() string {
 	var b strings.Builder
 	b.WriteString("You are a meticulous archivist. The following reference material describes an imaginary city; answer questions about it briefly.\n\n")
-	for i := 0; i < 400; i++ {
+	for i := 0; i < 200; i++ {
 		fmt.Fprintf(&b, "District %d is bounded by canal %d to the north and by the old rampart to the south; its market opens on day %d of each week, its guild hall was rebuilt in year %d after the great flood, and its census counts %d households.\n",
 			i, i%17, i%7+1, 1200+i, 300+i*7)
 	}
