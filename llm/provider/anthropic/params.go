@@ -19,6 +19,9 @@ const minOutputMargin int64 = 1024
 // maxTemperature is the upper bound of the Messages API temperature range.
 const maxTemperature = 1.0
 
+// jsonModeInstruction stands in for a schema-less JSON response format.
+const jsonModeInstruction = "Respond with a single valid JSON object and nothing else: no prose, no markdown fences."
+
 // effortRatios maps an OpenAI-style reasoning effort to the share of
 // max_tokens granted to thinking, as documented on llm.ReasoningEffort.
 var effortRatios = map[llm.ReasoningEffort]float64{
@@ -69,19 +72,25 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 		case llm.ToolChoiceAuto:
 			params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAuto: &anthropicsdk.ToolChoiceAutoParam{}}
 		case llm.ToolChoiceRequired:
-			params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAny: &anthropicsdk.ToolChoiceAnyParam{}}
+			// With extended thinking the API only accepts auto or none;
+			// falling back to auto beats a 400 the caller cannot act on.
+			if thinking {
+				params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAuto: &anthropicsdk.ToolChoiceAutoParam{}}
+			} else {
+				params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAny: &anthropicsdk.ToolChoiceAnyParam{}}
+			}
 		case llm.ToolChoiceNone:
 			params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfNone: &anthropicsdk.ToolChoiceNoneParam{}}
 		}
 	}
 
 	// Structured output is only expressible with a schema: the Messages API
-	// has no schema-less "json mode". Failing loudly beats handing free text
-	// to a caller that will try to parse it.
-	if opts.ResponseFormat == llm.ResponseFormatJSON {
-		if opts.ResponseSchema == nil {
-			return nil, llm.NewValidationError("response_schema", "the anthropic provider requires a response schema for the JSON response format")
-		}
+	// has no schema-less "json mode". Without one (OpenAI's json_object,
+	// which the proxy forwards as a bare JSON format) the model is instructed
+	// through the system prompt instead, the way the OpenAI mode itself
+	// expects the prompt to ask for JSON.
+	jsonMode := opts.ResponseFormat == llm.ResponseFormatJSON
+	if jsonMode && opts.ResponseSchema != nil {
 		schema, err := toMap(opts.ResponseSchema.Schema())
 		if err != nil {
 			return nil, errors.Wrap(err, "could not convert response schema")
@@ -95,6 +104,9 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 	}
 	if len(messages) == 0 {
 		return nil, llm.NewValidationError("messages", "at least one non-system message is required")
+	}
+	if jsonMode && opts.ResponseSchema == nil {
+		system = append(system, anthropicsdk.TextBlockParam{Text: jsonModeInstruction})
 	}
 	params.System = system
 	params.Messages = messages
@@ -113,11 +125,14 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 // converted to a share of max_tokens. The API requires
 // minThinkingBudget <= budget_tokens < max_tokens, and an answer needs room
 // past the budget: an output margin of a quarter of max_tokens, at least
-// minOutputMargin, is always kept. When the caller chose max_tokens, that
-// ceiling is respected and the budget is clamped under the margin, with an
-// error when margin and minimum budget cannot both fit. When max_tokens is
-// only the provider default, it is raised instead so the budget the caller
-// asked for is honoured.
+// minOutputMargin, is always kept. A budget derived from an effort is a
+// share of max_tokens by definition, so it is clamped under the margin
+// whatever max_tokens is; an explicit budget is honoured by raising a
+// max_tokens that is only the provider default, and clamped under a
+// caller-chosen one, with an error when margin and minimum budget cannot
+// both fit. A caller asking for a large explicit budget should set
+// max_tokens itself: the raised value is not checked against the model's
+// output limit.
 func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.ReasoningOptions, explicitMaxTokens bool, defaultMaxTokens int64) (bool, error) {
 	if reasoning == nil {
 		return false, nil
@@ -150,7 +165,9 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 	}
 
 	margin := max(params.MaxTokens/4, minOutputMargin)
-	if explicitMaxTokens {
+	explicitBudget := reasoning.MaxTokens != nil
+	switch {
+	case explicitMaxTokens || !explicitBudget:
 		if budget > params.MaxTokens-margin {
 			budget = params.MaxTokens - margin
 		}
@@ -158,7 +175,7 @@ func configureThinking(params *anthropicsdk.MessageNewParams, reasoning *llm.Rea
 			return false, llm.NewValidationError("max_completion_tokens",
 				fmt.Sprintf("max completion tokens must be at least %d to hold a reasoning budget and an answer", minThinkingBudget+minOutputMargin))
 		}
-	} else if budget > params.MaxTokens-margin {
+	case budget > params.MaxTokens-margin:
 		// The default is ours to grow: keep the whole default for the answer.
 		params.MaxTokens = budget + defaultMaxTokens
 	}

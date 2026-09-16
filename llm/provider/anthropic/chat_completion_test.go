@@ -631,3 +631,77 @@ func TestChatCompletion_MalformedStreamIsRetryable(t *testing.T) {
 		t.Errorf("a malformed stream must be reported as a retryable upstream failure, got %v", err)
 	}
 }
+
+func TestChatCompletionStream_EmptyStreamIsNoMessage(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 0}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamErr error
+	var complete bool
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			streamErr = chunk.Error()
+		}
+		if chunk.IsComplete() {
+			complete = true
+		}
+	}
+	if !errors.Is(streamErr, llm.ErrNoMessage) || complete {
+		t.Errorf("an empty stream must end with ErrNoMessage and no complete chunk, got err=%v complete=%v", streamErr, complete)
+	}
+}
+
+func TestChatCompletionStream_WholeBlockOnStartIsNotDoubledByDeltas(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+			"content_block": map[string]any{"type": "text", "text": "Whole."}}},
+		{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+			"delta": map[string]any{"type": "text_delta", "text": "Whole."}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}},
+		{"content_block_start", map[string]any{"type": "content_block_start", "index": 1,
+			"content_block": map[string]any{"type": "tool_use", "id": "toolu_1", "name": "t", "input": map[string]any{"a": 1}}}},
+		{"content_block_delta", map[string]any{"type": "content_block_delta", "index": 1,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": `{"a":1}`}}},
+		{"content_block_stop", map[string]any{"type": "content_block_stop", "index": 1}},
+		{"message_delta", map[string]any{"type": "message_delta",
+			"delta": map[string]any{"stop_reason": "tool_use", "stop_sequence": nil},
+			"usage": map[string]any{"output_tokens": 4}}},
+		{"message_stop", map[string]any{"type": "message_stop"}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content, args strings.Builder
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatal(chunk.Error())
+		}
+		if chunk.IsComplete() {
+			continue
+		}
+		content.WriteString(chunk.Delta().Content())
+		for _, tc := range chunk.Delta().ToolCalls() {
+			args.WriteString(tc.ParametersDelta())
+		}
+	}
+	if content.String() != "Whole." {
+		t.Errorf("text doubled: %q", content.String())
+	}
+	if args.String() != `{"a":1}` {
+		t.Errorf("tool input doubled: %q", args.String())
+	}
+}

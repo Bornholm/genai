@@ -19,32 +19,36 @@ import (
 // so consecutive tool messages have to share one user turn.
 //
 // A cache hint means "cache everything up to and including this message".
-// Turns being reshuffled by the folding, the breakpoint is placed once the
-// turns are final, on the last block of the turn the message ended up in.
+// Turns being reshuffled by the folding, the breakpoints are placed once
+// the turns are final, each on the block its message ended with; the API
+// allows maxCacheBreakpoints of them per request, system blocks included.
 func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthropicsdk.MessageParam, error) {
 	var (
-		system   []anthropicsdk.TextBlockParam
-		messages []anthropicsdk.MessageParam
-		// cached maps a turn index to the cache hint to set on its last block.
-		cached = map[int]*anthropicsdk.CacheControlEphemeralParam{}
+		system      []anthropicsdk.TextBlockParam
+		messages    []anthropicsdk.MessageParam
+		breakpoints []cacheBreakpoint
 	)
 
 	add := func(role anthropicsdk.MessageParamRole, blocks []anthropicsdk.ContentBlockParamUnion, cc *anthropicsdk.CacheControlEphemeralParam) {
 		if len(blocks) == 0 {
 			// Nothing to send for this message; its cache hint still means
-			// "cache everything so far", so it moves to the previous turn.
+			// "cache everything so far", so it moves to the end of the
+			// previous turn. With no previous turn nothing precedes it and
+			// the hint is void.
 			if cc != nil && len(messages) > 0 {
-				cached[len(messages)-1] = cc
+				turn := &messages[len(messages)-1]
+				breakpoints = append(breakpoints, cacheBreakpoint{turn: len(messages) - 1, block: turn.Content[len(turn.Content)-1], cc: cc})
 			}
 			return
 		}
+		last := blocks[len(blocks)-1]
 		if n := len(messages); n > 0 && messages[n-1].Role == role {
 			messages[n-1].Content = orderTurn(role, append(messages[n-1].Content, blocks...))
 		} else {
 			messages = append(messages, anthropicsdk.MessageParam{Role: role, Content: blocks})
 		}
 		if cc != nil {
-			cached[len(messages)-1] = cc
+			breakpoints = append(breakpoints, cacheBreakpoint{turn: len(messages) - 1, block: last, cc: cc})
 		}
 	}
 
@@ -133,11 +137,47 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 		}
 	}
 
-	for turn, cc := range cached {
-		applyCacheControl(messages[turn].Content, cc)
+	count := len(breakpoints)
+	for _, block := range system {
+		if block.CacheControl.Type != "" {
+			count++
+		}
+	}
+	if count > maxCacheBreakpoints {
+		return nil, nil, llm.NewValidationError("cache_control", fmt.Sprintf("at most %d cache breakpoints per request, got %d", maxCacheBreakpoints, count))
+	}
+
+	for _, bp := range breakpoints {
+		content := messages[bp.turn].Content
+		for i := range content {
+			if sameBlock(content[i], bp.block) {
+				applyCacheControl(content[i:i+1], bp.cc)
+				break
+			}
+		}
 	}
 
 	return system, messages, nil
+}
+
+// maxCacheBreakpoints is the number of cache_control markers the API
+// accepts on one request.
+const maxCacheBreakpoints = 4
+
+// cacheBreakpoint remembers which block a cache hint must land on once the
+// turns are final: the block is identified by the pointer it wraps, which
+// survives the reordering done by orderTurn.
+type cacheBreakpoint struct {
+	turn  int
+	block anthropicsdk.ContentBlockParamUnion
+	cc    *anthropicsdk.CacheControlEphemeralParam
+}
+
+// sameBlock reports whether two unions wrap the same underlying block.
+func sameBlock(a, b anthropicsdk.ContentBlockParamUnion) bool {
+	return a.OfText == b.OfText && a.OfImage == b.OfImage && a.OfDocument == b.OfDocument &&
+		a.OfToolUse == b.OfToolUse && a.OfToolResult == b.OfToolResult &&
+		a.OfThinking == b.OfThinking && a.OfRedactedThinking == b.OfRedactedThinking
 }
 
 // orderTurn restores the block order the API expects inside a turn that

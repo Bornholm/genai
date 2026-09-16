@@ -37,7 +37,7 @@ func testCaching(t *testing.T, client any) {
 	ctx := context.Background()
 	prefix := cacheablePrefix()
 
-	ask := func(t *testing.T, cc *llm.CacheControl, question string) llm.ChatCompletionUsage {
+	ask := func(t *testing.T, prefix string, cc *llm.CacheControl, question string) llm.ChatCompletionUsage {
 		t.Helper()
 		res, err := chatClient.ChatCompletion(ctx,
 			llm.WithMessages(
@@ -61,14 +61,14 @@ func testCaching(t *testing.T, client any) {
 	t.Run("PrefixCacheHit", func(t *testing.T) {
 		cc := &llm.CacheControl{Type: "ephemeral"}
 
-		first := ask(t, cc, "Which canal bounds district 3? Answer with the number only.")
+		first := ask(t, prefix, cc, "Which canal bounds district 3? Answer with the number only.")
 		if cw, ok := first.(llm.CacheCreationReportingUsage); ok && cw.CacheCreationTokens() == 0 {
 			if cu, ok := first.(cachedUsage); !ok || cu.CachedTokens() == 0 {
 				t.Logf("first call reports neither cache writes nor cache reads; the prefix may already be cached from a previous run")
 			}
 		}
 
-		second := ask(t, cc, "Which canal bounds district 5? Answer with the number only.")
+		second := ask(t, prefix, cc, "Which canal bounds district 5? Answer with the number only.")
 		cu, ok := second.(cachedUsage)
 		if !ok {
 			t.Fatal("usage does not report cached tokens")
@@ -87,9 +87,9 @@ func testCaching(t *testing.T, client any) {
 
 		// The prefix differs from the previous subtest so the 1h entry is
 		// written here, not read from the 5m one.
-		prefix = "Extended cache variant.\n" + prefix
-		ask(t, cc, "Which canal bounds district 7? Answer with the number only.")
-		second := ask(t, cc, "Which canal bounds district 9? Answer with the number only.")
+		extended := "Extended cache variant.\n" + prefix
+		ask(t, extended, cc, "Which canal bounds district 7? Answer with the number only.")
+		second := ask(t, extended, cc, "Which canal bounds district 9? Answer with the number only.")
 		if cu, ok := second.(cachedUsage); !ok || cu.CachedTokens() == 0 {
 			t.Errorf("expected a cache hit on a prefix annotated with a 1h TTL, got %v", second)
 		}

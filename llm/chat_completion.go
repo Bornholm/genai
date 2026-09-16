@@ -347,7 +347,7 @@ func NewMessage(role Role, content string) *BaseMessage {
 }
 
 // NewMessageWithCacheControl creates a message annotated with an explicit
-// cache hint, forwarded to providers that support it (e.g. OpenRouter).
+// cache hint, forwarded to providers that support it (e.g. Anthropic, OpenRouter).
 func NewMessageWithCacheControl(role Role, content string, cc *CacheControl) *BaseMessage {
 	return &BaseMessage{
 		role:         role,

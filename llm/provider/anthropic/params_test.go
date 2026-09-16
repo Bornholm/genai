@@ -362,13 +362,83 @@ func TestBuildParams_JSONSchemaOutput(t *testing.T) {
 	}
 }
 
-func TestBuildParams_JSONWithoutSchemaIsRejected(t *testing.T) {
-	_, err := buildParams(llm.NewChatCompletionOptions(
-		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+func TestBuildParams_JSONWithoutSchemaInstructsTheModel(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(
+			llm.NewMessage(llm.RoleSystem, "You are terse."),
+			llm.NewMessage(llm.RoleUser, "Hi"),
+		),
 		llm.WithResponseFormat(llm.ResponseFormatJSON),
-	), "claude-sonnet-5", DefaultMaxTokens)
+	)
+	if _, present := body["output_config"]; present {
+		t.Errorf("no output_config without a schema: %v", body["output_config"])
+	}
+	system, _ := body["system"].([]any)
+	if len(system) != 2 || system[1].(map[string]any)["text"] != jsonModeInstruction {
+		t.Errorf("schema-less JSON mode must append the JSON instruction after the caller's system prompt: %v", body["system"])
+	}
+}
+
+func TestBuildParams_RequiredToolChoiceFallsBackToAutoWithThinking(t *testing.T) {
+	tool := llm.NewFuncTool("t", "", map[string]any{"type": "object"}, nil)
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTools(tool),
+		llm.WithToolChoice(llm.ToolChoiceRequired),
+		llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
+	)
+	if choice, _ := body["tool_choice"].(map[string]any); choice["type"] != "auto" {
+		t.Errorf("tool_choice any is refused with thinking, expected auto, got %v", body["tool_choice"])
+	}
+}
+
+func TestBuildParams_EffortClampsUnderALargeConfiguredDefault(t *testing.T) {
+	params, err := buildParams(llm.NewChatCompletionOptions(
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortXHigh)),
+	), "claude-sonnet-5", 64000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params.MaxTokens != 64000 {
+		t.Errorf("an effort must never raise max_tokens past the configured default, got %d", params.MaxTokens)
+	}
+	if budget := params.Thinking.OfEnabled.BudgetTokens; budget > 64000-16000 {
+		t.Errorf("budget %d leaves less than a quarter of max_tokens for the answer", budget)
+	}
+}
+
+func TestBuildParams_SeveralBreakpointsInOneMergedTurn(t *testing.T) {
+	cc := &llm.CacheControl{Type: "ephemeral"}
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "a", `{}`), llm.NewToolCall("call_2", "b", `{}`)),
+		&cachedToolMessage{BaseToolMessage: llm.NewToolMessage("call_1", llm.NewToolResult("one")), cc: cc},
+		&cachedToolMessage{BaseToolMessage: llm.NewToolMessage("call_2", llm.NewToolResult("two")), cc: cc},
+	))
+	user := blocksOf(t, messagesOf(t, body)[2])
+	if len(user) != 2 {
+		t.Fatalf("expected both tool results in one turn, got %v", user)
+	}
+	for i, block := range user {
+		if _, present := block["cache_control"]; !present {
+			t.Errorf("breakpoint of tool result %d lost after merging: %v", i, block)
+		}
+	}
+}
+
+func TestBuildParams_TooManyBreakpointsIsRejected(t *testing.T) {
+	cc := &llm.CacheControl{Type: "ephemeral"}
+	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMessageWithCacheControl(llm.RoleSystem, "s", cc),
+		llm.NewMessageWithCacheControl(llm.RoleUser, "1", cc),
+		llm.NewMessageWithCacheControl(llm.RoleAssistant, "2", cc),
+		llm.NewMessageWithCacheControl(llm.RoleUser, "3", cc),
+		llm.NewMessageWithCacheControl(llm.RoleAssistant, "4", cc),
+		llm.NewMessage(llm.RoleUser, "5"),
+	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
-		t.Fatal("expected an error: the Messages API has no schema-less JSON mode")
+		t.Fatal("expected more than 4 breakpoints to be rejected locally")
 	}
 }
 
@@ -510,14 +580,15 @@ func TestBuildParams_MalformedRequiredIsRejected(t *testing.T) {
 	}
 }
 
-func TestBuildParams_CacheControlLandsOnTheEndOfTheMergedTurn(t *testing.T) {
+func TestBuildParams_CacheControlFollowsItsMessageIntoTheMergedTurn(t *testing.T) {
 	call := llm.NewToolCall("call_1", "get_weather", `{}`)
 	toolMsg := llm.NewToolMessage("call_1", llm.NewToolResult("Sunny"))
 	body := marshalParams(t, llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "Hi"),
 		llm.NewToolCallsMessage(call),
-		// The hint is on the tool message, but the user message that
-		// follows shares its turn: the prefix must end after that turn.
+		// The hint is on the tool message; the user message that follows
+		// shares its turn but is not part of what the caller asked to
+		// cache, so the breakpoint stays on the tool_result block.
 		&cachedToolMessage{BaseToolMessage: toolMsg, cc: &llm.CacheControl{Type: "ephemeral"}},
 		llm.NewMessage(llm.RoleUser, "Thanks."),
 	))
@@ -525,11 +596,11 @@ func TestBuildParams_CacheControlLandsOnTheEndOfTheMergedTurn(t *testing.T) {
 	if len(user) != 2 || user[0]["type"] != "tool_result" || user[1]["type"] != "text" {
 		t.Fatalf("unexpected merged user turn: %v", user)
 	}
-	if _, present := user[0]["cache_control"]; present {
-		t.Errorf("breakpoint must not stop before the end of the turn: %v", user[0])
+	if cc, _ := user[0]["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("breakpoint must stay on the block its message ended with: %v", user[0])
 	}
-	if cc, _ := user[1]["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
-		t.Errorf("breakpoint must sit on the last block of the merged turn: %v", user[1])
+	if _, present := user[1]["cache_control"]; present {
+		t.Errorf("the following user text was not asked to be cached: %v", user[1])
 	}
 }
 

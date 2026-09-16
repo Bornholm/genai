@@ -107,6 +107,13 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			return
 		}
 
+		// Same rule as ChatCompletion: a clean stream that produced no
+		// content at all is ErrNoMessage, not an empty assistant turn.
+		if emitter.emitted == 0 {
+			chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage))
+			return
+		}
+
 		chunks <- llm.NewCompleteStreamChunk(emitter.usage())
 	}()
 
@@ -135,6 +142,11 @@ type streamEmitter struct {
 	// detailCount numbers the reasoning details in emission order, the
 	// same convention fromMessage uses.
 	detailCount int
+	// complete marks the blocks whose start event already carried their
+	// whole payload, so that deltas repeating it are not emitted twice.
+	complete map[int64]bool
+	// emitted counts the delta chunks sent so far.
+	emitted int
 
 	inputTokens         int64
 	outputTokens        int64
@@ -153,14 +165,21 @@ func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *str
 		excludeReasoning: excludeReasoning,
 		toolIndexes:      map[int64]int{},
 		thinking:         map[int64]*thinkingBlock{},
+		complete:         map[int64]bool{},
 	}
+}
+
+// send emits one delta chunk.
+func (e *streamEmitter) send(delta llm.StreamDelta) {
+	e.emitted++
+	e.chunks <- llm.NewStreamChunk(delta)
 }
 
 // emitDetail sends one complete reasoning detail, numbered in emission order.
 func (e *streamEmitter) emitDetail(detail llm.ReasoningDetail) {
 	detail.Index = e.detailCount
 	e.detailCount++
-	e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", "", []llm.ReasoningDetail{detail}))
+	e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", "", []llm.ReasoningDetail{detail}))
 }
 
 func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
@@ -185,7 +204,8 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		switch block.Type {
 		case "text":
 			if block.Text != "" {
-				e.chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, block.Text))
+				e.complete[event.Index] = true
+				e.send(llm.NewStreamDelta(llm.RoleAssistant, block.Text))
 			}
 		case "tool_use":
 			index := e.toolCount
@@ -195,15 +215,21 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			// input_json_delta events and opens the block with an empty
 			// object; some gateways ship the whole input here instead.
 			initial := initialToolInput(block.Input)
-			e.chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "",
+			if initial != "" {
+				e.complete[event.Index] = true
+			}
+			e.send(llm.NewStreamDelta(llm.RoleAssistant, "",
 				llm.NewToolCallDelta(index, block.ID, block.Name, initial),
 			))
 		case "thinking":
 			e.thinking[event.Index] = &thinkingBlock{text: block.Thinking, signature: block.Signature}
 			// Same courtesy as for tool inputs: a gateway may open the
 			// block with its whole text.
-			if block.Thinking != "" && !e.excludeReasoning {
-				e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", block.Thinking, nil))
+			if block.Thinking != "" {
+				e.complete[event.Index] = true
+				if !e.excludeReasoning {
+					e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", block.Thinking, nil))
+				}
 			}
 		case "redacted_thinking":
 			e.emitDetail(llm.ReasoningDetail{
@@ -225,16 +251,21 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		})
 
 	case "content_block_delta":
+		if e.complete[event.Index] {
+			// The block was delivered whole on its start event; a gateway
+			// streaming it again would otherwise double the content.
+			return
+		}
 		delta := event.Delta
 		switch delta.Type {
 		case "text_delta":
-			e.chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, delta.Text))
+			e.send(llm.NewStreamDelta(llm.RoleAssistant, delta.Text))
 		case "input_json_delta":
 			index, known := e.toolIndexes[event.Index]
 			if !known || delta.PartialJSON == "" {
 				return
 			}
-			e.chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "",
+			e.send(llm.NewStreamDelta(llm.RoleAssistant, "",
 				llm.NewToolCallDelta(index, "", "", delta.PartialJSON),
 			))
 		case "thinking_delta":
@@ -244,7 +275,7 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 			if e.excludeReasoning || delta.Thinking == "" {
 				return
 			}
-			e.chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", delta.Thinking, nil))
+			e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", delta.Thinking, nil))
 		case "signature_delta":
 			if block, open := e.thinking[event.Index]; open {
 				block.signature += delta.Signature
