@@ -91,20 +91,25 @@ func (s *Server) streamChatCompletion(
 	}
 
 	tracker := llm.NewStreamingUsageTracker()
-	hadStreamError := false
-	// Once a write to the response fails the SSE stream is unrecoverable:
-	// stop emitting instead of burning the rest of the upstream stream on a
-	// connection nobody reads.
-	writeFailed := false
+	// interruption stays nil while the stream is on its normal course. It is
+	// what tells the post-response hooks below that the usage they receive is
+	// partial, and why.
+	var interruption *StreamInterruption
+	chunksEmitted := 0
 
 	tracker.Update(firstChunk)
 	if err := emitter.EmitFirst(w, firstChunk); err != nil {
 		logStreamWriteError(ctx, "could not emit first stream chunk", err)
-		writeFailed = true
+		// Once a write to the response fails the SSE stream is unrecoverable:
+		// stop emitting instead of burning the rest of the upstream stream on a
+		// connection nobody reads.
+		interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+	} else {
+		chunksEmitted++
 	}
 	flush()
 
-	if !writeFailed && !firstChunk.IsComplete() {
+	if interruption == nil && !firstChunk.IsComplete() {
 		for chunk := range chunks {
 			if chunk.Error() != nil {
 				slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
@@ -113,16 +118,17 @@ func (s *Server) streamChatCompletion(
 					logStreamWriteError(ctx, "could not emit stream error", err)
 				}
 				flush()
-				hadStreamError = true
+				interruption = &StreamInterruption{Cause: StreamInterruptionUpstream, Err: chunk.Error()}
 				break
 			}
 
 			tracker.Update(chunk)
 			if err := emitter.Emit(w, chunk); err != nil {
 				logStreamWriteError(ctx, "could not emit stream chunk", err)
-				writeFailed = true
+				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
 				break
 			}
+			chunksEmitted++
 			flush()
 
 			if chunk.IsComplete() {
@@ -131,19 +137,18 @@ func (s *Server) streamChatCompletion(
 		}
 	}
 
-	// Skip finalization and post-response hooks on stream error — nothing useful to record.
-	if hadStreamError {
-		return
-	}
-
-	// A client that went away still consumed whatever the provider produced
-	// before it did, so usage is reported below; only the closing events are
-	// skipped, since writing them would fail again.
-	if !writeFailed {
+	// An interrupted stream still delivered whatever the provider produced
+	// before it stopped, and the provider billed it, so the usage collected so
+	// far is reported to the hooks below either way. Only the closing events are
+	// skipped: after a client hangup writing them would fail again, and after an
+	// upstream error the client has already been sent an error event.
+	if interruption == nil {
 		if err := emitter.Finalize(w, tracker.Usage()); err != nil {
 			logStreamWriteError(ctx, "could not finalize stream", err)
 		}
 		flush()
+	} else {
+		interruption.ChunksEmitted = chunksEmitted
 	}
 
 	usage := tracker.Usage()
@@ -162,10 +167,14 @@ func (s *Server) streamChatCompletion(
 			streamTokensUsed.CostCurrency = currency
 		}
 	}
+	// The status stays 200: the client was sent 200 headers the moment the first
+	// chunk arrived, and an interruption cannot take them back. Interruption is
+	// what tells a hook the exchange did not complete.
 	proxyRes := &ProxyResponse{
-		StatusCode: http.StatusOK,
-		Body:       nil,
-		TokensUsed: streamTokensUsed,
+		StatusCode:   http.StatusOK,
+		Body:         nil,
+		TokensUsed:   streamTokensUsed,
+		Interruption: interruption,
 	}
 	if err := s.chain.RunPostResponse(ctx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))

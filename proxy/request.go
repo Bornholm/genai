@@ -41,6 +41,42 @@ type ProxyResponse struct {
 	Body       any // will be serialized to JSON in OpenAI format
 	Headers    http.Header
 	TokensUsed *TokenUsage // filled after the LLM call
+
+	// Interruption describes how a streamed response ended when it did not end
+	// normally. It is nil for a completed stream and for every non-streamed
+	// response. Post-response hooks receive the response either way: the tokens
+	// the provider produced before the interruption were billed to the platform
+	// and delivered to the client, so they still have to be accounted for.
+	Interruption *StreamInterruption
+}
+
+// StreamInterruptionCause tells apart the two ways a streamed response stops
+// early. They are not symmetric: one is an upstream failure, the other ordinary
+// client traffic.
+type StreamInterruptionCause string
+
+const (
+	// StreamInterruptionUpstream means the provider itself failed mid-stream,
+	// after chunks had already reached the client. The error is forwarded to the
+	// client as an SSE error event and carried in StreamInterruption.Err.
+	StreamInterruptionUpstream StreamInterruptionCause = "upstream_error"
+	// StreamInterruptionClientGone means writing to the client failed — a closed
+	// tab, an aborted request, a reverse proxy timing out. The upstream stream is
+	// abandoned at that point.
+	StreamInterruptionClientGone StreamInterruptionCause = "client_gone"
+)
+
+// StreamInterruption records why a streamed response stopped before the
+// provider signalled completion.
+type StreamInterruption struct {
+	Cause StreamInterruptionCause
+	// Err is the underlying error. It is the provider error for
+	// StreamInterruptionUpstream and the failed write for
+	// StreamInterruptionClientGone.
+	Err error
+	// ChunksEmitted is how many chunks were written to the client before the
+	// interruption, the first one included.
+	ChunksEmitted int
 }
 
 type TokenUsage struct {
