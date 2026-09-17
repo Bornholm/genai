@@ -138,7 +138,38 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		cachedTokens     atomic.Int64
 		cost             atomic.Uint64 // float64 bits, see math.Float64bits/Float64frombits
 		costReported     atomic.Bool
+		usageReported    atomic.Bool
 	)
+
+	// currentUsage snapshots the counters published by the provider so far.
+	currentUsage := func() llm.ChatCompletionUsage {
+		if costReported.Load() {
+			return llm.NewChatCompletionUsageWithCost(
+				promptTokens.Load(),
+				completionTokens.Load(),
+				totalTokens.Load(),
+				cachedTokens.Load(),
+				math.Float64frombits(cost.Load()),
+				costCurrency,
+			)
+		}
+		return llm.NewChatCompletionUsageWithCache(
+			promptTokens.Load(),
+			completionTokens.Load(),
+			totalTokens.Load(),
+			cachedTokens.Load(),
+		)
+	}
+
+	// send writes one chunk, giving up if the consumer abandoned the channel.
+	// Without the select a caller that stops reading — a proxy whose client hung
+	// up — would strand this goroutine and the upstream HTTP response with it.
+	send := func(chunk llm.StreamChunk) {
+		select {
+		case chunks <- chunk:
+		case <-ctx.Done():
+		}
+	}
 
 	go func() {
 		defer close(chunks)
@@ -152,6 +183,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				chunk.Usage.TotalTokens == 0
 
 			if !isNullUsage {
+				usageReported.Store(true)
 				promptTokens.Store(chunk.Usage.PromptTokens)
 				completionTokens.Store(chunk.Usage.CompletionTokens)
 				totalTokens.Store(chunk.Usage.TotalTokens)
@@ -203,38 +235,35 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				)
 			}
 
-			chunks <- llm.NewStreamChunk(streamDelta)
+			// Most OpenAI-compatible backends only report usage in a final
+			// chunk, but some gateways send it as the stream goes. Carrying
+			// whatever has been published keeps it available to a consumer
+			// whose stream is cut short before that final chunk.
+			if usageReported.Load() {
+				send(llm.NewStreamChunkWithUsage(streamDelta, currentUsage()))
+			} else {
+				send(llm.NewStreamChunk(streamDelta))
+			}
 		}
 
 		if err := stream.Err(); err != nil {
+			var streamErr error
 			if httpRes != nil {
 				body, _ := io.ReadAll(httpRes.Body)
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body))))
+				streamErr = errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))
 			} else {
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				streamErr = errors.WithStack(err)
+			}
+			if usageReported.Load() {
+				send(llm.NewErrorStreamChunkWithUsage(streamErr, currentUsage()))
+			} else {
+				send(llm.NewErrorStreamChunk(streamErr))
 			}
 			return
 		}
 
 		// Send completion chunk
-		if costReported.Load() {
-			chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsageWithCost(
-				promptTokens.Load(),
-				completionTokens.Load(),
-				totalTokens.Load(),
-				cachedTokens.Load(),
-				math.Float64frombits(cost.Load()),
-				costCurrency,
-			))
-			return
-		}
-
-		chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsageWithCache(
-			promptTokens.Load(),
-			completionTokens.Load(),
-			totalTokens.Load(),
-			cachedTokens.Load(),
-		))
+		send(llm.NewCompleteStreamChunk(currentUsage()))
 	}()
 
 	return chunks, nil

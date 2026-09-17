@@ -44,15 +44,17 @@ type ProxyResponse struct {
 
 	// Interruption describes how a streamed response ended when it did not end
 	// normally. It is nil for a completed stream and for every non-streamed
-	// response. Post-response hooks receive the response either way: the tokens
-	// the provider produced before the interruption were billed to the platform
-	// and delivered to the client, so they still have to be accounted for.
+	// response. Post-response hooks receive the response either way: the request
+	// was made, the tokens the provider produced before the interruption were
+	// billed to the platform and delivered to the client, so they still have to
+	// be accounted for. Whether TokensUsed holds those tokens depends on the
+	// provider — see StreamInterruption.PartialUsage.
 	Interruption *StreamInterruption
 }
 
-// StreamInterruptionCause tells apart the two ways a streamed response stops
-// early. They are not symmetric: one is an upstream failure, the other ordinary
-// client traffic.
+// StreamInterruptionCause tells apart the ways a streamed response stops early.
+// They are not symmetric: one is an upstream failure, one is ordinary client
+// traffic, one is a provider going silent.
 type StreamInterruptionCause string
 
 const (
@@ -64,6 +66,11 @@ const (
 	// tab, an aborted request, a reverse proxy timing out. The upstream stream is
 	// abandoned at that point.
 	StreamInterruptionClientGone StreamInterruptionCause = "client_gone"
+	// StreamInterruptionTruncated means the provider closed the stream without
+	// ever signalling completion and without reporting an error. The client is
+	// sent an explicit error event rather than the normal closing events, which
+	// would claim a complete response.
+	StreamInterruptionTruncated StreamInterruptionCause = "stream_truncated"
 )
 
 // StreamInterruption records why a streamed response stopped before the
@@ -75,8 +82,27 @@ type StreamInterruption struct {
 	// StreamInterruptionClientGone.
 	Err error
 	// ChunksEmitted is how many chunks were written to the client before the
-	// interruption, the first one included.
+	// interruption, the first one included. It is the only measure of the
+	// volume produced that is always available — see PartialUsage.
 	ChunksEmitted int
+	// ErrorEventUndelivered marks an upstream failure whose SSE error event
+	// could not be written either, because the client had gone away too. Cause
+	// stays StreamInterruptionUpstream — the provider is what stopped the
+	// stream — but a hook billing or alerting on client hangups needs to know
+	// the client was not there to read the error.
+	ErrorEventUndelivered bool
+	// PartialUsage reports whether ProxyResponse.TokensUsed holds counts the
+	// provider actually published before the interruption.
+	//
+	// It is false far more often than one would hope: most providers only
+	// report usage in the final chunk of a stream, which by definition never
+	// arrives here. Anthropic publishes the input tokens in message_start and
+	// the output tokens as the stream runs, so its counts are real; the
+	// OpenAI-compatible providers usually report nothing until the end, and
+	// TokensUsed is then entirely zero. A hook must check this flag before
+	// charging an interrupted stream: a zeroed TokensUsed means "unknown", not
+	// "free". ChunksEmitted remains as a volume proxy.
+	PartialUsage bool
 }
 
 type TokenUsage struct {

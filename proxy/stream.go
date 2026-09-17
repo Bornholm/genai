@@ -45,7 +45,14 @@ func (s *Server) streamChatCompletion(
 ) {
 	ctx := r.Context()
 
-	chunks, err := client.ChatCompletionStream(ctx, opts...)
+	// streamCtx is what the provider goroutine watches. Cancelling it on an
+	// interruption is how the upstream stream is told to stop: a provider that
+	// keeps producing into a channel nobody reads holds its HTTP response open
+	// and goes on being billed.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	chunks, err := client.ChatCompletionStream(streamCtx, opts...)
 	if err != nil {
 		slog.ErrorContext(ctx, "stream chat completion error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)
@@ -90,12 +97,28 @@ func (s *Server) streamChatCompletion(
 		}
 	}
 
+	// abandonUpstream stops the provider and frees its goroutine. Cancelling
+	// alone is not enough: a provider whose send does not watch its context
+	// stays blocked on a full channel, so the remaining chunks are drained until
+	// it closes the channel and its deferred cleanup runs.
+	abandonUpstream := func() {
+		cancelStream()
+		go func() {
+			for range chunks { //nolint:revive // draining, the values are of no use
+			}
+		}()
+	}
+
 	tracker := llm.NewStreamingUsageTracker()
 	// interruption stays nil while the stream is on its normal course. It is
 	// what tells the post-response hooks below that the usage they receive is
 	// partial, and why.
 	var interruption *StreamInterruption
 	chunksEmitted := 0
+	// sawTerminal records that the provider signalled an end of its own, either
+	// a completion chunk or an error. A stream that closes without one is
+	// truncated, not complete.
+	sawTerminal := false
 
 	tracker.Update(firstChunk)
 	if err := emitter.EmitFirst(w, firstChunk); err != nil {
@@ -104,21 +127,39 @@ func (s *Server) streamChatCompletion(
 		// stop emitting instead of burning the rest of the upstream stream on a
 		// connection nobody reads.
 		interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+		abandonUpstream()
 	} else {
 		chunksEmitted++
 	}
 	flush()
 
+	if firstChunk.IsComplete() {
+		sawTerminal = true
+	}
+
 	if interruption == nil && !firstChunk.IsComplete() {
 		for chunk := range chunks {
 			if chunk.Error() != nil {
+				sawTerminal = true
 				slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
+				// A provider that knows its counters attaches them to the error
+				// chunk itself, so record it before anything else.
+				tracker.Update(chunk)
 				// Headers already sent; forward the error as an event.
+				undelivered := false
 				if err := emitter.EmitError(w, chunk.Error()); err != nil {
 					logStreamWriteError(ctx, "could not emit stream error", err)
+					// The client is gone too. The upstream failure is still what
+					// stopped the stream, but a hook must not assume the error
+					// event reached anyone.
+					undelivered = true
 				}
 				flush()
-				interruption = &StreamInterruption{Cause: StreamInterruptionUpstream, Err: chunk.Error()}
+				interruption = &StreamInterruption{
+					Cause:                 StreamInterruptionUpstream,
+					Err:                   chunk.Error(),
+					ErrorEventUndelivered: undelivered,
+				}
 				break
 			}
 
@@ -126,22 +167,37 @@ func (s *Server) streamChatCompletion(
 			if err := emitter.Emit(w, chunk); err != nil {
 				logStreamWriteError(ctx, "could not emit stream chunk", err)
 				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+				abandonUpstream()
 				break
 			}
 			chunksEmitted++
 			flush()
 
 			if chunk.IsComplete() {
+				sawTerminal = true
 				break
 			}
 		}
 	}
 
+	// The channel closed without the provider ever signalling completion or
+	// failure. Nothing more is coming, and finalizing here would tell the client
+	// it received a whole response. Report it as its own kind of interruption.
+	if interruption == nil && !sawTerminal {
+		err := errors.New("upstream stream ended before completion")
+		slog.ErrorContext(ctx, "stream truncated", slog.Any("error", err))
+		if emitErr := emitter.EmitError(w, err); emitErr != nil {
+			logStreamWriteError(ctx, "could not emit stream error", emitErr)
+		}
+		flush()
+		interruption = &StreamInterruption{Cause: StreamInterruptionTruncated, Err: err}
+	}
+
 	// An interrupted stream still delivered whatever the provider produced
 	// before it stopped, and the provider billed it, so the usage collected so
 	// far is reported to the hooks below either way. Only the closing events are
-	// skipped: after a client hangup writing them would fail again, and after an
-	// upstream error the client has already been sent an error event.
+	// skipped: after a client hangup writing them would fail again, and on the
+	// other two paths an error event has already been sent in their place.
 	if interruption == nil {
 		if err := emitter.Finalize(w, tracker.Usage()); err != nil {
 			logStreamWriteError(ctx, "could not finalize stream", err)
@@ -149,6 +205,7 @@ func (s *Server) streamChatCompletion(
 		flush()
 	} else {
 		interruption.ChunksEmitted = chunksEmitted
+		interruption.PartialUsage = tracker.Reported()
 	}
 
 	usage := tracker.Usage()

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -880,5 +881,113 @@ func TestParameterlessToolCall_BothPaths(t *testing.T) {
 		if err != nil || result.Content() != "ok" {
 			t.Errorf("tool call %q must execute: %v / %v", call.ID(), result, err)
 		}
+	}
+}
+
+// TestChatCompletionStream_DeltasCarryUsageAsItGoes asserts that every delta
+// carries the counters the provider has already published. A consumer whose
+// stream is cut short before message_delta — a proxy whose client hangs up, an
+// agent loop giving up — keeps the input tokens that were billed all the same,
+// instead of recording a request at zero tokens.
+func TestChatCompletionStream_DeltasCarryUsageAsItGoes(t *testing.T) {
+	fake := &fakeMessagesAPI{events: scriptedReply()}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(),
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Weather in Paris?")),
+	)
+	if err != nil {
+		t.Fatalf("ChatCompletionStream error: %+v", err)
+	}
+
+	deltas := 0
+	withUsage := 0
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			t.Fatalf("stream error: %+v", chunk.Error())
+		}
+		if chunk.IsComplete() {
+			continue
+		}
+		deltas++
+		usage := chunk.Usage()
+		if usage == nil {
+			continue
+		}
+		withUsage++
+		// message_start reports 10 input tokens, 100 cache reads and 50 cache
+		// creation, which newUsage folds into the prompt tokens.
+		if got, want := usage.PromptTokens(), int64(160); got != want {
+			t.Errorf("delta usage PromptTokens() = %d, want %d from message_start", got, want)
+		}
+	}
+
+	if deltas == 0 {
+		t.Fatal("no delta chunk was emitted")
+	}
+	if withUsage != deltas {
+		t.Errorf("%d of %d deltas carried usage, want all of them: message_start published the counters before the first one", withUsage, deltas)
+	}
+}
+
+// TestChatCompletionStream_ErrorChunkCarriesUsage asserts that a stream dying
+// mid-flight still reports what the provider had billed by then.
+func TestChatCompletionStream_ErrorChunkCarriesUsage(t *testing.T) {
+	fake := &fakeMessagesAPI{events: []sseEvent{
+		scriptedReply()[0],
+		{"error", map[string]any{"type": "error", "error": map[string]any{"type": "overloaded_error", "message": "Overloaded"}}},
+	}}
+	client := newTestClient(t, fake, "")
+
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatalf("ChatCompletionStream error: %+v", err)
+	}
+
+	var errChunk llm.StreamChunk
+	for chunk := range chunks {
+		if chunk.Error() != nil {
+			errChunk = chunk
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("expected an error chunk")
+	}
+	usage := errChunk.Usage()
+	if usage == nil {
+		t.Fatal("error chunk carries no usage: the input tokens billed before the failure are lost")
+	}
+	if got, want := usage.PromptTokens(), int64(160); got != want {
+		t.Errorf("error chunk usage PromptTokens() = %d, want %d", got, want)
+	}
+}
+
+// TestChatCompletionStream_StopsWhenConsumerGivesUp asserts that a consumer
+// abandoning the channel releases the provider goroutine instead of stranding
+// it — and the upstream HTTP response with it — on a send nobody reads.
+func TestChatCompletionStream_StopsWhenConsumerGivesUp(t *testing.T) {
+	fake := &fakeMessagesAPI{events: scriptedReply()}
+	client := newTestClient(t, fake, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	chunks, err := client.ChatCompletionStream(ctx, llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+	if err != nil {
+		t.Fatalf("ChatCompletionStream error: %+v", err)
+	}
+
+	// Read one chunk, then walk away without draining the rest.
+	<-chunks
+	cancel()
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for range chunks { //nolint:revive // draining, the values are of no use
+		}
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the provider goroutine never closed its channel after the consumer gave up")
 	}
 }

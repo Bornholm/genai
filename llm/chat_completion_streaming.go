@@ -178,6 +178,25 @@ func NewStreamChunk(delta StreamDelta) *BaseStreamChunk {
 	}
 }
 
+// NewStreamChunkWithUsage creates a delta chunk that also carries the usage
+// accounted for so far.
+//
+// Providers that learn their counters while the stream runs — Anthropic reports
+// the input tokens in message_start, OpenAI-compatible gateways sometimes send
+// usage mid-stream — should use it instead of NewStreamChunk. A consumer whose
+// stream is cut short before the final chunk then still has the counts the
+// provider had published at that point, instead of zeroes. The usage is
+// cumulative, not incremental: each chunk carries the totals known so far, which
+// is what StreamingUsageTracker expects.
+func NewStreamChunkWithUsage(delta StreamDelta, usage ChatCompletionUsage) *BaseStreamChunk {
+	return &BaseStreamChunk{
+		chunkType: StreamChunkTypeDelta,
+		delta:     delta,
+		usage:     usage,
+		complete:  false,
+	}
+}
+
 // NewCompleteStreamChunk creates a final streaming chunk with usage information
 func NewCompleteStreamChunk(usage ChatCompletionUsage) *BaseStreamChunk {
 	return &BaseStreamChunk{
@@ -192,6 +211,19 @@ func NewErrorStreamChunk(err error) *BaseStreamChunk {
 	return &BaseStreamChunk{
 		chunkType: StreamChunkTypeError,
 		err:       err,
+		complete:  false,
+	}
+}
+
+// NewErrorStreamChunkWithUsage creates an error streaming chunk that also
+// carries the usage accounted for before the failure. The provider billed what
+// it had already produced, so a caller recording usage keeps it even though the
+// stream never reached its completion chunk.
+func NewErrorStreamChunkWithUsage(err error, usage ChatCompletionUsage) *BaseStreamChunk {
+	return &BaseStreamChunk{
+		chunkType: StreamChunkTypeError,
+		err:       err,
+		usage:     usage,
 		complete:  false,
 	}
 }
@@ -248,11 +280,13 @@ type StreamingUsageTracker struct {
 	cacheCreationTokens int64
 	cost                *float64
 	costCurrency        string
+	reported            bool
 }
 
 // Update updates the usage tracker with data from a streaming chunk
 func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 	if usage := chunk.Usage(); usage != nil {
+		t.reported = true
 		t.promptTokens = usage.PromptTokens()
 		t.completionTokens = usage.CompletionTokens()
 		t.totalTokens = usage.TotalTokens()
@@ -270,6 +304,14 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 			}
 		}
 	}
+}
+
+// Reported reports whether any chunk carried usage at all. It tells apart a
+// provider that published zero tokens from one that published nothing, which
+// matters when a stream is cut short before its final chunk: the counts are
+// then unknown rather than null.
+func (t *StreamingUsageTracker) Reported() bool {
+	return t.reported
 }
 
 // Usage returns the current usage as a ChatCompletionUsage

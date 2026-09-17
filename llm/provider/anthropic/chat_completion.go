@@ -97,13 +97,16 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		stream := c.client.Messages.NewStreaming(ctx, *params)
 		defer stream.Close()
 
-		emitter := newStreamEmitter(chunks, excludeReasoning(opts))
+		emitter := newStreamEmitter(ctx, chunks, excludeReasoning(opts))
 
 		for stream.Next() {
 			emitter.handle(stream.Current())
 		}
 		if err := stream.Err(); err != nil {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(mapError(err)))
+			// The input tokens are known from message_start and the output
+			// tokens from the last message_delta, so a stream that dies
+			// mid-flight still reports what the provider billed.
+			emitter.sendChunk(llm.NewErrorStreamChunkWithUsage(errors.WithStack(mapError(err)), emitter.usage()))
 			return
 		}
 
@@ -112,11 +115,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// turn. Counting blocks rather than deltas keeps both entry points
 		// in step on a response made of an empty text block.
 		if emitter.blocks == 0 {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage))
+			emitter.sendChunk(llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage)))
 			return
 		}
 
-		chunks <- llm.NewCompleteStreamChunk(emitter.usage())
+		emitter.sendChunk(llm.NewCompleteStreamChunk(emitter.usage()))
 	}()
 
 	return chunks, nil
@@ -131,6 +134,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 // cannot be replayed. Excluding the reasoning silences the incremental text
 // only; the closing detail is always emitted so the turn can be replayed.
 type streamEmitter struct {
+	// ctx guards every send: a consumer that abandons the channel — a proxy
+	// whose client hung up, an agent loop giving up — cancels it, and without
+	// this the goroutine would block forever on an unread channel, leaking the
+	// upstream HTTP response with it.
+	ctx              context.Context
 	chunks           chan<- llm.StreamChunk
 	excludeReasoning bool
 
@@ -157,6 +165,9 @@ type streamEmitter struct {
 	outputTokens        int64
 	cacheReadTokens     int64
 	cacheCreationTokens int64
+	// usageSeen marks that the provider published counters at least once, so
+	// that deltas carry them instead of a zeroed usage.
+	usageSeen bool
 }
 
 type thinkingBlock struct {
@@ -164,8 +175,9 @@ type thinkingBlock struct {
 	signature string
 }
 
-func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *streamEmitter {
+func newStreamEmitter(ctx context.Context, chunks chan<- llm.StreamChunk, excludeReasoning bool) *streamEmitter {
 	return &streamEmitter{
+		ctx:              ctx,
 		chunks:           chunks,
 		excludeReasoning: excludeReasoning,
 		toolIndexes:      map[int64]int{},
@@ -174,9 +186,22 @@ func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *str
 	}
 }
 
-// send emits one delta chunk.
+// send emits one delta chunk, carrying the usage known so far once the
+// provider has published any.
 func (e *streamEmitter) send(delta llm.StreamDelta) {
-	e.chunks <- llm.NewStreamChunk(delta)
+	if e.usageSeen {
+		e.sendChunk(llm.NewStreamChunkWithUsage(delta, e.usage()))
+		return
+	}
+	e.sendChunk(llm.NewStreamChunk(delta))
+}
+
+// sendChunk writes one chunk to the channel, giving up if the consumer is gone.
+func (e *streamEmitter) sendChunk(chunk llm.StreamChunk) {
+	select {
+	case e.chunks <- chunk:
+	case <-e.ctx.Done():
+	}
 }
 
 // emitDetail sends one complete reasoning detail, numbered in emission order.
@@ -194,9 +219,11 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 	case "message_delta":
 		if event.Usage.JSON.OutputTokens.Valid() {
 			e.outputTokens = event.Usage.OutputTokens
+			e.usageSeen = true
 		}
 		if event.Usage.JSON.InputTokens.Valid() {
 			e.inputTokens = event.Usage.InputTokens
+			e.usageSeen = true
 		}
 		if event.Usage.JSON.CacheReadInputTokens.Valid() {
 			e.cacheReadTokens = event.Usage.CacheReadInputTokens
@@ -285,6 +312,7 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 }
 
 func (e *streamEmitter) recordUsage(usage anthropicsdk.Usage) {
+	e.usageSeen = true
 	e.inputTokens = usage.InputTokens
 	e.outputTokens = usage.OutputTokens
 	e.cacheReadTokens = usage.CacheReadInputTokens
