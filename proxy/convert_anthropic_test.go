@@ -709,3 +709,39 @@ func TestConvertAnthropicSystemJSON_MatchesParseMessagesRequest(t *testing.T) {
 		t.Errorf("cache control %+v != %+v", parseCC.CacheControl(), convertCC.CacheControl())
 	}
 }
+
+// TestFormatMessagesResponse_SplitsCacheTokens asserts that the non-streamed
+// path reports the cache counters in their own fields, like message_start on
+// the streamed one. genai folds them into the prompt tokens; the Messages API
+// does not, and a client pricing the call off input_tokens would overcharge.
+func TestFormatMessagesResponse_SplitsCacheTokens(t *testing.T) {
+	msg := llm.NewMessage(llm.RoleAssistant, "Hello!")
+	// 10 input tokens, 100 read from the cache and 50 written to it: genai
+	// reports 160 prompt tokens.
+	usage := llm.NewChatCompletionUsageWithCacheCreation(160, 5, 165, 100, 50)
+	res := llm.NewChatCompletionResponse(msg, usage)
+
+	raw, err := json.Marshal(FormatMessagesResponse(res, "claude-3-5-sonnet-20241022"))
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	got := m["usage"].(map[string]any)
+
+	for _, tc := range []struct {
+		field string
+		want  float64
+	}{
+		{"input_tokens", 10},
+		{"output_tokens", 5},
+		{"cache_read_input_tokens", 100},
+		{"cache_creation_input_tokens", 50},
+	} {
+		if got[tc.field] != tc.want {
+			t.Errorf("usage.%s = %v, want %v", tc.field, got[tc.field], tc.want)
+		}
+	}
+}

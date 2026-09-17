@@ -1,22 +1,31 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
-	"sync"
+	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 )
 
-// brokenPipeWriter fails every write past the first one with syscall.EPIPE,
-// mimicking a client that hangs up mid-stream.
+// brokenPipeWriter fails every write past failAfter with syscall.EPIPE,
+// mimicking a client that hangs up mid-stream. A zero failAfter means the very
+// first write succeeds and nothing else does.
 type brokenPipeWriter struct {
-	header http.Header
-	writes int
-	code   int
+	header    http.Header
+	writes    int
+	code      int
+	failAfter int
+	body      bytes.Buffer
+	// onFail runs on the first failed write, the way net/http cancels the
+	// request context when the connection drops.
+	onFail func()
 }
 
 func (w *brokenPipeWriter) Header() http.Header {
@@ -30,26 +39,27 @@ func (w *brokenPipeWriter) WriteHeader(code int) { w.code = code }
 
 func (w *brokenPipeWriter) Write(p []byte) (int, error) {
 	w.writes++
-	if w.writes > 1 {
+	limit := w.failAfter
+	if limit == 0 {
+		limit = 1
+	}
+	if w.writes > limit {
+		if w.onFail != nil {
+			w.onFail()
+			w.onFail = nil
+		}
 		return 0, syscall.EPIPE
 	}
+	w.body.Write(p)
 	return len(p), nil
 }
 
 func (w *brokenPipeWriter) Flush() {}
 
-// countingStreamClient emits chunks deltas and records how many were consumed.
+// countingStreamClient emits chunks deltas, giving up as soon as the consumer
+// stops reading.
 type countingStreamClient struct {
 	chunks int
-
-	mu       sync.Mutex
-	produced int
-}
-
-func (c *countingStreamClient) producedCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.produced
 }
 
 func (c *countingStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
@@ -60,9 +70,6 @@ func (c *countingStreamClient) ChatCompletionStream(ctx context.Context, _ ...ll
 			chunk := llm.StreamChunk(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok")))
 			select {
 			case out <- chunk:
-				c.mu.Lock()
-				c.produced++
-				c.mu.Unlock()
 			case <-ctx.Done():
 				return
 			}
@@ -107,9 +114,10 @@ func TestStreamChatCompletion_StopsOnClientDisconnect(t *testing.T) {
 	if w.writes != 2 {
 		t.Errorf("writes = %d, want 2 (the stream kept emitting after the client went away)", w.writes)
 	}
-	if produced := client.producedCount(); produced > 3 {
-		t.Errorf("consumed %d upstream chunks after the client went away, want at most 3", produced)
-	}
+	// Nothing is asserted on the upstream count here: it is drained in the
+	// background to release the provider goroutine, so any threshold would be a
+	// race. That the upstream is released at all is what
+	// TestStreamChatCompletion_ReleasesUpstreamOnHangup covers.
 	if !postCalled {
 		t.Error("post-response hook was not run: usage consumed before the disconnect goes unrecorded")
 	}
@@ -142,3 +150,732 @@ func TestIsClientGone(t *testing.T) {
 
 var _ http.ResponseWriter = &brokenPipeWriter{}
 var _ http.Flusher = &brokenPipeWriter{}
+
+// erroringStreamClient emits okChunks good deltas and then a chunk carrying an
+// error, mimicking a provider that fails after the response started flowing.
+// Each delta carries the usage published so far — what Anthropic does, and what
+// makes the partial counts of an interrupted stream more than zeroes. With
+// silentUsage set it publishes nothing instead, the way the OpenAI-compatible
+// providers behave, which is the case where the counts stay unknown.
+type erroringStreamClient struct {
+	okChunks     int
+	err          error
+	silentUsage  bool
+	promptTokens int64
+}
+
+func (c *erroringStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk)
+	go func() {
+		defer close(out)
+		for i := 0; i < c.okChunks; i++ {
+			delta := llm.NewStreamDelta(llm.RoleAssistant, "tok")
+			var chunk llm.StreamChunk = llm.NewStreamChunk(delta)
+			if !c.silentUsage {
+				// Cumulative, one completion token per delta emitted.
+				completion := int64(i + 1)
+				chunk = llm.NewStreamChunkWithUsage(delta, llm.NewChatCompletionUsage(
+					c.promptTokens, completion, c.promptTokens+completion,
+				))
+			}
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+		select {
+		case out <- llm.StreamChunk(llm.NewErrorStreamChunk(c.err)):
+		case <-ctx.Done():
+		}
+	}()
+	return out, nil
+}
+
+func (c *erroringStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *erroringStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *erroringStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+// capturingPostHook keeps the response it was handed, so a test can assert on
+// the usage and the interruption the chain reported.
+type capturingPostHook struct {
+	res         *ProxyResponse
+	ctxErr      error
+	hasDeadline bool
+}
+
+func (h *capturingPostHook) Name() string  { return "test.capture" }
+func (h *capturingPostHook) Priority() int { return 1 }
+func (h *capturingPostHook) PostResponse(ctx context.Context, _ *ProxyRequest, res *ProxyResponse) (*HookResult, error) {
+	h.res = res
+	h.ctxErr = ctx.Err()
+	_, h.hasDeadline = ctx.Deadline()
+	return nil, nil
+}
+
+// TestStreamChatCompletion_RecordsUsageOnUpstreamError asserts that a provider
+// failing mid-stream still runs the post-response hooks with the partial usage.
+// The tokens produced before the failure reached the client and were billed by
+// the provider, so skipping the hooks loses them for usage, quotas and costs.
+func TestStreamChatCompletion_RecordsUsageOnUpstreamError(t *testing.T) {
+	client := &erroringStreamClient{okChunks: 3, promptTokens: 7, err: errors.New("upstream exploded")}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := httptest.NewRecorder()
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil {
+		t.Fatal("post-response hook was not run: usage produced before the upstream error goes unrecorded")
+	}
+	if capture.res.Interruption == nil {
+		t.Fatal("Interruption is nil: hooks cannot tell the stream was cut short")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionUpstream; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+	if capture.res.Interruption.Err == nil {
+		t.Error("Interruption.Err is nil, want the upstream error")
+	}
+	if got := capture.res.Interruption.ChunksEmitted; got != 3 {
+		t.Errorf("Interruption.ChunksEmitted = %d, want 3", got)
+	}
+	if capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is true, but the client read the error event")
+	}
+	if !capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is false, but the provider published its counters before failing")
+	}
+	if capture.res.TokensUsed == nil {
+		t.Fatal("TokensUsed is nil, want the partial counts collected before the error")
+	}
+	// Asserting the values, not just non-nilness: TokensUsed is always
+	// allocated, so a nil check passes just as well on an empty row.
+	if got, want := capture.res.TokensUsed.PromptTokens, 7; got != want {
+		t.Errorf("TokensUsed.PromptTokens = %d, want %d", got, want)
+	}
+	if got, want := capture.res.TokensUsed.CompletionTokens, 3; got != want {
+		t.Errorf("TokensUsed.CompletionTokens = %d, want %d", got, want)
+	}
+
+	// The client must see the error and never the normal end of stream: a
+	// "[DONE]" here would let it treat a truncated answer as a whole one.
+	body := w.Body.String()
+	if !strings.Contains(body, "upstream exploded") {
+		t.Errorf("response body does not carry the error event:\n%s", body)
+	}
+	if strings.Contains(body, "[DONE]") {
+		t.Errorf("response body ends with [DONE] although the stream was cut short:\n%s", body)
+	}
+}
+
+// TestStreamChatCompletion_ReportsUnknownUsageOnUpstreamError guards the honest
+// half of the contract: with a provider that only reports usage in its final
+// chunk — every OpenAI-compatible one — an interruption leaves the counts
+// unknown. PartialUsage says so, so that a zeroed TokensUsed is not billed as a
+// free request.
+func TestStreamChatCompletion_ReportsUnknownUsageOnUpstreamError(t *testing.T) {
+	client := &erroringStreamClient{okChunks: 3, silentUsage: true, err: errors.New("upstream exploded")}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := httptest.NewRecorder()
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is true although the provider never published any usage")
+	}
+	if got := capture.res.TokensUsed.TotalTokens; got != 0 {
+		t.Errorf("TokensUsed.TotalTokens = %d, want 0 when nothing was published", got)
+	}
+	if got := capture.res.Interruption.ChunksEmitted; got != 3 {
+		t.Errorf("Interruption.ChunksEmitted = %d, want 3 as the volume proxy", got)
+	}
+}
+
+// TestStreamChatCompletion_ReportsUndeliveredErrorEvent covers the double
+// failure: the provider dies mid-stream and the client is not there to read the
+// error event either. The cause stays the upstream failure — that is what
+// stopped the stream — but the flag keeps a hook from assuming the client was
+// told.
+func TestStreamChatCompletion_ReportsUndeliveredErrorEvent(t *testing.T) {
+	client := &erroringStreamClient{okChunks: 3, promptTokens: 7, err: errors.New("upstream exploded")}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	// The three deltas go through, the error event that follows does not.
+	w := &brokenPipeWriter{failAfter: 3}
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionUpstream; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+	if !capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is false although writing the error event failed")
+	}
+}
+
+// truncatingStreamClient closes its channel after a few deltas without ever
+// sending a completion or an error chunk, the way a provider whose connection
+// drops can leave a stream hanging.
+type truncatingStreamClient struct {
+	chunks int
+}
+
+func (c *truncatingStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk)
+	go func() {
+		defer close(out)
+		for i := 0; i < c.chunks; i++ {
+			select {
+			case out <- llm.StreamChunk(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok"))):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (c *truncatingStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *truncatingStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *truncatingStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+// TestStreamChatCompletion_ReportsTruncatedStream asserts that a stream ending
+// without any terminal chunk is reported as an interruption instead of being
+// finalized as a complete response.
+func TestStreamChatCompletion_ReportsTruncatedStream(t *testing.T) {
+	client := &truncatingStreamClient{chunks: 3}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := httptest.NewRecorder()
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("Interruption is nil: a stream that never completed was reported as a whole response")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionTruncated; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+	if got := capture.res.Interruption.ChunksEmitted; got != 3 {
+		t.Errorf("Interruption.ChunksEmitted = %d, want 3", got)
+	}
+	if capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is true although a truncated stream published no usage")
+	}
+	// The client keeps its normal end of stream: a provider ending a response
+	// without a terminal chunk is not a protocol error, and an error event here
+	// would have it retry a response it already received in full.
+	if body := w.Body.String(); !strings.Contains(body, "[DONE]") {
+		t.Errorf("response body does not end with [DONE]; the client is left hanging:\n%s", body)
+	}
+	if capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is true although the client read the closing events")
+	}
+}
+
+// TestStreamChatCompletion_ReportsUndeliveredClosingEvents asserts that a client
+// that went away before the closing events is reported as such on the truncated
+// path too, not only on the upstream one.
+func TestStreamChatCompletion_ReportsUndeliveredClosingEvents(t *testing.T) {
+	client := &truncatingStreamClient{chunks: 3}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	// The three deltas go through, the closing events do not.
+	w := &brokenPipeWriter{failAfter: 3}
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionTruncated; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+	if !capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is false although writing the closing events failed")
+	}
+}
+
+// TestStreamChatCompletion_RunsHooksOnACanceledRequest asserts that the hooks
+// run on a live context. On the client_gone path the request context is already
+// canceled — that is what ended the stream — and a usage hook writing to a
+// network or SQL store would fail on context.Canceled, losing the accounting
+// this whole path exists to keep.
+func TestStreamChatCompletion_RunsHooksOnACanceledRequest(t *testing.T) {
+	client := &countingStreamClient{chunks: 50}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := buildChatRequest(t, `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	req = req.WithContext(ctx)
+
+	// The client hangs up mid-stream: the write fails and the request context
+	// dies with it, as it would under net/http.
+	server.handleChatCompletions(&brokenPipeWriter{onFail: cancel}, req)
+
+	if capture.res == nil {
+		t.Fatal("post-response hook was not run")
+	}
+	if capture.ctxErr != nil {
+		t.Errorf("hooks ran on a dead context (%v): a usage store would refuse the write", capture.ctxErr)
+	}
+}
+
+// TestStreamChatCompletion_KeepsPartialUsageOffTheWire asserts that the running
+// counters providers now publish on every chunk stay internal. The OpenAI API
+// reports usage once, on the last chunk; sending it on each one would have a
+// client accumulating it multiply its counters.
+func TestStreamChatCompletion_KeepsPartialUsageOffTheWire(t *testing.T) {
+	client := &erroringStreamClient{okChunks: 3, promptTokens: 7, err: errors.New("upstream exploded")}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := httptest.NewRecorder()
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if body := w.Body.String(); strings.Contains(body, `"usage"`) {
+		t.Errorf("a delta chunk carries usage on the wire:\n%s", body)
+	}
+	// The counters still reached the hooks, which is what they are for.
+	if !capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is false: the partial counters were dropped instead of being kept internal")
+	}
+}
+
+// TestStreamChatCompletion_ReportsClientHangup asserts that the other way a
+// stream stops early is reported with its own cause, so accounting can tell an
+// upstream failure from a client that went away.
+func TestStreamChatCompletion_ReportsClientHangup(t *testing.T) {
+	client := &countingStreamClient{chunks: 50}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := &brokenPipeWriter{}
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil {
+		t.Fatal("post-response hook was not run")
+	}
+	if capture.res.Interruption == nil {
+		t.Fatal("Interruption is nil, want a client hangup")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionClientGone; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+	// Only the first chunk made it to the client, the write that followed is
+	// what ended the stream.
+	if got := capture.res.Interruption.ChunksEmitted; got != 1 {
+		t.Errorf("Interruption.ChunksEmitted = %d, want 1", got)
+	}
+	// countingStreamClient publishes usage in its completion chunk only, which
+	// a hangup never reaches: the counts are unknown, not null.
+	if capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is true although no chunk carried usage")
+	}
+	if body := w.body.String(); strings.Contains(body, "[DONE]") {
+		t.Errorf("response body ends with [DONE] although the client had gone:\n%s", body)
+	}
+}
+
+// TestStreamChatCompletion_NoInterruptionOnCompletedStream guards the normal
+// path: a stream that runs to completion reports no interruption at all.
+func TestStreamChatCompletion_NoInterruptionOnCompletedStream(t *testing.T) {
+	client := &countingStreamClient{chunks: 3}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := httptest.NewRecorder()
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil {
+		t.Fatal("post-response hook was not run")
+	}
+	if capture.res.Interruption != nil {
+		t.Errorf("Interruption = %+v, want nil on a completed stream", capture.res.Interruption)
+	}
+}
+
+// stubbornStreamClient sends without ever watching its context, the way a
+// provider whose channel writes are plain sends behaves. Dropping the channel
+// on such a client strands its goroutine unless the consumer drains it.
+type stubbornStreamClient struct {
+	chunks int
+	closed chan struct{}
+}
+
+func (c *stubbornStreamClient) ChatCompletionStream(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk)
+	c.closed = make(chan struct{})
+	go func() {
+		defer close(c.closed)
+		defer close(out)
+		for i := 0; i < c.chunks; i++ {
+			out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok"))
+		}
+		out <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsage(5, 3, 8))
+	}()
+	return out, nil
+}
+
+func (c *stubbornStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *stubbornStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *stubbornStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+// TestStreamChatCompletion_ReleasesUpstreamOnHangup asserts that abandoning an
+// upstream stream also frees it. A provider goroutine left blocked on a channel
+// nobody reads never runs its deferred cleanup, so the upstream HTTP response
+// stays open — and billed — long after the client went away.
+func TestStreamChatCompletion_ReleasesUpstreamOnHangup(t *testing.T) {
+	client := &stubbornStreamClient{chunks: 50}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := &brokenPipeWriter{}
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	select {
+	case <-client.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream goroutine is still blocked on its channel after the client hung up")
+	}
+}
+
+// TestStreamChatCompletion_BudgetsThePostResponseHooks asserts that the hooks
+// run under the configured budget. Detaching their context from the request is
+// what keeps the accounting of a client hangup, and the budget is what replaces
+// the cancellation the request would have provided: without it a hook blocking
+// on a dead store holds its handler goroutine.
+func TestStreamChatCompletion_BudgetsThePostResponseHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		opts        []OptionFunc
+		wantDeadlne bool
+	}{
+		{"default budget", nil, true},
+		{"explicit budget", []OptionFunc{WithPostResponseTimeout(time.Minute)}, true},
+		// Zero means no budget at all, not a deadline in the past — which would
+		// fail every hook on context.DeadlineExceeded and lose the accounting.
+		{"no budget", []OptionFunc{WithPostResponseTimeout(0)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &countingStreamClient{chunks: 3}
+			capture := &capturingPostHook{}
+			opts := append([]OptionFunc{
+				WithHook(&resolverHook{client: client, model: "gpt-4"}),
+				WithHook(capture),
+			}, tc.opts...)
+
+			server := NewServer(opts...)
+			reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+			server.handleChatCompletions(httptest.NewRecorder(), buildChatRequest(t, reqBody))
+
+			if capture.res == nil {
+				t.Fatal("post-response hook was not run")
+			}
+			if capture.ctxErr != nil {
+				t.Errorf("hooks ran on a dead context: %v", capture.ctxErr)
+			}
+			if capture.hasDeadline != tc.wantDeadlne {
+				t.Errorf("hook context has a deadline = %v, want %v", capture.hasDeadline, tc.wantDeadlne)
+			}
+		})
+	}
+}
+
+// TestStreamChatCompletion_BoundsTheUpstreamDrain asserts that the drain of an
+// abandoned upstream honours DrainTimeout. A provider that watches neither its
+// context nor its consumer cannot be released, only given up on.
+func TestStreamChatCompletion_BoundsTheUpstreamDrain(t *testing.T) {
+	client := &endlessStreamClient{}
+	server := NewServer(
+		WithHook(&resolverHook{client: client, model: "gpt-4"}),
+		WithDrainTimeout(50*time.Millisecond),
+	)
+
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	start := time.Now()
+	server.handleChatCompletions(&brokenPipeWriter{}, buildChatRequest(t, reqBody))
+
+	select {
+	case <-client.drainStopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drain never gave up on a provider that ignores its context")
+	}
+
+	// The budget is the point: the client only reports once nobody has consumed
+	// its sends for 200ms, so anything close to that lower bound means the drain
+	// stopped around DrainTimeout rather than reading the stream to its end.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("the drain ran for %s, far past the 50ms budget it was given", elapsed)
+	}
+}
+
+// endlessStreamClient never closes its channel and never watches its context:
+// what an implementation ignoring the contract looks like. It reports when the
+// reader on the other end stopped consuming.
+type endlessStreamClient struct {
+	drainStopped chan struct{}
+}
+
+func (c *endlessStreamClient) ChatCompletionStream(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk)
+	c.drainStopped = make(chan struct{})
+	go func() {
+		// Blocks for good once nobody reads, which is the point: only the
+		// bounded drain can end this test.
+		for {
+			select {
+			case out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok")):
+			case <-time.After(200 * time.Millisecond):
+				// Nobody has taken a chunk for a while: the drain gave up.
+				close(c.drainStopped)
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (c *endlessStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *endlessStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *endlessStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+// cancellingStreamClient answers a canceled context with an error chunk
+// carrying it, the way the retry and tokenlimit wrappers do once a client hangs
+// up and the cancellation travels down the chain.
+type cancellingStreamClient struct{}
+
+func (c *cancellingStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk, 2)
+	go func() {
+		defer close(out)
+		out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok"))
+		<-ctx.Done()
+		out <- llm.NewErrorStreamChunk(ctx.Err())
+	}()
+	return out, nil
+}
+
+func (c *cancellingStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *cancellingStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *cancellingStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+// TestStreamChatCompletion_CancellationIsNotAnUpstreamFailure asserts that a
+// cancellation coming back as a chunk error is recorded as the client leaving.
+// The whole chain watches the request context, so a wrapper answering its
+// cancellation with an error chunk must not be alerted on as an upstream
+// incident: it is a closed tab.
+func TestStreamChatCompletion_CancellationIsNotAnUpstreamFailure(t *testing.T) {
+	capture := &capturingPostHook{}
+	server := NewServer(
+		WithHook(&resolverHook{client: &cancellingStreamClient{}, model: "gpt-4"}),
+		WithHook(capture),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := buildChatRequest(t, `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	req = req.WithContext(ctx)
+
+	// The client hangs up while the provider is generating: net/http cancels the
+	// request context, and the cancellation travels down the chain.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	server.handleChatCompletions(httptest.NewRecorder(), req)
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionClientGone; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+}
+
+// TestStreamChatCompletion_ReportsAGenuineWriteFailure asserts the other side of
+// that distinction: a write that fails while the client is still there is a
+// server fault, not ordinary traffic, and gets its own cause so accounting does
+// not silence it like a hangup.
+func TestStreamChatCompletion_ReportsAGenuineWriteFailure(t *testing.T) {
+	capture := &capturingPostHook{}
+	server := NewServer(
+		WithHook(&resolverHook{client: &countingStreamClient{chunks: 5}, model: "gpt-4"}),
+		WithHook(capture),
+	)
+
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(&failingWriter{}, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionWriteFailed; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+}
+
+// failingWriter fails its writes with an error that has nothing to do with the
+// client going away.
+type failingWriter struct {
+	header http.Header
+	writes int
+}
+
+func (w *failingWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *failingWriter) WriteHeader(int) {}
+func (w *failingWriter) Flush()          {}
+func (w *failingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > 1 {
+		return 0, errors.New("disk on fire")
+	}
+	return len(p), nil
+}
+
+// TestStreamChatCompletion_UpstreamFailureSurvivesACanceledContext asserts the
+// other half of the cause rule: a genuine provider failure stays an upstream
+// failure even when the request context is already canceled. Deciding on the
+// ambient context instead of the error would silence the one event worth
+// alerting on — a failing provider — precisely when a client also hangs up.
+func TestStreamChatCompletion_UpstreamFailureSurvivesACanceledContext(t *testing.T) {
+	capture := &capturingPostHook{}
+	server := NewServer(
+		WithHook(&resolverHook{client: &lateErrorStreamClient{err: errors.New("upstream exploded")}, model: "gpt-4"}),
+		WithHook(capture),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := buildChatRequest(t, `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	req = req.WithContext(ctx)
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	server.handleChatCompletions(httptest.NewRecorder(), req)
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionUpstream; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q: a provider failure is not a client hangup", got, want)
+	}
+}
+
+// lateErrorStreamClient waits for its context to be canceled, then fails with a
+// genuine provider error rather than with the cancellation.
+type lateErrorStreamClient struct {
+	err error
+}
+
+func (c *lateErrorStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk, 2)
+	go func() {
+		defer close(out)
+		out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok"))
+		<-ctx.Done()
+		out <- llm.NewErrorStreamChunk(c.err)
+	}()
+	return out, nil
+}
+
+func (c *lateErrorStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *lateErrorStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *lateErrorStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}

@@ -138,7 +138,34 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		cachedTokens     atomic.Int64
 		cost             atomic.Uint64 // float64 bits, see math.Float64bits/Float64frombits
 		costReported     atomic.Bool
+		usageReported    atomic.Bool
 	)
+
+	// currentUsage snapshots the counters published by the provider so far.
+	currentUsage := func() llm.ChatCompletionUsage {
+		if costReported.Load() {
+			return llm.NewChatCompletionUsageWithCost(
+				promptTokens.Load(),
+				completionTokens.Load(),
+				totalTokens.Load(),
+				cachedTokens.Load(),
+				math.Float64frombits(cost.Load()),
+				costCurrency,
+			)
+		}
+		return llm.NewChatCompletionUsageWithCache(
+			promptTokens.Load(),
+			completionTokens.Load(),
+			totalTokens.Load(),
+			cachedTokens.Load(),
+		)
+	}
+
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
 
 	go func() {
 		defer close(chunks)
@@ -147,18 +174,27 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for stream.Next() {
 			chunk := stream.Current()
 
-			isNullUsage := chunk.Usage.CompletionTokens == 0 &&
-				chunk.Usage.PromptTokens == 0 &&
-				chunk.Usage.TotalTokens == 0
+			// llm.UsagePublishesCounters is the one definition of "the provider
+			// reported something", shared with the accounting side: a gateway
+			// publishing only cached tokens, or only a cost, has measured the
+			// call as surely as one publishing token counts.
+			reportedUsage := llm.NewChatCompletionUsageWithCache(
+				chunk.Usage.PromptTokens,
+				chunk.Usage.CompletionTokens,
+				chunk.Usage.TotalTokens,
+				chunk.Usage.PromptTokensDetails.CachedTokens,
+			)
+			reportedCost, hasCost := extraCost(chunk.Usage.JSON.ExtraFields)
 
-			if !isNullUsage {
+			if llm.UsagePublishesCounters(reportedUsage) || (hasCost && reportedCost > 0) {
+				usageReported.Store(true)
 				promptTokens.Store(chunk.Usage.PromptTokens)
 				completionTokens.Store(chunk.Usage.CompletionTokens)
 				totalTokens.Store(chunk.Usage.TotalTokens)
 				cachedTokens.Store(chunk.Usage.PromptTokensDetails.CachedTokens)
 
-				if reported, ok := extraCost(chunk.Usage.JSON.ExtraFields); ok {
-					cost.Store(math.Float64bits(reported))
+				if hasCost {
+					cost.Store(math.Float64bits(reportedCost))
 					costReported.Store(true)
 				}
 			}
@@ -203,38 +239,40 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				)
 			}
 
-			chunks <- llm.NewStreamChunk(streamDelta)
+			// Most OpenAI-compatible backends only report usage in a final
+			// chunk, but some gateways send it as the stream goes. Carrying
+			// whatever has been published keeps it available to a consumer
+			// whose stream is cut short before that final chunk.
+			if usageReported.Load() {
+				send(llm.NewStreamChunkWithUsage(streamDelta, currentUsage()))
+			} else {
+				send(llm.NewStreamChunk(streamDelta))
+			}
 		}
 
 		if err := stream.Err(); err != nil {
-			if httpRes != nil {
+			var streamErr error
+			// httpRes is set as soon as the response headers arrive, so a
+			// failure happening once the stream is flowing would otherwise be
+			// rewritten into an HTTPError carrying the 200 of the stream and an
+			// empty body — the SSE decoder has already consumed it — losing the
+			// real error that alerting and retry decisions are made on.
+			if httpRes != nil && (httpRes.StatusCode < 200 || httpRes.StatusCode > 299) {
 				body, _ := io.ReadAll(httpRes.Body)
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body))))
+				streamErr = errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))
 			} else {
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				streamErr = errors.WithStack(err)
+			}
+			if usageReported.Load() {
+				sendTerminal(llm.NewErrorStreamChunkWithUsage(streamErr, currentUsage()))
+			} else {
+				sendTerminal(llm.NewErrorStreamChunk(streamErr))
 			}
 			return
 		}
 
 		// Send completion chunk
-		if costReported.Load() {
-			chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsageWithCost(
-				promptTokens.Load(),
-				completionTokens.Load(),
-				totalTokens.Load(),
-				cachedTokens.Load(),
-				math.Float64frombits(cost.Load()),
-				costCurrency,
-			))
-			return
-		}
-
-		chunks <- llm.NewCompleteStreamChunk(llm.NewChatCompletionUsageWithCache(
-			promptTokens.Load(),
-			completionTokens.Load(),
-			totalTokens.Load(),
-			cachedTokens.Load(),
-		))
+		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
 	}()
 
 	return chunks, nil

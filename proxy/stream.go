@@ -19,8 +19,9 @@ import (
 // provider (already validated to carry no error). Emit is called for
 // each subsequent chunk. EmitError is called when a mid-stream chunk
 // carries an error; no further calls are made afterwards. Finalize is
-// called once after the loop ends, on the success path only, to write
-// any closing events (e.g. "[DONE]" or "message_stop").
+// called once after the loop ends, to write any closing events (e.g.
+// "[DONE]" or "message_stop"), unless an error event was sent in their
+// place or the client is no longer there to read them.
 type streamEmitter interface {
 	EmitFirst(w io.Writer, chunk llm.StreamChunk) error
 	Emit(w io.Writer, chunk llm.StreamChunk) error
@@ -45,7 +46,14 @@ func (s *Server) streamChatCompletion(
 ) {
 	ctx := r.Context()
 
-	chunks, err := client.ChatCompletionStream(ctx, opts...)
+	// streamCtx is what the provider goroutine watches. Cancelling it on an
+	// interruption is how the upstream stream is told to stop: a provider that
+	// keeps producing into a channel nobody reads holds its HTTP response open
+	// and goes on being billed.
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	chunks, err := client.ChatCompletionStream(streamCtx, opts...)
 	if err != nil {
 		slog.ErrorContext(ctx, "stream chat completion error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)
@@ -90,60 +98,152 @@ func (s *Server) streamChatCompletion(
 		}
 	}
 
+	// abandonUpstream stops the provider and frees its goroutine. Cancelling
+	// alone is not enough: a provider whose send does not watch its context
+	// stays blocked on a full channel, so the remaining chunks are drained until
+	// it closes the channel and its deferred cleanup runs.
+	abandonUpstream := func() {
+		cancelStream()
+		go func() {
+			// Bounded: a provider that honours its context closes the channel
+			// right away, but a third-party client that watches neither its
+			// context nor its consumer would otherwise keep this goroutine for
+			// the whole life of the process. Giving up leaks what the previous
+			// behaviour leaked anyway, and only for that kind of client.
+			if !llm.DrainStream(chunks, s.options.DrainTimeout) {
+				slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
+					slog.Duration("after", s.options.DrainTimeout))
+			}
+		}()
+	}
+
 	tracker := llm.NewStreamingUsageTracker()
-	hadStreamError := false
-	// Once a write to the response fails the SSE stream is unrecoverable:
-	// stop emitting instead of burning the rest of the upstream stream on a
-	// connection nobody reads.
-	writeFailed := false
+	// interruption stays nil while the stream is on its normal course. It is
+	// what tells the post-response hooks below that the usage they receive is
+	// partial, and why.
+	var interruption *StreamInterruption
+	chunksEmitted := 0
+	// sawTerminal records that the provider signalled an end of its own, either
+	// a completion chunk or an error. A stream that closes without one is
+	// truncated, not complete.
+	sawTerminal := false
 
 	tracker.Update(firstChunk)
 	if err := emitter.EmitFirst(w, firstChunk); err != nil {
 		logStreamWriteError(ctx, "could not emit first stream chunk", err)
-		writeFailed = true
+		// Once a write to the response fails the SSE stream is unrecoverable:
+		// stop emitting instead of burning the rest of the upstream stream on a
+		// connection nobody reads.
+		interruption = &StreamInterruption{
+			Cause: writeFailureCause(ctx, err), Err: err, TerminalEventUndelivered: true,
+		}
+		abandonUpstream()
+	} else {
+		chunksEmitted++
 	}
 	flush()
 
-	if !writeFailed && !firstChunk.IsComplete() {
+	if firstChunk.IsComplete() {
+		sawTerminal = true
+	}
+
+	if interruption == nil && !firstChunk.IsComplete() {
 		for chunk := range chunks {
 			if chunk.Error() != nil {
+				sawTerminal = true
 				slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
+				// A provider that knows its counters attaches them to the error
+				// chunk itself, so record it before anything else.
+				tracker.Update(chunk)
 				// Headers already sent; forward the error as an event.
+				undelivered := false
 				if err := emitter.EmitError(w, chunk.Error()); err != nil {
 					logStreamWriteError(ctx, "could not emit stream error", err)
+					// The client is gone too. The upstream failure is still what
+					// stopped the stream, but a hook must not assume the error
+					// event reached anyone.
+					undelivered = true
 				}
 				flush()
-				hadStreamError = true
+				// A cancellation travelling back as a chunk error is the client
+				// leaving, not the provider failing: the request context is what
+				// the whole chain watches, and a wrapper answering it with an
+				// error chunk must not be alerted on as an incident. The test is
+				// on the error itself, never on the ambient context: a genuine
+				// provider failure happening while the context is canceled — a
+				// hangup, a shutdown, a server-side deadline — stays an upstream
+				// failure, which is the incident worth reporting.
+				cause := StreamInterruptionUpstream
+				if isCancellation(chunk.Error()) {
+					cause = StreamInterruptionClientGone
+				}
+				interruption = &StreamInterruption{
+					Cause:                    cause,
+					Err:                      chunk.Error(),
+					TerminalEventUndelivered: undelivered,
+				}
+				// A conforming provider has closed its channel by now, so this
+				// is a no-op for them; it bounds the damage for one that keeps
+				// producing after its error chunk.
+				abandonUpstream()
 				break
 			}
 
 			tracker.Update(chunk)
 			if err := emitter.Emit(w, chunk); err != nil {
 				logStreamWriteError(ctx, "could not emit stream chunk", err)
-				writeFailed = true
+				interruption = &StreamInterruption{
+					Cause: writeFailureCause(ctx, err), Err: err, TerminalEventUndelivered: true,
+				}
+				abandonUpstream()
 				break
 			}
+			chunksEmitted++
 			flush()
 
 			if chunk.IsComplete() {
+				sawTerminal = true
 				break
 			}
 		}
 	}
 
-	// Skip finalization and post-response hooks on stream error — nothing useful to record.
-	if hadStreamError {
-		return
+	// The channel closed without the provider ever signalling completion or
+	// failure. The client keeps the normal closing events — a provider is free
+	// to end a legitimate response without a terminal chunk, and sending an
+	// error instead would let a client retry a response it received in full —
+	// but the hooks are told, because a truncated stream is also what a dropped
+	// upstream connection looks like and its usage is unknown.
+	if interruption == nil && !sawTerminal {
+		err := errors.New("upstream stream ended before completion")
+		slog.WarnContext(ctx, "stream ended without a terminal chunk", slog.Any("error", err))
+		interruption = &StreamInterruption{Cause: StreamInterruptionTruncated, Err: err}
 	}
 
-	// A client that went away still consumed whatever the provider produced
-	// before it did, so usage is reported below; only the closing events are
-	// skipped, since writing them would fail again.
-	if !writeFailed {
+	// An interrupted stream still delivered whatever the provider produced
+	// before it stopped, and the provider billed it, so the usage collected so
+	// far is reported to the hooks below either way. The closing events are
+	// skipped on the two paths where they cannot be written or would contradict
+	// what the client was just sent: after a client hangup writing them would
+	// fail again, and after an upstream error the client has already been sent
+	// an error event.
+	if interruption == nil || interruption.Cause == StreamInterruptionTruncated {
 		if err := emitter.Finalize(w, tracker.Usage()); err != nil {
 			logStreamWriteError(ctx, "could not finalize stream", err)
+			if interruption == nil {
+				// Everything was delivered but the terminator: the exchange did
+				// not end normally for the client either.
+				interruption = &StreamInterruption{Cause: writeFailureCause(ctx, err), Err: err}
+			}
+			// On the truncated path the cause is already set; either way the
+			// client did not get the closing events.
+			interruption.TerminalEventUndelivered = true
 		}
 		flush()
+	}
+	if interruption != nil {
+		interruption.ChunksEmitted = chunksEmitted
+		interruption.PartialUsage = tracker.Reported()
 	}
 
 	usage := tracker.Usage()
@@ -156,20 +256,67 @@ func (s *Server) streamChatCompletion(
 	if cu, ok := usage.(cachedUsageStream); ok {
 		streamTokensUsed.CachedTokens = int(cu.CachedTokens())
 	}
+	if cc, ok := usage.(llm.CacheCreationReportingUsage); ok {
+		streamTokensUsed.CacheCreationTokens = int(cc.CacheCreationTokens())
+	}
 	if cr, ok := usage.(llm.CostReportingUsage); ok {
 		if amount, currency, ok := cr.Cost(); ok {
 			streamTokensUsed.Cost = &amount
 			streamTokensUsed.CostCurrency = currency
 		}
 	}
+	// The status stays 200: the client was sent 200 headers the moment the first
+	// chunk arrived, and an interruption cannot take them back. Interruption is
+	// what tells a hook the exchange did not complete.
 	proxyRes := &ProxyResponse{
-		StatusCode: http.StatusOK,
-		Body:       nil,
-		TokensUsed: streamTokensUsed,
+		StatusCode:   http.StatusOK,
+		Body:         nil,
+		TokensUsed:   streamTokensUsed,
+		Interruption: interruption,
 	}
-	if err := s.chain.RunPostResponse(ctx, req, proxyRes); err != nil {
-		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
+	// The hooks run on a context detached from the request. On the client_gone
+	// path r.Context() is already canceled — that is what ended the stream — and
+	// a usage hook writing to a network or SQL store would fail on
+	// context.Canceled, losing the very accounting this path exists to keep.
+	// The budget replaces the request's own cancellation: without one, a hook
+	// blocking on a dead store would hold this handler goroutine forever, which
+	// ordinary client traffic could then exhaust.
+	hookCtx := context.WithoutCancel(ctx)
+	if s.options.PostResponseTimeout > 0 {
+		var cancelHooks context.CancelFunc
+		hookCtx, cancelHooks = context.WithTimeout(hookCtx, s.options.PostResponseTimeout)
+		defer cancelHooks()
 	}
+	if err := s.chain.RunPostResponse(hookCtx, req, proxyRes); err != nil {
+		if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
+			// Distinguishable on purpose: this is accounting lost to the budget,
+			// not to a failing hook, and the answer is to raise the budget.
+			slog.WarnContext(ctx, "post-response hooks ran out of their budget",
+				slog.Duration("budget", s.options.PostResponseTimeout),
+				slog.Any("error", err))
+		} else {
+			slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
+		}
+	}
+}
+
+// writeFailureCause tells a client that walked away from a write that failed on
+// its own merits. The distinction is what lets accounting and alerting treat a
+// closed tab as the ordinary traffic it is, and a genuine write failure as the
+// server fault it is. A canceled request context counts as the client being
+// gone: that is what net/http does on a disconnect, and a write failing under a
+// server-side cancellation is the connection going away all the same.
+func writeFailureCause(ctx context.Context, err error) StreamInterruptionCause {
+	if isClientGone(ctx, err) {
+		return StreamInterruptionClientGone
+	}
+	return StreamInterruptionWriteFailed
+}
+
+// isCancellation reports whether err is a cancellation travelling back as a
+// stream error, which is how the wrappers answer a context that was canceled.
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // logStreamWriteError reports a failed write to the SSE response. A client

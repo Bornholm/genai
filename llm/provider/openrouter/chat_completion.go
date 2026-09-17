@@ -625,7 +625,56 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		cachedTokens     atomic.Int64
 		cost             atomic.Uint64 // float64 bits, see math.Float64bits/Float64frombits
 		costReported     atomic.Bool
+		usageReported    atomic.Bool
 	)
+
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
+
+	// currentUsage snapshots the counters the gateway has published so far.
+	// OpenRouter is asked for usage explicitly, and sends it as the stream goes,
+	// so carrying it on the deltas keeps it available to a consumer whose stream
+	// is cut short before the final chunk.
+	currentUsage := func() llm.ChatCompletionUsage {
+		if costReported.Load() {
+			return llm.NewChatCompletionUsageWithCost(
+				promptTokens.Load(),
+				completionTokens.Load(),
+				totalTokens.Load(),
+				cachedTokens.Load(),
+				math.Float64frombits(cost.Load()),
+				"USD", // OpenRouter always reports cost in USD
+			)
+		}
+		return llm.NewChatCompletionUsageWithCache(
+			promptTokens.Load(),
+			completionTokens.Load(),
+			totalTokens.Load(),
+			cachedTokens.Load(),
+		)
+	}
+
+	// sendDelta carries the running counters when the gateway has published any.
+	sendDelta := func(delta llm.StreamDelta) {
+		if usageReported.Load() {
+			send(llm.NewStreamChunkWithUsage(delta, currentUsage()))
+			return
+		}
+		send(llm.NewStreamChunk(delta))
+	}
+
+	// sendStreamError carries them too: the provider billed what it produced
+	// before it failed.
+	sendStreamError := func(err error) {
+		if usageReported.Load() {
+			sendTerminal(llm.NewErrorStreamChunkWithUsage(err, currentUsage()))
+			return
+		}
+		sendTerminal(llm.NewErrorStreamChunk(err))
+	}
 
 	go func() {
 		defer close(chunks)
@@ -634,10 +683,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err != nil {
 			var reqErr *openrouter.RequestError
 			if errors.As(err, &reqErr) {
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error())))
+				sendStreamError(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error())))
 				return
 			}
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+			sendStreamError(errors.WithStack(err))
 			return
 		}
 		defer stream.Close()
@@ -649,7 +698,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					// Stream ended normally
 					break
 				}
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				sendStreamError(errors.WithStack(err))
 				return
 			}
 
@@ -660,6 +709,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				cachedTokens.Store(int64(response.Usage.PromptTokenDetails.CachedTokens))
 				cost.Store(math.Float64bits(response.Usage.Cost))
 				costReported.Store(true)
+				usageReported.Store(true)
 			}
 
 			if len(response.Choices) == 0 {
@@ -718,7 +768,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					transcript,
 					toolCallDeltas...,
 				)
-				chunks <- llm.NewStreamChunk(streamDelta)
+				sendDelta(streamDelta)
 			} else if deltaReasoning != "" || len(deltaReasoningDetails) > 0 {
 				streamDelta := llm.NewReasoningStreamDelta(
 					llm.RoleAssistant,
@@ -727,38 +777,18 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					deltaReasoningDetails,
 					toolCallDeltas...,
 				)
-				chunks <- llm.NewStreamChunk(streamDelta)
+				sendDelta(streamDelta)
 			} else {
 				streamDelta := llm.NewStreamDelta(
 					llm.RoleAssistant,
 					delta.Content,
 					toolCallDeltas...,
 				)
-				chunks <- llm.NewStreamChunk(streamDelta)
+				sendDelta(streamDelta)
 			}
 		}
 
-		// Send completion chunk with usage if available
-		var usage llm.ChatCompletionUsage
-		if costReported.Load() {
-			usage = llm.NewChatCompletionUsageWithCost(
-				promptTokens.Load(),
-				completionTokens.Load(),
-				totalTokens.Load(),
-				cachedTokens.Load(),
-				math.Float64frombits(cost.Load()),
-				"USD", // OpenRouter always reports cost in USD
-			)
-		} else {
-			usage = llm.NewChatCompletionUsageWithCache(
-				promptTokens.Load(),
-				completionTokens.Load(),
-				totalTokens.Load(),
-				cachedTokens.Load(),
-			)
-		}
-
-		chunks <- llm.NewCompleteStreamChunk(usage)
+		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
 	}()
 
 	return chunks, nil

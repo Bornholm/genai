@@ -299,3 +299,38 @@ func TestAnthropicStreamEmitter_Error(t *testing.T) {
 		t.Errorf("error message = %v, want boom", errObj["message"])
 	}
 }
+
+// TestAnthropicStreamEmitter_MessageStartSplitsCacheTokens asserts that the
+// cache counters are reported in their own fields. genai folds them into the
+// prompt tokens; the Messages API keeps input_tokens free of them, and a client
+// pricing the call off an input_tokens carrying cache reads would overcharge.
+func TestAnthropicStreamEmitter_MessageStartSplitsCacheTokens(t *testing.T) {
+	emitter := newAnthropicStreamEmitter("claude-3-5-sonnet-20241022")
+	var buf bytes.Buffer
+
+	// 10 input tokens, 100 read from the cache and 50 written to it: genai
+	// reports 160 prompt tokens.
+	usage := llm.NewChatCompletionUsageWithCacheCreation(160, 0, 160, 100, 50)
+	first := llm.NewStreamChunkWithUsage(llm.NewStreamDelta(llm.RoleAssistant, "Hi"), usage)
+
+	if err := emitter.EmitFirst(&buf, first); err != nil {
+		t.Fatalf("EmitFirst: %v", err)
+	}
+
+	events := parseSSEEvents(t, buf.String())
+	message := events[0].Data["message"].(map[string]any)
+	got := message["usage"].(map[string]any)
+
+	for _, tc := range []struct {
+		field string
+		want  float64
+	}{
+		{"input_tokens", 10},
+		{"cache_read_input_tokens", 100},
+		{"cache_creation_input_tokens", 50},
+	} {
+		if got[tc.field] != tc.want {
+			t.Errorf("usage.%s = %v, want %v", tc.field, got[tc.field], tc.want)
+		}
+	}
+}

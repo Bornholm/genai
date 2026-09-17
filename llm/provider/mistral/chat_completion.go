@@ -116,6 +116,12 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	chunks := make(chan llm.StreamChunk, 10)
 
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
+
 	go func() {
 		defer close(chunks)
 		defer stream.Close()
@@ -129,19 +135,19 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for stream.Next() {
 			chunk := stream.Current()
 
-			isNullUsage := chunk.Usage.CompletionTokens == 0 &&
-				chunk.Usage.PromptTokens == 0 &&
-				chunk.Usage.TotalTokens == 0
+			reportedUsage := llm.NewChatCompletionUsageWithCache(
+				int64(chunk.Usage.PromptTokens),
+				int64(chunk.Usage.CompletionTokens),
+				int64(chunk.Usage.TotalTokens),
+				chunk.Usage.PromptTokensDetails.CachedTokens,
+			)
 
 			// Save usage for later — emitting CompleteStreamChunk here would cause
 			// doStreamingLLMCall to break before the content chunk is sent below.
-			if !isNullUsage {
-				finalUsage = llm.NewChatCompletionUsageWithCache(
-					int64(chunk.Usage.PromptTokens),
-					int64(chunk.Usage.CompletionTokens),
-					int64(chunk.Usage.TotalTokens),
-					chunk.Usage.PromptTokensDetails.CachedTokens,
-				)
+			// llm.UsagePublishesCounters is the one definition of a published
+			// measurement, cached tokens alone included.
+			if llm.UsagePublishesCounters(reportedUsage) {
+				finalUsage = reportedUsage
 			}
 
 			if len(chunk.Choices) == 0 {
@@ -162,7 +168,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					reasoningDets = append(reasoningDets, chunkDetails...)
 				}
 				if chunkText != "" {
-					chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, chunkText))
+					send(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, chunkText)))
 				}
 			}
 
@@ -177,16 +183,29 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 						tc.Function.Arguments,
 					))
 				}
-				chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "", toolCallDeltas...))
+				send(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "", toolCallDeltas...)))
 			}
 		}
 
 		if err := stream.Err(); err != nil {
-			if httpRes != nil {
+			// httpRes is set as soon as the response headers arrive, so a
+			// failure happening once the stream is flowing would otherwise be
+			// rewritten into an HTTPError carrying the 200 of the stream and an
+			// empty body — the SSE decoder has already consumed it — losing the
+			// real error that alerting and retry decisions are made on.
+			var streamErr error
+			if httpRes != nil && (httpRes.StatusCode < 200 || httpRes.StatusCode > 299) {
 				body, _ := io.ReadAll(httpRes.Body)
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body))))
+				streamErr = errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))
 			} else {
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				streamErr = errors.WithStack(err)
+			}
+			// Whatever the backend published before it failed was billed, so it
+			// rides on the error chunk, like the other providers.
+			if finalUsage != nil {
+				sendTerminal(llm.NewErrorStreamChunkWithUsage(streamErr, finalUsage))
+			} else {
+				sendTerminal(llm.NewErrorStreamChunk(streamErr))
 			}
 			return
 		}
@@ -195,19 +214,24 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// chunk by chunk above) before the CompleteStreamChunk.
 		reasoning := reasoningBuf.String()
 		if reasoning != "" || len(reasoningDets) > 0 {
-			chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(
+			send(llm.NewStreamChunk(llm.NewReasoningStreamDelta(
 				llm.RoleAssistant,
 				"",
 				reasoning,
 				reasoningDets,
-			))
+			)))
 		}
 
 		// Emit the complete (usage) chunk last so the handler breaks only after
-		// all content and tool call deltas have been consumed.
-		if finalUsage != nil {
-			chunks <- llm.NewCompleteStreamChunk(finalUsage)
+		// all content and tool call deltas have been consumed. It is sent even
+		// when the backend published no usage — Mistral only reports it when it
+		// feels like it, the params builder never asks for it: a consumer tells
+		// a finished stream from a truncated one by this chunk alone, so
+		// withholding it turns every usage-less response into a truncation.
+		if finalUsage == nil {
+			finalUsage = llm.NewChatCompletionUsage(0, 0, 0)
 		}
+		sendTerminal(llm.NewCompleteStreamChunk(finalUsage))
 	}()
 
 	return chunks, nil

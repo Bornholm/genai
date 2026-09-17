@@ -97,13 +97,23 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		stream := c.client.Messages.NewStreaming(ctx, *params)
 		defer stream.Close()
 
-		emitter := newStreamEmitter(chunks, excludeReasoning(opts))
+		emitter := newStreamEmitter(ctx, chunks, excludeReasoning(opts))
 
 		for stream.Next() {
 			emitter.handle(stream.Current())
 		}
 		if err := stream.Err(); err != nil {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(mapError(err)))
+			// The input tokens are known from message_start and the output
+			// tokens from the last message_delta, so a stream that dies
+			// mid-flight still reports what the provider billed. If nothing
+			// was ever published the chunk carries no usage at all: a zeroed
+			// usage would read as "this cost nothing" rather than "unknown".
+			streamErr := errors.WithStack(mapError(err))
+			if emitter.usageSeen {
+				emitter.sendTerminal(llm.NewErrorStreamChunkWithUsage(streamErr, emitter.usage()))
+			} else {
+				emitter.sendTerminal(llm.NewErrorStreamChunk(streamErr))
+			}
 			return
 		}
 
@@ -112,11 +122,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// turn. Counting blocks rather than deltas keeps both entry points
 		// in step on a response made of an empty text block.
 		if emitter.blocks == 0 {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage))
+			emitter.sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage)))
 			return
 		}
 
-		chunks <- llm.NewCompleteStreamChunk(emitter.usage())
+		emitter.sendTerminal(llm.NewCompleteStreamChunk(emitter.usage()))
 	}()
 
 	return chunks, nil
@@ -131,6 +141,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 // cannot be replayed. Excluding the reasoning silences the incremental text
 // only; the closing detail is always emitted so the turn can be replayed.
 type streamEmitter struct {
+	// ctx guards every send: a consumer that abandons the channel — a proxy
+	// whose client hung up, an agent loop giving up — cancels it, and without
+	// this the goroutine would block forever on an unread channel, leaking the
+	// upstream HTTP response with it.
+	ctx              context.Context
 	chunks           chan<- llm.StreamChunk
 	excludeReasoning bool
 
@@ -157,6 +172,9 @@ type streamEmitter struct {
 	outputTokens        int64
 	cacheReadTokens     int64
 	cacheCreationTokens int64
+	// usageSeen marks that the provider published counters at least once, so
+	// that deltas carry them instead of a zeroed usage.
+	usageSeen bool
 }
 
 type thinkingBlock struct {
@@ -164,8 +182,9 @@ type thinkingBlock struct {
 	signature string
 }
 
-func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *streamEmitter {
+func newStreamEmitter(ctx context.Context, chunks chan<- llm.StreamChunk, excludeReasoning bool) *streamEmitter {
 	return &streamEmitter{
+		ctx:              ctx,
 		chunks:           chunks,
 		excludeReasoning: excludeReasoning,
 		toolIndexes:      map[int64]int{},
@@ -174,9 +193,26 @@ func newStreamEmitter(chunks chan<- llm.StreamChunk, excludeReasoning bool) *str
 	}
 }
 
-// send emits one delta chunk.
+// send emits one delta chunk, carrying the usage known so far once the
+// provider has published any.
 func (e *streamEmitter) send(delta llm.StreamDelta) {
-	e.chunks <- llm.NewStreamChunk(delta)
+	if e.usageSeen {
+		e.sendChunk(llm.NewStreamChunkWithUsage(delta, e.usage()))
+		return
+	}
+	e.sendChunk(llm.NewStreamChunk(delta))
+}
+
+// sendChunk writes one chunk to the channel, giving up if the consumer is gone.
+func (e *streamEmitter) sendChunk(chunk llm.StreamChunk) {
+	llm.SendChunk(e.ctx, e.chunks, chunk)
+}
+
+// sendTerminal writes the chunk that ends the stream, taking the buffer slot
+// first so that it survives a cancellation it is often there to report. See
+// llm.SendTerminalChunk.
+func (e *streamEmitter) sendTerminal(chunk llm.StreamChunk) {
+	llm.SendTerminalChunk(e.ctx, e.chunks, chunk)
 }
 
 // emitDetail sends one complete reasoning detail, numbered in emission order.
@@ -194,15 +230,19 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 	case "message_delta":
 		if event.Usage.JSON.OutputTokens.Valid() {
 			e.outputTokens = event.Usage.OutputTokens
+			e.usageSeen = e.usageSeen || e.outputTokens > 0
 		}
 		if event.Usage.JSON.InputTokens.Valid() {
 			e.inputTokens = event.Usage.InputTokens
+			e.usageSeen = e.usageSeen || e.inputTokens > 0
 		}
 		if event.Usage.JSON.CacheReadInputTokens.Valid() {
 			e.cacheReadTokens = event.Usage.CacheReadInputTokens
+			e.usageSeen = e.usageSeen || e.cacheReadTokens > 0
 		}
 		if event.Usage.JSON.CacheCreationInputTokens.Valid() {
 			e.cacheCreationTokens = event.Usage.CacheCreationInputTokens
+			e.usageSeen = e.usageSeen || e.cacheCreationTokens > 0
 		}
 
 	case "content_block_start":
@@ -285,6 +325,13 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 }
 
 func (e *streamEmitter) recordUsage(usage anthropicsdk.Usage) {
+	// An Anthropic-compatible gateway may open with an empty usage object; the
+	// official API always reports the input tokens. Only counters that were
+	// actually published make the usage worth carrying on the deltas.
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 {
+		e.usageSeen = true
+	}
 	e.inputTokens = usage.InputTokens
 	e.outputTokens = usage.OutputTokens
 	e.cacheReadTokens = usage.CacheReadInputTokens

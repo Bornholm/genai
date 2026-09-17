@@ -9,10 +9,34 @@ import (
 	"github.com/pkg/errors"
 )
 
+// DefaultDrainTimeout caps how long an abandoned attempt is drained for. A
+// client that honours its context closes its channel at once; this only bounds
+// what one that honours nothing can hold.
+const DefaultDrainTimeout = 30 * time.Second
+
 type Client struct {
-	baseDelay  time.Duration
-	maxRetries int
-	client     llm.Client
+	baseDelay    time.Duration
+	maxRetries   int
+	drainTimeout time.Duration
+	client       llm.Client
+}
+
+// Options holds what NewClient does not take positionally.
+type Options struct {
+	// DrainTimeout caps how long the stream of an abandoned attempt is drained
+	// for. Zero or less means no limit. Default DefaultDrainTimeout.
+	DrainTimeout time.Duration
+}
+
+// OptionFunc is a functional option for the retrying client.
+type OptionFunc func(*Options)
+
+// WithDrainTimeout sets how long the stream of an abandoned attempt is drained
+// for. Zero or less means no limit, not an immediate give-up.
+func WithDrainTimeout(timeout time.Duration) OptionFunc {
+	return func(o *Options) {
+		o.DrainTimeout = timeout
+	}
 }
 
 // Embeddings implements llm.Client.
@@ -109,15 +133,47 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	outCh := make(chan llm.StreamChunk, 10)
 
+	// See llm.SendChunk: forwarding with a bare channel write would strand this
+	// goroutine, and the stream it wraps, as soon as a consumer stops reading.
+	// The chunk that ends the stream goes through llm.SendTerminalChunk, which
+	// survives the cancellation it usually reports.
+	send := func(chunk llm.StreamChunk) bool { return llm.SendChunk(ctx, outCh, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, outCh, chunk) }
+
 	go func() {
 		defer close(outCh)
 
 		backoff := c.baseDelay
 		retries := 0
 
+		// Each attempt gets its own context so that the stream of an abandoned
+		// one can be told to stop. Without it the provider goroutine of a
+		// retried attempt stays blocked on a send nobody reads — ctx is still
+		// alive — holding its upstream response open, and billed, for good.
+		var cancelAttempt context.CancelFunc
+		abandonAttempt := func(stream <-chan llm.StreamChunk) {
+			if cancelAttempt == nil {
+				return
+			}
+			cancelAttempt()
+			cancelAttempt = nil
+			go func() {
+				if !llm.DrainStream(stream, c.drainTimeout) {
+					slog.WarnContext(ctx, "gave up draining an abandoned attempt",
+						slog.Duration("after", c.drainTimeout))
+				}
+			}()
+		}
+
 		for {
-			stream, err := c.client.ChatCompletionStream(ctx, funcs...)
+			attemptCtx, cancel := context.WithCancel(ctx)
+			cancelAttempt = cancel
+			stream, err := c.client.ChatCompletionStream(attemptCtx, funcs...)
 			if err != nil {
+				// Nothing was opened, but the attempt context still has to be
+				// released before the next one replaces it.
+				cancelAttempt()
+				cancelAttempt = nil
 				if retries < c.maxRetries && llm.IsRetryable(err) {
 					slog.DebugContext(ctx, "stream open failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
 					retries++
@@ -125,12 +181,12 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 					case <-time.After(backoff):
 						backoff *= 2
 					case <-ctx.Done():
-						outCh <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 						return
 					}
 					continue
 				}
-				outCh <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 				return
 			}
 
@@ -152,25 +208,39 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 							retryCall = true
 							break streamLoop
 						}
-						outCh <- chunk // non-retryable error — forward and stop
+						abandonAttempt(stream) // non-retryable error — forward and stop
+						sendTerminal(chunk)
 						return
 					}
-					outCh <- chunk
+					if !send(chunk) {
+						// The consumer is gone. Say why the stream ends rather
+						// than closing the channel on nothing, which reads as a
+						// truncation — an upstream incident — instead of the
+						// ordinary hangup it is.
+						abandonAttempt(stream)
+						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
+						return
+					}
 				case <-ctx.Done():
-					outCh <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+					abandonAttempt(stream)
+					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 					return
 				}
 			}
 
 			if !retryCall {
+				// The provider closed its channel: nothing left to abandon,
+				// only the attempt context to release.
+				cancelAttempt()
 				return // stream ended normally
 			}
+			abandonAttempt(stream)
 			// retryCall == true: wait (respecting ctx) then open a fresh stream
 			select {
 			case <-time.After(backoff):
 				backoff *= 2
 			case <-ctx.Done():
-				outCh <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			}
 		}
@@ -179,11 +249,16 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return outCh, nil
 }
 
-func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int) *Client {
+func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int, funcs ...OptionFunc) *Client {
+	opts := &Options{DrainTimeout: DefaultDrainTimeout}
+	for _, fn := range funcs {
+		fn(opts)
+	}
 	return &Client{
-		baseDelay:  baseDelay,
-		maxRetries: maxRetries,
-		client:     client,
+		baseDelay:    baseDelay,
+		maxRetries:   maxRetries,
+		drainTimeout: opts.DrainTimeout,
+		client:       client,
 	}
 }
 

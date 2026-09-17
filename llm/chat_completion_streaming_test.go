@@ -215,3 +215,146 @@ func TestStreamingUsageTracker_KeepsCacheCreationWithCost(t *testing.T) {
 		t.Errorf("cache creation tokens lost when a cost is reported: %v", got)
 	}
 }
+
+// TestSendTerminalChunkSurvivesCancellation asserts that the chunk ending a
+// stream is delivered even when the context is already canceled — which is
+// usually what that chunk is there to report. A plain select would have both
+// its cases ready and drop it about half the time.
+func TestSendTerminalChunkSurvivesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i := 0; i < 200; i++ {
+		chunks := make(chan StreamChunk, 10)
+		if !SendTerminalChunk(ctx, chunks, NewErrorStreamChunk(context.Canceled)) {
+			t.Fatalf("terminal chunk dropped on attempt %d although the channel had room", i)
+		}
+		if len(chunks) != 1 {
+			t.Fatalf("channel holds %d chunks, want 1", len(chunks))
+		}
+	}
+}
+
+// TestSendTerminalChunkGivesUpOnAFullChannel asserts the other half: the
+// guarantee is the buffer slot, so a channel with no room and no reader falls
+// back to SendChunk and gives up rather than blocking for good.
+func TestSendTerminalChunkGivesUpOnAFullChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	full := make(chan StreamChunk, 1)
+	full <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))
+
+	if SendTerminalChunk(ctx, full, NewErrorStreamChunk(context.Canceled)) {
+		t.Error("SendTerminalChunk reported a delivery on a full channel nobody reads")
+	}
+}
+
+// TestSendChunkGivesUpOnCancellation asserts the other half of the contract: an
+// ordinary delta is not forced on a consumer that walked away.
+func TestSendChunkGivesUpOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Unbuffered: the send can only succeed if someone is receiving, and nobody
+	// is, so the canceled context must win rather than block forever.
+	if SendChunk(ctx, make(chan StreamChunk), NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))) {
+		t.Error("SendChunk reported a delivery on a channel nobody reads")
+	}
+}
+
+// TestStreamingUsageTrackerIgnoresZeroedUsage asserts that an all-zero usage is
+// not counted as a report. Providers synthesize one to carry a termination
+// signal; treating it as published counters would make Reported() claim numbers
+// nobody produced, which is the confusion the flag exists to prevent.
+func TestStreamingUsageTrackerIgnoresZeroedUsage(t *testing.T) {
+	tracker := NewStreamingUsageTracker()
+	tracker.Update(NewCompleteStreamChunk(NewChatCompletionUsage(0, 0, 0)))
+	if tracker.Reported() {
+		t.Error("Reported() is true after an all-zero usage: zero must read as unknown")
+	}
+
+	tracker.Update(NewCompleteStreamChunk(NewChatCompletionUsage(5, 3, 8)))
+	if !tracker.Reported() {
+		t.Error("Reported() is false after real counters were published")
+	}
+}
+
+// TestDrainStreamGivesUpOnDeadline asserts that draining an abandoned stream is
+// bounded. Without the deadline a client that watches neither its context nor
+// its consumer would hold the draining goroutine for the life of the process.
+func TestDrainStreamGivesUpOnDeadline(t *testing.T) {
+	// A producer that never closes its channel and never stops sending: what an
+	// implementation ignoring its context looks like.
+	stream := make(chan StreamChunk)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case stream <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok")):
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	if DrainStream(stream, 50*time.Millisecond) {
+		t.Error("DrainStream reported a stream that ended on its own, but it never closes")
+	}
+}
+
+// TestDrainStreamReportsACleanEnd asserts the ordinary case: a stream that ends
+// on its own is drained to completion and says so, which is what happens with
+// every provider that honours its context.
+func TestDrainStreamReportsACleanEnd(t *testing.T) {
+	stream := make(chan StreamChunk, 3)
+	stream <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))
+	stream <- NewCompleteStreamChunk(NewChatCompletionUsage(5, 3, 8))
+	close(stream)
+
+	if !DrainStream(stream, time.Second) {
+		t.Error("DrainStream gave up on a stream that had already ended")
+	}
+}
+
+// TestDrainStreamWithoutDeadline asserts that a zero timeout means no limit
+// rather than an immediate give-up, which would bring back the leak.
+func TestDrainStreamWithoutDeadline(t *testing.T) {
+	stream := make(chan StreamChunk, 1)
+	stream <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(stream)
+	}()
+
+	if !DrainStream(stream, 0) {
+		t.Error("DrainStream gave up although no deadline was asked for")
+	}
+}
+
+// TestUsagePublishesCounters covers the one definition of "the provider
+// reported something", on which PartialUsage, the wire format and the reference
+// accounting all agree.
+func TestUsagePublishesCounters(t *testing.T) {
+	cost := 0.02
+	for _, tc := range []struct {
+		name  string
+		usage ChatCompletionUsage
+		want  bool
+	}{
+		{"nil", nil, false},
+		{"all zero", NewChatCompletionUsage(0, 0, 0), false},
+		{"prompt tokens", NewChatCompletionUsage(5, 0, 5), true},
+		{"completion tokens", NewChatCompletionUsage(0, 3, 3), true},
+		{"cached tokens only", NewChatCompletionUsageWithCache(0, 0, 0, 100), true},
+		{"cache creation only", NewChatCompletionUsageWithCacheCreation(0, 0, 0, 0, 50), true},
+		{"cost only", NewChatCompletionUsageWithCost(0, 0, 0, 0, cost, "USD"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UsagePublishesCounters(tc.usage); got != tc.want {
+				t.Errorf("UsagePublishesCounters() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

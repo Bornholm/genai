@@ -168,6 +168,12 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	chunks := make(chan llm.StreamChunk, 10)
 
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
+
 	go func() {
 		defer close(chunks)
 
@@ -176,14 +182,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 		// Clear KV cache before starting new generation
 		if err := c.clearMemory(); err != nil {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 
 		// Build prompt with tools support
 		prompt, err := c.buildPrompt(opts)
 		if err != nil {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 
@@ -192,7 +198,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 		// Decode prompt tokens in batches to handle large prompts
 		if err := c.decodePromptTokens(tokens); err != nil {
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 
@@ -229,7 +235,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for pos := int32(0); pos < int32(maxTokens); pos++ {
 			select {
 			case <-ctx.Done():
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			default:
 			}
@@ -258,7 +264,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					// Emit any content before the think block, then buffer the rest.
 					before := pending[:idx]
 					if before != "" {
-						chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, before))
+						send(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, before)))
 					}
 					inThink = true
 					thinkBuf = pending[idx:]
@@ -268,14 +274,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 						thinkBuf = ""
 					}
 				} else {
-					chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, pending))
+					send(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, pending)))
 				}
 			}
 
 			// Decode the generated token
 			batch := llama.BatchGetOne([]llama.Token{token})
 			if _, err := llama.Decode(c.lctx, batch); err != nil {
-				chunks <- llm.NewErrorStreamChunk(errors.Wrap(err, "failed to decode token"))
+				sendTerminal(llm.NewErrorStreamChunk(errors.Wrap(err, "failed to decode token")))
 				return
 			}
 		}
@@ -283,7 +289,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// Send completion chunk
 		promptTokens = int64(len(tokens))
 		usage := llm.NewChatCompletionUsage(promptTokens, completionTokens, promptTokens+completionTokens)
-		chunks <- llm.NewCompleteStreamChunk(usage)
+		sendTerminal(llm.NewCompleteStreamChunk(usage))
 	}()
 
 	return chunks, nil

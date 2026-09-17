@@ -1010,6 +1010,11 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 //   - tool_calls stream → finish_reason:"tool_calls"
 //   - text stream       → finish_reason:"stop"
 //
+// Usage is serialised on the terminal chunk only, whatever a chunk carries. The
+// OpenAI API reports it once, at the end, and a client accumulating it across
+// chunks would multiply its counters; providers publishing running counters on
+// each chunk are what accounts for an interrupted stream, internally.
+//
 // finish_reason is only ever emitted on the terminal chunk. Tool call arguments
 // are streamed across several deltas, and OpenAI-compatible clients treat the
 // first non-null finish_reason as the end of the turn: setting it on an
@@ -1030,7 +1035,12 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 		c.Choices = []openAIStreamChoice{
 			{Index: 0, Delta: openAIStreamDelta{}, FinishReason: &finish},
 		}
-		if usage := chunk.Usage(); usage != nil {
+		// An empty usage is omitted rather than serialised: providers synthesize
+		// one to carry the end of the stream, and explicit zeros would tell a
+		// client the response cost nothing, where an absent usage says it was
+		// not reported. llm.UsagePublishesCounters is the one definition of
+		// that distinction, shared with the accounting side.
+		if usage := chunk.Usage(); llm.UsagePublishesCounters(usage) {
 			c.Usage = &openAIUsage{
 				PromptTokens:     usage.PromptTokens(),
 				CompletionTokens: usage.CompletionTokens(),
@@ -1089,13 +1099,11 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 		},
 	}
 
-	if usage := chunk.Usage(); usage != nil {
-		c.Usage = &openAIUsage{
-			PromptTokens:     usage.PromptTokens(),
-			CompletionTokens: usage.CompletionTokens(),
-			TotalTokens:      usage.TotalTokens(),
-		}
-	}
+	// No usage here: it belongs to the terminal chunk only, handled above. The
+	// OpenAI API reports it once, at the end, and a client accumulating it
+	// across chunks would multiply its counters. Providers do publish their
+	// running counters on every chunk — that is what accounts for an
+	// interrupted stream — but they stay off the wire.
 
 	return c
 }

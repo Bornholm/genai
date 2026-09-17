@@ -2,6 +2,8 @@ package tokenlimit
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -12,6 +14,7 @@ type Client struct {
 	chatCompletionLimiter *rate.Limiter
 	embeddingsLimiter     *rate.Limiter
 	transcriptionLimiter  *rate.Limiter
+	drainTimeout          time.Duration
 	client                llm.Client
 }
 
@@ -46,8 +49,23 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return c.wrapStreamWithTokenTracking(ctx, stream), nil
 }
 
+// abandon releases an upstream stream this wrapper stops reading. A provider
+// blocked on a send nobody receives never runs its cleanup, holding its upstream
+// response open — and billed — for good.
+func (c *Client) abandon(ctx context.Context, stream <-chan llm.StreamChunk) {
+	go func() {
+		if !llm.DrainStream(stream, c.drainTimeout) {
+			slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
+				slog.Duration("after", c.drainTimeout))
+		}
+	}()
+}
+
 func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan llm.StreamChunk) <-chan llm.StreamChunk {
-	outputChan := make(chan llm.StreamChunk)
+	// Buffered so that the chunk ending the stream usually has a slot to land
+	// in even when the consumer has already stopped reading — see
+	// llm.SendTerminalChunk, whose guarantee holds only while there is room.
+	outputChan := make(chan llm.StreamChunk, 2)
 
 	go func() {
 		defer close(outputChan)
@@ -58,10 +76,12 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 			tracker.Update(chunk)
 
 			// Forward the chunk to the consumer first so it is never lost.
-			select {
-			case <-ctx.Done():
+			if !llm.SendChunk(ctx, outputChan, chunk) {
+				// The consumer is gone; say why the stream ends rather than
+				// closing the channel on nothing, which reads as a truncation.
+				c.abandon(ctx, stream)
+				llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
-			case outputChan <- chunk:
 			}
 
 			// Then apply rate limiting based on the token delta.
@@ -70,7 +90,10 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 				if currentTokens > lastCompletionTokens {
 					delta := int(currentTokens - lastCompletionTokens)
 					if err := waitN(ctx, c.chatCompletionLimiter, delta); err != nil {
-						outputChan <- llm.NewErrorStreamChunk(errors.WithStack(err))
+						// The upstream is still producing and nobody will read
+						// it again: release it before giving up.
+						c.abandon(ctx, stream)
+						llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(err)))
 						return
 					}
 					lastCompletionTokens = currentTokens
@@ -124,6 +147,7 @@ func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 		chatCompletionLimiter: opts.ChatCompletionLimiter,
 		embeddingsLimiter:     opts.EmbeddingsLimiter,
 		transcriptionLimiter:  opts.TranscriptionLimiter,
+		drainTimeout:          opts.DrainTimeout,
 		client:                client,
 	}
 }
