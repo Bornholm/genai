@@ -135,19 +135,19 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for stream.Next() {
 			chunk := stream.Current()
 
-			isNullUsage := chunk.Usage.CompletionTokens == 0 &&
-				chunk.Usage.PromptTokens == 0 &&
-				chunk.Usage.TotalTokens == 0
+			reportedUsage := llm.NewChatCompletionUsageWithCache(
+				int64(chunk.Usage.PromptTokens),
+				int64(chunk.Usage.CompletionTokens),
+				int64(chunk.Usage.TotalTokens),
+				chunk.Usage.PromptTokensDetails.CachedTokens,
+			)
 
 			// Save usage for later — emitting CompleteStreamChunk here would cause
 			// doStreamingLLMCall to break before the content chunk is sent below.
-			if !isNullUsage {
-				finalUsage = llm.NewChatCompletionUsageWithCache(
-					int64(chunk.Usage.PromptTokens),
-					int64(chunk.Usage.CompletionTokens),
-					int64(chunk.Usage.TotalTokens),
-					chunk.Usage.PromptTokensDetails.CachedTokens,
-				)
+			// llm.UsagePublishesCounters is the one definition of a published
+			// measurement, cached tokens alone included.
+			if llm.UsagePublishesCounters(reportedUsage) {
+				finalUsage = reportedUsage
 			}
 
 			if len(chunk.Choices) == 0 {

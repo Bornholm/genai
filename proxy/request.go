@@ -90,9 +90,12 @@ const (
 // provider signalled completion.
 type StreamInterruption struct {
 	Cause StreamInterruptionCause
-	// Err is the underlying error. It is the provider error for
-	// StreamInterruptionUpstream and the failed write for
-	// StreamInterruptionClientGone.
+	// Err is the underlying error: the provider error for
+	// StreamInterruptionUpstream, the failed write for
+	// StreamInterruptionClientGone and StreamInterruptionWriteFailed, the
+	// cancellation the provider reported when a hangup travelled back as a
+	// chunk error, and a plain "ended before completion" for
+	// StreamInterruptionTruncated.
 	Err error
 	// ChunksEmitted is how many content chunks were written to the client
 	// before the interruption, the first one included; error and closing events
@@ -101,9 +104,11 @@ type StreamInterruption struct {
 	ChunksEmitted int
 	// TerminalEventUndelivered marks an exchange whose last SSE event never
 	// reached the client: the error event of an upstream failure, or the
-	// closing events of a stream that ended otherwise. It is always true on a
-	// client hangup, where nothing more could be written by definition. Cause
-	// keeps saying what stopped the stream — an upstream failure stays
+	// closing events of a stream that ended otherwise. It records a write that
+	// actually failed, so it is false when the client left in a way the proxy
+	// never had to write through — a cancellation reported by the provider
+	// itself, for one. Cause keeps saying what stopped the stream — an upstream
+	// failure stays
 	// StreamInterruptionUpstream even when the client had gone away too — and
 	// this says the client was not there to read how it ended.
 	TerminalEventUndelivered bool

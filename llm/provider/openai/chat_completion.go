@@ -174,19 +174,27 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for stream.Next() {
 			chunk := stream.Current()
 
-			isNullUsage := chunk.Usage.CompletionTokens == 0 &&
-				chunk.Usage.PromptTokens == 0 &&
-				chunk.Usage.TotalTokens == 0
+			// llm.UsagePublishesCounters is the one definition of "the provider
+			// reported something", shared with the accounting side: a gateway
+			// publishing only cached tokens, or only a cost, has measured the
+			// call as surely as one publishing token counts.
+			reportedUsage := llm.NewChatCompletionUsageWithCache(
+				chunk.Usage.PromptTokens,
+				chunk.Usage.CompletionTokens,
+				chunk.Usage.TotalTokens,
+				chunk.Usage.PromptTokensDetails.CachedTokens,
+			)
+			reportedCost, hasCost := extraCost(chunk.Usage.JSON.ExtraFields)
 
-			if !isNullUsage {
+			if llm.UsagePublishesCounters(reportedUsage) || (hasCost && reportedCost > 0) {
 				usageReported.Store(true)
 				promptTokens.Store(chunk.Usage.PromptTokens)
 				completionTokens.Store(chunk.Usage.CompletionTokens)
 				totalTokens.Store(chunk.Usage.TotalTokens)
 				cachedTokens.Store(chunk.Usage.PromptTokensDetails.CachedTokens)
 
-				if reported, ok := extraCost(chunk.Usage.JSON.ExtraFields); ok {
-					cost.Store(math.Float64bits(reported))
+				if hasCost {
+					cost.Store(math.Float64bits(reportedCost))
 					costReported.Store(true)
 				}
 			}

@@ -165,12 +165,16 @@ func (s *Server) streamChatCompletion(
 					undelivered = true
 				}
 				flush()
-				// A cancellation travelling back as a chunk error is the
-				// client leaving, not the provider failing: the request context
-				// is what the whole chain watches, and a wrapper answering it
-				// with an error chunk must not be alerted on as an incident.
+				// A cancellation travelling back as a chunk error is the client
+				// leaving, not the provider failing: the request context is what
+				// the whole chain watches, and a wrapper answering it with an
+				// error chunk must not be alerted on as an incident. The test is
+				// on the error itself, never on the ambient context: a genuine
+				// provider failure happening while the context is canceled — a
+				// hangup, a shutdown, a server-side deadline — stays an upstream
+				// failure, which is the incident worth reporting.
 				cause := StreamInterruptionUpstream
-				if isClientGone(ctx, chunk.Error()) {
+				if isCancellation(chunk.Error()) {
 					cause = StreamInterruptionClientGone
 				}
 				interruption = &StreamInterruption{
@@ -299,12 +303,20 @@ func (s *Server) streamChatCompletion(
 // writeFailureCause tells a client that walked away from a write that failed on
 // its own merits. The distinction is what lets accounting and alerting treat a
 // closed tab as the ordinary traffic it is, and a genuine write failure as the
-// server fault it is.
+// server fault it is. A canceled request context counts as the client being
+// gone: that is what net/http does on a disconnect, and a write failing under a
+// server-side cancellation is the connection going away all the same.
 func writeFailureCause(ctx context.Context, err error) StreamInterruptionCause {
 	if isClientGone(ctx, err) {
 		return StreamInterruptionClientGone
 	}
 	return StreamInterruptionWriteFailed
+}
+
+// isCancellation reports whether err is a cancellation travelling back as a
+// stream error, which is how the wrappers answer a context that was canceled.
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // logStreamWriteError reports a failed write to the SSE response. A client

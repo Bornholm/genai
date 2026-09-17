@@ -818,3 +818,64 @@ func (w *failingWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// TestStreamChatCompletion_UpstreamFailureSurvivesACanceledContext asserts the
+// other half of the cause rule: a genuine provider failure stays an upstream
+// failure even when the request context is already canceled. Deciding on the
+// ambient context instead of the error would silence the one event worth
+// alerting on — a failing provider — precisely when a client also hangs up.
+func TestStreamChatCompletion_UpstreamFailureSurvivesACanceledContext(t *testing.T) {
+	capture := &capturingPostHook{}
+	server := NewServer(
+		WithHook(&resolverHook{client: &lateErrorStreamClient{err: errors.New("upstream exploded")}, model: "gpt-4"}),
+		WithHook(capture),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := buildChatRequest(t, `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	req = req.WithContext(ctx)
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	server.handleChatCompletions(httptest.NewRecorder(), req)
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionUpstream; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q: a provider failure is not a client hangup", got, want)
+	}
+}
+
+// lateErrorStreamClient waits for its context to be canceled, then fails with a
+// genuine provider error rather than with the cancellation.
+type lateErrorStreamClient struct {
+	err error
+}
+
+func (c *lateErrorStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk, 2)
+	go func() {
+		defer close(out)
+		out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok"))
+		<-ctx.Done()
+		out <- llm.NewErrorStreamChunk(c.err)
+	}()
+	return out, nil
+}
+
+func (c *lateErrorStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *lateErrorStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *lateErrorStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
