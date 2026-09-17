@@ -17,6 +17,17 @@ type UsageRecord struct {
 	CompletionTokens int
 	Timestamp        time.Time
 	RequestType      proxy.RequestType
+
+	// Interrupted marks a streamed response that did not run to completion —
+	// an upstream failure, a client hangup, a stream ending without a terminal
+	// chunk. The request was still made and billed upstream.
+	Interrupted bool
+	// TokensKnown says whether PromptTokens and CompletionTokens are counts the
+	// provider actually published. It is false only for an interrupted stream
+	// whose provider reports usage at the end and never got there: the counts
+	// are then unknown rather than null, and a consumer must not read the row
+	// as a free request.
+	TokensKnown bool
 }
 
 // UsageStore persists and queries usage records.

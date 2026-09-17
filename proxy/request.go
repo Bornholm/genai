@@ -90,12 +90,13 @@ type StreamInterruption struct {
 	// are not counted. It is the only measure of the volume produced that is
 	// always available — see PartialUsage.
 	ChunksEmitted int
-	// ErrorEventUndelivered marks an upstream failure whose SSE error event
-	// could not be written either, because the client had gone away too. Cause
-	// stays StreamInterruptionUpstream — the provider is what stopped the
-	// stream — but a hook billing or alerting on client hangups needs to know
-	// the client was not there to read the error.
-	ErrorEventUndelivered bool
+	// TerminalEventUndelivered marks an exchange whose last SSE event never
+	// reached the client: the error event of an upstream failure, or the
+	// closing events of a stream that ended otherwise. Cause keeps saying what
+	// stopped the stream — an upstream failure stays
+	// StreamInterruptionUpstream even when the client had gone away too — and
+	// this says the client was not there to read how it ended.
+	TerminalEventUndelivered bool
 	// PartialUsage reports whether ProxyResponse.TokensUsed holds counts the
 	// provider actually published before the interruption.
 	//

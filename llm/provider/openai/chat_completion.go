@@ -161,15 +161,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		)
 	}
 
-	// send writes one chunk, giving up if the consumer abandoned the channel.
-	// Without the select a caller that stops reading — a proxy whose client hung
-	// up — would strand this goroutine and the upstream HTTP response with it.
-	send := func(chunk llm.StreamChunk) {
-		select {
-		case chunks <- chunk:
-		case <-ctx.Done():
-		}
-	}
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
 
 	go func() {
 		defer close(chunks)
@@ -260,15 +256,15 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				streamErr = errors.WithStack(err)
 			}
 			if usageReported.Load() {
-				send(llm.NewErrorStreamChunkWithUsage(streamErr, currentUsage()))
+				sendTerminal(llm.NewErrorStreamChunkWithUsage(streamErr, currentUsage()))
 			} else {
-				send(llm.NewErrorStreamChunk(streamErr))
+				sendTerminal(llm.NewErrorStreamChunk(streamErr))
 			}
 			return
 		}
 
 		// Send completion chunk
-		send(llm.NewCompleteStreamChunk(currentUsage()))
+		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
 	}()
 
 	return chunks, nil

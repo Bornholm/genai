@@ -33,6 +33,23 @@ func (t *UsageTracker) PostResponse(ctx context.Context, req *proxy.ProxyRequest
 		CompletionTokens: res.TokensUsed.CompletionTokens,
 		Timestamp:        time.Now(),
 		RequestType:      req.Type,
+		TokensKnown:      true,
+	}
+
+	// An interrupted stream is recorded like any other — the request was made
+	// and the provider billed what it produced — but the counts are only worth
+	// what the provider published before it stopped. Saying so is what keeps a
+	// quota or a bill from reading a zeroed row as a free request.
+	if res.Interruption != nil {
+		record.Interrupted = true
+		record.TokensKnown = res.Interruption.PartialUsage
+		if !record.TokensKnown {
+			slog.WarnContext(ctx, "recording an interrupted request with unknown token counts",
+				slog.String("user", req.UserID),
+				slog.String("model", req.Model),
+				slog.String("cause", string(res.Interruption.Cause)),
+				slog.Int("chunks_emitted", res.Interruption.ChunksEmitted))
+		}
 	}
 
 	if err := t.store.Record(ctx, record); err != nil {

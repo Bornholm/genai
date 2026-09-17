@@ -215,3 +215,52 @@ func TestStreamingUsageTracker_KeepsCacheCreationWithCost(t *testing.T) {
 		t.Errorf("cache creation tokens lost when a cost is reported: %v", got)
 	}
 }
+
+// TestSendTerminalChunkSurvivesCancellation asserts that the chunk ending a
+// stream is delivered even when the context is already canceled — which is
+// usually what that chunk is there to report. A plain select would have both
+// its cases ready and drop it about half the time.
+func TestSendTerminalChunkSurvivesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i := 0; i < 200; i++ {
+		chunks := make(chan StreamChunk, 10)
+		if !SendTerminalChunk(ctx, chunks, NewErrorStreamChunk(context.Canceled)) {
+			t.Fatalf("terminal chunk dropped on attempt %d although the channel had room", i)
+		}
+		if len(chunks) != 1 {
+			t.Fatalf("channel holds %d chunks, want 1", len(chunks))
+		}
+	}
+}
+
+// TestSendChunkGivesUpOnCancellation asserts the other half of the contract: an
+// ordinary delta is not forced on a consumer that walked away.
+func TestSendChunkGivesUpOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Unbuffered: the send can only succeed if someone is receiving, and nobody
+	// is, so the canceled context must win rather than block forever.
+	if SendChunk(ctx, make(chan StreamChunk), NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))) {
+		t.Error("SendChunk reported a delivery on a channel nobody reads")
+	}
+}
+
+// TestStreamingUsageTrackerIgnoresZeroedUsage asserts that an all-zero usage is
+// not counted as a report. Providers synthesize one to carry a termination
+// signal; treating it as published counters would make Reported() claim numbers
+// nobody produced, which is the confusion the flag exists to prevent.
+func TestStreamingUsageTrackerIgnoresZeroedUsage(t *testing.T) {
+	tracker := NewStreamingUsageTracker()
+	tracker.Update(NewCompleteStreamChunk(NewChatCompletionUsage(0, 0, 0)))
+	if tracker.Reported() {
+		t.Error("Reported() is true after an all-zero usage: zero must read as unknown")
+	}
+
+	tracker.Update(NewCompleteStreamChunk(NewChatCompletionUsage(5, 3, 8)))
+	if !tracker.Reported() {
+		t.Error("Reported() is false after real counters were published")
+	}
+}

@@ -110,9 +110,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			// usage would read as "this cost nothing" rather than "unknown".
 			streamErr := errors.WithStack(mapError(err))
 			if emitter.usageSeen {
-				emitter.sendChunk(llm.NewErrorStreamChunkWithUsage(streamErr, emitter.usage()))
+				emitter.sendTerminal(llm.NewErrorStreamChunkWithUsage(streamErr, emitter.usage()))
 			} else {
-				emitter.sendChunk(llm.NewErrorStreamChunk(streamErr))
+				emitter.sendTerminal(llm.NewErrorStreamChunk(streamErr))
 			}
 			return
 		}
@@ -122,11 +122,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// turn. Counting blocks rather than deltas keeps both entry points
 		// in step on a response made of an empty text block.
 		if emitter.blocks == 0 {
-			emitter.sendChunk(llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage)))
+			emitter.sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage)))
 			return
 		}
 
-		emitter.sendChunk(llm.NewCompleteStreamChunk(emitter.usage()))
+		emitter.sendTerminal(llm.NewCompleteStreamChunk(emitter.usage()))
 	}()
 
 	return chunks, nil
@@ -205,10 +205,14 @@ func (e *streamEmitter) send(delta llm.StreamDelta) {
 
 // sendChunk writes one chunk to the channel, giving up if the consumer is gone.
 func (e *streamEmitter) sendChunk(chunk llm.StreamChunk) {
-	select {
-	case e.chunks <- chunk:
-	case <-e.ctx.Done():
-	}
+	llm.SendChunk(e.ctx, e.chunks, chunk)
+}
+
+// sendTerminal writes the chunk that ends the stream, taking the buffer slot
+// first so that it survives a cancellation it is often there to report. See
+// llm.SendTerminalChunk.
+func (e *streamEmitter) sendTerminal(chunk llm.StreamChunk) {
+	llm.SendTerminalChunk(e.ctx, e.chunks, chunk)
 }
 
 // emitDetail sends one complete reasoning detail, numbered in emission order.
@@ -226,11 +230,11 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 	case "message_delta":
 		if event.Usage.JSON.OutputTokens.Valid() {
 			e.outputTokens = event.Usage.OutputTokens
-			e.usageSeen = true
+			e.usageSeen = e.usageSeen || e.outputTokens > 0
 		}
 		if event.Usage.JSON.InputTokens.Valid() {
 			e.inputTokens = event.Usage.InputTokens
-			e.usageSeen = true
+			e.usageSeen = e.usageSeen || e.inputTokens > 0
 		}
 		if event.Usage.JSON.CacheReadInputTokens.Valid() {
 			e.cacheReadTokens = event.Usage.CacheReadInputTokens
@@ -319,7 +323,13 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 }
 
 func (e *streamEmitter) recordUsage(usage anthropicsdk.Usage) {
-	e.usageSeen = true
+	// An Anthropic-compatible gateway may open with an empty usage object; the
+	// official API always reports the input tokens. Only counters that were
+	// actually published make the usage worth carrying on the deltas.
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 {
+		e.usageSeen = true
+	}
 	e.inputTokens = usage.InputTokens
 	e.outputTokens = usage.OutputTokens
 	e.cacheReadTokens = usage.CacheReadInputTokens

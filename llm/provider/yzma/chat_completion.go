@@ -168,30 +168,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	chunks := make(chan llm.StreamChunk, 10)
 
-	// send writes one chunk, giving up if the consumer abandoned the channel.
-	// Without the select a caller that stops reading — a proxy whose client
-	// hung up — would strand this goroutine, and with it the upstream response
-	// it never gets to close.
-	send := func(chunk llm.StreamChunk) {
-		select {
-		case chunks <- chunk:
-		case <-ctx.Done():
-		}
-	}
-
-	// sendFinal delivers a chunk that reports why the stream is ending, on a
-	// path where the context is already canceled. send would pick between its
-	// two ready cases at random there and drop the chunk about half the time,
-	// leaving the consumer with a silently truncated stream instead of the
-	// cancellation error. The buffered channel takes it without blocking in
-	// practice; if it is full, fall back to giving up like send does.
-	sendFinal := func(chunk llm.StreamChunk) {
-		select {
-		case chunks <- chunk:
-		default:
-			send(chunk)
-		}
-	}
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
 
 	go func() {
 		defer close(chunks)
@@ -201,14 +182,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 		// Clear KV cache before starting new generation
 		if err := c.clearMemory(); err != nil {
-			send(llm.NewErrorStreamChunk(errors.WithStack(err)))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 
 		// Build prompt with tools support
 		prompt, err := c.buildPrompt(opts)
 		if err != nil {
-			send(llm.NewErrorStreamChunk(errors.WithStack(err)))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 
@@ -217,7 +198,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 		// Decode prompt tokens in batches to handle large prompts
 		if err := c.decodePromptTokens(tokens); err != nil {
-			send(llm.NewErrorStreamChunk(errors.WithStack(err)))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 
@@ -254,7 +235,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for pos := int32(0); pos < int32(maxTokens); pos++ {
 			select {
 			case <-ctx.Done():
-				sendFinal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			default:
 			}
@@ -300,7 +281,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			// Decode the generated token
 			batch := llama.BatchGetOne([]llama.Token{token})
 			if _, err := llama.Decode(c.lctx, batch); err != nil {
-				send(llm.NewErrorStreamChunk(errors.Wrap(err, "failed to decode token")))
+				sendTerminal(llm.NewErrorStreamChunk(errors.Wrap(err, "failed to decode token")))
 				return
 			}
 		}
@@ -308,7 +289,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// Send completion chunk
 		promptTokens = int64(len(tokens))
 		usage := llm.NewChatCompletionUsage(promptTokens, completionTokens, promptTokens+completionTokens)
-		send(llm.NewCompleteStreamChunk(usage))
+		sendTerminal(llm.NewCompleteStreamChunk(usage))
 	}()
 
 	return chunks, nil

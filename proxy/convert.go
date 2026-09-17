@@ -1010,6 +1010,11 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 //   - tool_calls stream → finish_reason:"tool_calls"
 //   - text stream       → finish_reason:"stop"
 //
+// Usage is serialised on the terminal chunk only, whatever a chunk carries. The
+// OpenAI API reports it once, at the end, and a client accumulating it across
+// chunks would multiply its counters; providers publishing running counters on
+// each chunk are what accounts for an interrupted stream, internally.
+//
 // finish_reason is only ever emitted on the terminal chunk. Tool call arguments
 // are streamed across several deltas, and OpenAI-compatible clients treat the
 // first non-null finish_reason as the end of the turn: setting it on an

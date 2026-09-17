@@ -17,6 +17,38 @@ type ChatCompletionStreamingClient interface {
 	ChatCompletionStream(ctx context.Context, funcs ...ChatCompletionOptionFunc) (<-chan StreamChunk, error)
 }
 
+// SendChunk writes one chunk to a provider's channel, giving up if the consumer
+// cancelled ctx. It is what an implementation of ChatCompletionStreamingClient
+// owes its consumer on every delta: a bare channel write strands the producing
+// goroutine — and whatever connection it holds — the moment a consumer stops
+// reading. It reports whether the chunk was delivered.
+func SendChunk(ctx context.Context, chunks chan<- StreamChunk, chunk StreamChunk) bool {
+	select {
+	case chunks <- chunk:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// SendTerminalChunk writes the chunk that ends a stream — a completion chunk or
+// an error chunk — and tries harder than SendChunk to deliver it.
+//
+// Cancellation is often the very thing a terminal chunk reports, and by then
+// ctx.Done() is closed: a plain select would have both of its cases ready and
+// the runtime would pick between them at random, dropping the chunk about half
+// the time and leaving the consumer with a silently truncated stream instead of
+// the error. Taking the buffer slot first avoids that coin flip; only a full
+// channel falls back to SendChunk. It reports whether the chunk was delivered.
+func SendTerminalChunk(ctx context.Context, chunks chan<- StreamChunk, chunk StreamChunk) bool {
+	select {
+	case chunks <- chunk:
+		return true
+	default:
+		return SendChunk(ctx, chunks, chunk)
+	}
+}
+
 // StreamChunkType represents the type of streaming chunk
 type StreamChunkType string
 
@@ -294,7 +326,14 @@ type StreamingUsageTracker struct {
 // Update updates the usage tracker with data from a streaming chunk
 func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 	if usage := chunk.Usage(); usage != nil {
-		t.reported = true
+		// An all-zero usage is not a report. Providers synthesize one to carry a
+		// termination signal, and a gateway may return an empty usage object,
+		// both of which would otherwise make Reported() claim counters nobody
+		// published — the confusion between "zero" and "unknown" that flag
+		// exists to prevent.
+		if usage.PromptTokens() > 0 || usage.CompletionTokens() > 0 || usage.TotalTokens() > 0 {
+			t.reported = true
+		}
 		t.promptTokens = usage.PromptTokens()
 		t.completionTokens = usage.CompletionTokens()
 		t.totalTokens = usage.TotalTokens()

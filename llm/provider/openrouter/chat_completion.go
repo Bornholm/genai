@@ -618,16 +618,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	// Create streaming channel
 	chunks := make(chan llm.StreamChunk, 10)
 
-	// send writes one chunk, giving up if the consumer abandoned the channel.
-	// Without the select a caller that stops reading — a proxy whose client
-	// hung up — would strand this goroutine, and with it the upstream response
-	// it never gets to close.
-	send := func(chunk llm.StreamChunk) {
-		select {
-		case chunks <- chunk:
-		case <-ctx.Done():
-		}
-	}
+	// send gives up if the consumer abandoned the channel; sendTerminal takes
+	// the buffer slot first so that the chunk ending the stream survives a
+	// cancellation it is often there to report. See llm.SendChunk.
+	send := func(chunk llm.StreamChunk) { llm.SendChunk(ctx, chunks, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, chunks, chunk) }
 
 	var (
 		promptTokens     atomic.Int64
@@ -645,10 +640,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err != nil {
 			var reqErr *openrouter.RequestError
 			if errors.As(err, &reqErr) {
-				send(llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error()))))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error()))))
 				return
 			}
-			send(llm.NewErrorStreamChunk(errors.WithStack(err)))
+			sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 		defer stream.Close()
@@ -660,7 +655,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					// Stream ended normally
 					break
 				}
-				send(llm.NewErrorStreamChunk(errors.WithStack(err)))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 				return
 			}
 
@@ -769,7 +764,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			)
 		}
 
-		send(llm.NewCompleteStreamChunk(usage))
+		sendTerminal(llm.NewCompleteStreamChunk(usage))
 	}()
 
 	return chunks, nil

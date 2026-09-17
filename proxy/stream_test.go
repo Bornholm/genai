@@ -249,8 +249,8 @@ func TestStreamChatCompletion_RecordsUsageOnUpstreamError(t *testing.T) {
 	if got := capture.res.Interruption.ChunksEmitted; got != 3 {
 		t.Errorf("Interruption.ChunksEmitted = %d, want 3", got)
 	}
-	if capture.res.Interruption.ErrorEventUndelivered {
-		t.Error("ErrorEventUndelivered is true, but the client read the error event")
+	if capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is true, but the client read the error event")
 	}
 	if !capture.res.Interruption.PartialUsage {
 		t.Error("PartialUsage is false, but the provider published its counters before failing")
@@ -331,8 +331,8 @@ func TestStreamChatCompletion_ReportsUndeliveredErrorEvent(t *testing.T) {
 	if got, want := capture.res.Interruption.Cause, StreamInterruptionUpstream; got != want {
 		t.Errorf("Interruption.Cause = %q, want %q", got, want)
 	}
-	if !capture.res.Interruption.ErrorEventUndelivered {
-		t.Error("ErrorEventUndelivered is false although writing the error event failed")
+	if !capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is false although writing the error event failed")
 	}
 }
 
@@ -401,6 +401,35 @@ func TestStreamChatCompletion_ReportsTruncatedStream(t *testing.T) {
 	// would have it retry a response it already received in full.
 	if body := w.Body.String(); !strings.Contains(body, "[DONE]") {
 		t.Errorf("response body does not end with [DONE]; the client is left hanging:\n%s", body)
+	}
+	if capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is true although the client read the closing events")
+	}
+}
+
+// TestStreamChatCompletion_ReportsUndeliveredClosingEvents asserts that a client
+// that went away before the closing events is reported as such on the truncated
+// path too, not only on the upstream one.
+func TestStreamChatCompletion_ReportsUndeliveredClosingEvents(t *testing.T) {
+	client := &truncatingStreamClient{chunks: 3}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	// The three deltas go through, the closing events do not.
+	w := &brokenPipeWriter{failAfter: 3}
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionTruncated; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+	if !capture.res.Interruption.TerminalEventUndelivered {
+		t.Error("TerminalEventUndelivered is false although writing the closing events failed")
 	}
 }
 

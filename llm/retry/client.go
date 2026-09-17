@@ -109,6 +109,13 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	outCh := make(chan llm.StreamChunk, 10)
 
+	// See llm.SendChunk: forwarding with a bare channel write would strand this
+	// goroutine, and the stream it wraps, as soon as a consumer stops reading.
+	// The chunk that ends the stream goes through llm.SendTerminalChunk, which
+	// survives the cancellation it usually reports.
+	send := func(chunk llm.StreamChunk) bool { return llm.SendChunk(ctx, outCh, chunk) }
+	sendTerminal := func(chunk llm.StreamChunk) { llm.SendTerminalChunk(ctx, outCh, chunk) }
+
 	go func() {
 		defer close(outCh)
 
@@ -125,12 +132,12 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 					case <-time.After(backoff):
 						backoff *= 2
 					case <-ctx.Done():
-						outCh <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 						return
 					}
 					continue
 				}
-				outCh <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
 				return
 			}
 
@@ -152,12 +159,14 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 							retryCall = true
 							break streamLoop
 						}
-						outCh <- chunk // non-retryable error — forward and stop
+						sendTerminal(chunk) // non-retryable error — forward and stop
 						return
 					}
-					outCh <- chunk
+					if !send(chunk) {
+						return
+					}
 				case <-ctx.Done():
-					outCh <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 					return
 				}
 			}
@@ -170,7 +179,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			case <-time.After(backoff):
 				backoff *= 2
 			case <-ctx.Done():
-				outCh <- llm.NewErrorStreamChunk(errors.WithStack(ctx.Err()))
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			}
 		}

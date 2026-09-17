@@ -13,14 +13,6 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-const (
-	// drainTimeout bounds how long an abandoned upstream stream is drained for.
-	drainTimeout = 30 * time.Second
-	// postResponseTimeout bounds the post-response hooks, whose context is
-	// detached from the request's.
-	postResponseTimeout = 30 * time.Second
-)
-
 // streamEmitter encodes a stream of llm.StreamChunk values into a
 // wire-format-specific sequence of SSE events.
 //
@@ -119,7 +111,7 @@ func (s *Server) streamChatCompletion(
 			// context nor its consumer would otherwise keep this goroutine for
 			// the whole life of the process. Giving up leaks what the previous
 			// behaviour leaked anyway, and only for that kind of client.
-			timeout := time.NewTimer(drainTimeout)
+			timeout := time.NewTimer(s.options.DrainTimeout)
 			defer timeout.Stop()
 			for {
 				select {
@@ -129,7 +121,7 @@ func (s *Server) streamChatCompletion(
 					}
 				case <-timeout.C:
 					slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
-						slog.Duration("after", drainTimeout))
+						slog.Duration("after", s.options.DrainTimeout))
 					return
 				}
 			}
@@ -183,10 +175,14 @@ func (s *Server) streamChatCompletion(
 				}
 				flush()
 				interruption = &StreamInterruption{
-					Cause:                 StreamInterruptionUpstream,
-					Err:                   chunk.Error(),
-					ErrorEventUndelivered: undelivered,
+					Cause:                    StreamInterruptionUpstream,
+					Err:                      chunk.Error(),
+					TerminalEventUndelivered: undelivered,
 				}
+				// A conforming provider has closed its channel by now, so this
+				// is a no-op for them; it bounds the damage for one that keeps
+				// producing after its error chunk.
+				abandonUpstream()
 				break
 			}
 
@@ -234,6 +230,9 @@ func (s *Server) streamChatCompletion(
 				// not end normally for the client either.
 				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
 			}
+			// On the truncated path the cause is already set; record that the
+			// client did not get its closing events either.
+			interruption.TerminalEventUndelivered = true
 		}
 		flush()
 	}
@@ -274,7 +273,7 @@ func (s *Server) streamChatCompletion(
 	// The budget replaces the request's own cancellation: without one, a hook
 	// blocking on a dead store would hold this handler goroutine forever, which
 	// ordinary client traffic could then exhaust.
-	hookCtx, cancelHooks := context.WithTimeout(context.WithoutCancel(ctx), postResponseTimeout)
+	hookCtx, cancelHooks := context.WithTimeout(context.WithoutCancel(ctx), s.options.PostResponseTimeout)
 	defer cancelHooks()
 	if err := s.chain.RunPostResponse(hookCtx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
