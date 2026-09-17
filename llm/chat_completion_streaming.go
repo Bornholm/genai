@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"time"
 )
 
 // ChatCompletionStreamingClient defines the interface for streaming chat completions.
@@ -38,14 +39,44 @@ func SendChunk(ctx context.Context, chunks chan<- StreamChunk, chunk StreamChunk
 // ctx.Done() is closed: a plain select would have both of its cases ready and
 // the runtime would pick between them at random, dropping the chunk about half
 // the time and leaving the consumer with a silently truncated stream instead of
-// the error. Taking the buffer slot first avoids that coin flip; only a full
-// channel falls back to SendChunk. It reports whether the chunk was delivered.
+// the error. Taking the buffer slot first avoids that coin flip; a full — or
+// unbuffered — channel falls back to SendChunk, which on a canceled context may
+// well give up, so the guarantee only holds for a channel with room to spare.
+// It reports whether the chunk was delivered.
 func SendTerminalChunk(ctx context.Context, chunks chan<- StreamChunk, chunk StreamChunk) bool {
 	select {
 	case chunks <- chunk:
 		return true
 	default:
 		return SendChunk(ctx, chunks, chunk)
+	}
+}
+
+// DrainStream reads and discards what is left of a stream whose consumer has
+// given up, so that the goroutine producing it reaches its own cleanup instead
+// of blocking forever on a channel nobody reads — with, typically, an upstream
+// HTTP response held open and billed behind it.
+//
+// Cancelling the producer's context is the first thing to do and is not enough:
+// an implementation whose sends do not watch it stays blocked regardless. The
+// timeout caps what such an implementation can hold; zero or less means no cap.
+// It reports whether the stream ended on its own before the deadline.
+func DrainStream(stream <-chan StreamChunk, timeout time.Duration) bool {
+	var expired <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		expired = timer.C
+	}
+	for {
+		select {
+		case _, ok := <-stream:
+			if !ok {
+				return true
+			}
+		case <-expired:
+			return false
+		}
 	}
 }
 
@@ -332,7 +363,7 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 		// counters nobody published — the confusion between "zero" and
 		// "unknown" that flag exists to prevent — and letting it through would
 		// wipe counters a previous chunk did publish.
-		if !publishesCounters(usage) {
+		if !UsagePublishesCounters(usage) {
 			return
 		}
 		t.reported = true
@@ -355,10 +386,19 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 	}
 }
 
-// publishesCounters reports whether a usage carries a count worth recording.
-// Cache counters count: a cached prompt with no other counter published is
-// still a measurement, not an absence of one.
-func publishesCounters(usage ChatCompletionUsage) bool {
+// UsagePublishesCounters reports whether a usage carries a measurement worth
+// recording, as opposed to an empty shell.
+//
+// It is the one definition of "the provider reported something": an all-zero
+// usage is what a provider sends to signal the end of a stream, and what a
+// gateway returns when it has nothing to say, so counting it would turn
+// "unknown" into "zero" everywhere that distinction matters. Cache counters and
+// a reported cost count: a cached prompt, or a priced call, is a measurement
+// even when no token counter came with it.
+func UsagePublishesCounters(usage ChatCompletionUsage) bool {
+	if usage == nil {
+		return false
+	}
 	if usage.PromptTokens() > 0 || usage.CompletionTokens() > 0 || usage.TotalTokens() > 0 {
 		return true
 	}
@@ -368,6 +408,11 @@ func publishesCounters(usage ChatCompletionUsage) bool {
 	}
 	if cc, ok := usage.(CacheCreationReportingUsage); ok && cc.CacheCreationTokens() > 0 {
 		return true
+	}
+	if cr, ok := usage.(CostReportingUsage); ok {
+		if amount, _, ok := cr.Cost(); ok && amount > 0 {
+			return true
+		}
 	}
 	return false
 }

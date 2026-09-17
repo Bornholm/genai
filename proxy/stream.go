@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"syscall"
-	"time"
 
 	"github.com/bornholm/genai/llm"
 )
@@ -111,23 +110,9 @@ func (s *Server) streamChatCompletion(
 			// context nor its consumer would otherwise keep this goroutine for
 			// the whole life of the process. Giving up leaks what the previous
 			// behaviour leaked anyway, and only for that kind of client.
-			var expired <-chan time.Time
-			if s.options.DrainTimeout > 0 {
-				timeout := time.NewTimer(s.options.DrainTimeout)
-				defer timeout.Stop()
-				expired = timeout.C
-			}
-			for {
-				select {
-				case _, ok := <-chunks:
-					if !ok {
-						return
-					}
-				case <-expired:
-					slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
-						slog.Duration("after", s.options.DrainTimeout))
-					return
-				}
+			if !llm.DrainStream(chunks, s.options.DrainTimeout) {
+				slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
+					slog.Duration("after", s.options.DrainTimeout))
 			}
 		}()
 	}
@@ -240,8 +225,6 @@ func (s *Server) streamChatCompletion(
 			}
 			// On the truncated path the cause is already set; either way the
 			// client did not get the closing events.
-			// On the truncated path the cause is already set; record that the
-			// client did not get its closing events either.
 			interruption.TerminalEventUndelivered = true
 		}
 		flush()

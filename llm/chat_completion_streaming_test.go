@@ -264,3 +264,82 @@ func TestStreamingUsageTrackerIgnoresZeroedUsage(t *testing.T) {
 		t.Error("Reported() is false after real counters were published")
 	}
 }
+
+// TestDrainStreamGivesUpOnDeadline asserts that draining an abandoned stream is
+// bounded. Without the deadline a client that watches neither its context nor
+// its consumer would hold the draining goroutine for the life of the process.
+func TestDrainStreamGivesUpOnDeadline(t *testing.T) {
+	// A producer that never closes its channel and never stops sending: what an
+	// implementation ignoring its context looks like.
+	stream := make(chan StreamChunk)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case stream <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok")):
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	if DrainStream(stream, 50*time.Millisecond) {
+		t.Error("DrainStream reported a stream that ended on its own, but it never closes")
+	}
+}
+
+// TestDrainStreamReportsACleanEnd asserts the ordinary case: a stream that ends
+// on its own is drained to completion and says so, which is what happens with
+// every provider that honours its context.
+func TestDrainStreamReportsACleanEnd(t *testing.T) {
+	stream := make(chan StreamChunk, 3)
+	stream <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))
+	stream <- NewCompleteStreamChunk(NewChatCompletionUsage(5, 3, 8))
+	close(stream)
+
+	if !DrainStream(stream, time.Second) {
+		t.Error("DrainStream gave up on a stream that had already ended")
+	}
+}
+
+// TestDrainStreamWithoutDeadline asserts that a zero timeout means no limit
+// rather than an immediate give-up, which would bring back the leak.
+func TestDrainStreamWithoutDeadline(t *testing.T) {
+	stream := make(chan StreamChunk, 1)
+	stream <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(stream)
+	}()
+
+	if !DrainStream(stream, 0) {
+		t.Error("DrainStream gave up although no deadline was asked for")
+	}
+}
+
+// TestUsagePublishesCounters covers the one definition of "the provider
+// reported something", on which PartialUsage, the wire format and the reference
+// accounting all agree.
+func TestUsagePublishesCounters(t *testing.T) {
+	cost := 0.02
+	for _, tc := range []struct {
+		name  string
+		usage ChatCompletionUsage
+		want  bool
+	}{
+		{"nil", nil, false},
+		{"all zero", NewChatCompletionUsage(0, 0, 0), false},
+		{"prompt tokens", NewChatCompletionUsage(5, 0, 5), true},
+		{"completion tokens", NewChatCompletionUsage(0, 3, 3), true},
+		{"cached tokens only", NewChatCompletionUsageWithCache(0, 0, 0, 100), true},
+		{"cache creation only", NewChatCompletionUsageWithCacheCreation(0, 0, 0, 0, 50), true},
+		{"cost only", NewChatCompletionUsageWithCost(0, 0, 0, 0, cost, "USD"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UsagePublishesCounters(tc.usage); got != tc.want {
+				t.Errorf("UsagePublishesCounters() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

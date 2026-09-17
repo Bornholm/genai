@@ -627,7 +627,10 @@ func FormatMessagesResponse(res llm.ChatCompletionResponse, model string) any {
 	// genai folds the cache counters into PromptTokens, the Messages API keeps
 	// them apart: input_tokens there excludes what was read from or written to
 	// the cache, and a client pricing the call off an input_tokens carrying them
-	// would overcharge. Split them back out, as the streamed path does.
+	// would overcharge. Split them back out, as the streamed path does. This
+	// assumes the folding convention every in-repo provider follows; a
+	// third-party llm.Client whose PromptTokens already excludes the cache
+	// would be under-reported here.
 	usage := res.Usage()
 	out := anthropicUsage{
 		InputTokens:  usage.PromptTokens(),

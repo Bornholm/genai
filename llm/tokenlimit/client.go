@@ -2,6 +2,8 @@ package tokenlimit
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -46,21 +48,28 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return c.wrapStreamWithTokenTracking(ctx, stream), nil
 }
 
+// drainTimeout caps how long an abandoned upstream stream is drained for. A
+// client that honours its context closes its channel at once; this only bounds
+// what one that honours nothing can hold.
+const drainTimeout = 30 * time.Second
+
 // abandon releases an upstream stream this wrapper stops reading. A provider
 // blocked on a send nobody receives never runs its cleanup, holding its upstream
 // response open — and billed — for good.
-func abandon(stream <-chan llm.StreamChunk) {
+func abandon(ctx context.Context, stream <-chan llm.StreamChunk) {
 	go func() {
-		for range stream { //nolint:revive // draining, the values are of no use
+		if !llm.DrainStream(stream, drainTimeout) {
+			slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
+				slog.Duration("after", drainTimeout))
 		}
 	}()
 }
 
 func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan llm.StreamChunk) <-chan llm.StreamChunk {
-	// Buffered by one so that the chunk ending the stream has a slot to land in
-	// even when the consumer has already stopped reading — see
-	// llm.SendTerminalChunk.
-	outputChan := make(chan llm.StreamChunk, 1)
+	// Buffered so that the chunk ending the stream usually has a slot to land
+	// in even when the consumer has already stopped reading — see
+	// llm.SendTerminalChunk, whose guarantee holds only while there is room.
+	outputChan := make(chan llm.StreamChunk, 2)
 
 	go func() {
 		defer close(outputChan)
@@ -74,7 +83,7 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 			if !llm.SendChunk(ctx, outputChan, chunk) {
 				// The consumer is gone; say why the stream ends rather than
 				// closing the channel on nothing, which reads as a truncation.
-				abandon(stream)
+				abandon(ctx, stream)
 				llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			}
@@ -87,7 +96,7 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 					if err := waitN(ctx, c.chatCompletionLimiter, delta); err != nil {
 						// The upstream is still producing and nobody will read
 						// it again: release it before giving up.
-						abandon(stream)
+						abandon(ctx, stream)
 						llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(err)))
 						return
 					}

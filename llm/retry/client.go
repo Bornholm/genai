@@ -106,6 +106,11 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 // Stream errors that are retryable (e.g. 429) trigger a full retry of the call.
 // All retries and stream reading happen inside a goroutine; the returned channel
 // carries both data chunks and any eventual non-retryable error chunk.
+// drainTimeout caps how long an abandoned attempt is drained for. A client that
+// honours its context closes its channel at once; this only bounds what one
+// that honours nothing can hold.
+const drainTimeout = 30 * time.Second
+
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	outCh := make(chan llm.StreamChunk, 10)
 
@@ -134,7 +139,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			cancelAttempt()
 			cancelAttempt = nil
 			go func() {
-				for range stream { //nolint:revive // draining, the values are of no use
+				if !llm.DrainStream(stream, drainTimeout) {
+					slog.WarnContext(ctx, "gave up draining an abandoned attempt",
+						slog.Duration("after", drainTimeout))
 				}
 			}()
 		}

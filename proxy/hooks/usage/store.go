@@ -27,8 +27,11 @@ type UsageRecord struct {
 	// providers report usage only in the final chunk of a stream, which an
 	// interruption never reaches, and some never ask for it at all — and a
 	// consumer must then read the row as unknown rather than as a free
-	// request.
+	// request. Cached tokens and a reported cost count as a measurement.
 	TokensKnown bool
+	// CachedTokens is the part of the prompt the provider served from its
+	// cache, when it reports it. It is included in PromptTokens.
+	CachedTokens int
 }
 
 // UsageStore persists and queries usage records.

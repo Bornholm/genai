@@ -18,7 +18,9 @@ type Options struct {
 	// request — on a client hangup the request context is already canceled, and
 	// a usage hook handed it would lose the accounting — so this budget is what
 	// replaces the request's own cancellation. Default 30s; zero or less means
-	// no budget, and a blocking hook then holds its handler goroutine.
+	// no budget. The hooks run synchronously, so the budget only bounds a hook
+	// that honours the cancellation of the context it is handed: one blocking
+	// in a call that ignores it holds its handler goroutine either way.
 	PostResponseTimeout time.Duration
 	// DrainTimeout bounds how long an abandoned upstream stream is drained
 	// for. A provider that honours its context closes its channel right away;

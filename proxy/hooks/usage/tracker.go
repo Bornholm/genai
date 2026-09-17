@@ -38,8 +38,11 @@ func (t *UsageTracker) PostResponse(ctx context.Context, req *proxy.ProxyRequest
 	// An all-zero row means the provider published nothing, not that the request
 	// was free — some report usage only in the final chunk of a stream, and some
 	// never ask for it at all. Saying so is what keeps a quota or a bill from
-	// reading the row as a free request.
-	record.TokensKnown = record.PromptTokens > 0 || record.CompletionTokens > 0
+	// reading the row as a free request. Cached tokens and a reported cost count
+	// as a measurement, like llm.UsagePublishesCounters upstream.
+	record.CachedTokens = res.TokensUsed.CachedTokens
+	record.TokensKnown = record.PromptTokens > 0 || record.CompletionTokens > 0 ||
+		record.CachedTokens > 0 || (res.TokensUsed.Cost != nil && *res.TokensUsed.Cost > 0)
 
 	// An interrupted stream is recorded like any other — the request was made
 	// and the provider billed what it produced — but the counts are only worth
@@ -50,9 +53,6 @@ func (t *UsageTracker) PostResponse(ctx context.Context, req *proxy.ProxyRequest
 	}
 
 	if !record.TokensKnown {
-		// A client hanging up mid-stream is ordinary traffic, logged at debug
-		// for the same reason stream writes are; an upstream failure or a
-		// truncated stream is not.
 		msg := "recording a request with unknown token counts"
 		attrs := []any{
 			slog.String("user", req.UserID),
@@ -63,9 +63,16 @@ func (t *UsageTracker) PostResponse(ctx context.Context, req *proxy.ProxyRequest
 				slog.String("cause", string(res.Interruption.Cause)),
 				slog.Int("chunks_emitted", res.Interruption.ChunksEmitted))
 		}
-		if res.Interruption != nil && res.Interruption.Cause == proxy.StreamInterruptionClientGone {
+		// Two of these are ordinary traffic and would drown the third if they
+		// shared its level: a provider that never reports usage at all leaves
+		// every single request unmeasured, and a client hanging up mid-stream is
+		// a closed tab. Only an upstream failure or a truncated stream is an
+		// incident worth waking someone for.
+		switch {
+		case res.Interruption == nil,
+			res.Interruption.Cause == proxy.StreamInterruptionClientGone:
 			slog.DebugContext(ctx, msg, attrs...)
-		} else {
+		default:
 			slog.WarnContext(ctx, msg, attrs...)
 		}
 	}

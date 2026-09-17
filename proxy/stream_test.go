@@ -207,8 +207,9 @@ func (c *erroringStreamClient) Transcription(_ context.Context, _ []byte, _ ...l
 // capturingPostHook keeps the response it was handed, so a test can assert on
 // the usage and the interruption the chain reported.
 type capturingPostHook struct {
-	res    *ProxyResponse
-	ctxErr error
+	res         *ProxyResponse
+	ctxErr      error
+	hasDeadline bool
 }
 
 func (h *capturingPostHook) Name() string  { return "test.capture" }
@@ -216,6 +217,7 @@ func (h *capturingPostHook) Priority() int { return 1 }
 func (h *capturingPostHook) PostResponse(ctx context.Context, _ *ProxyRequest, res *ProxyResponse) (*HookResult, error) {
 	h.res = res
 	h.ctxErr = ctx.Err()
+	_, h.hasDeadline = ctx.Deadline()
 	return nil, nil
 }
 
@@ -599,4 +601,103 @@ func TestStreamChatCompletion_ReleasesUpstreamOnHangup(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the upstream goroutine is still blocked on its channel after the client hung up")
 	}
+}
+
+// TestStreamChatCompletion_BudgetsThePostResponseHooks asserts that the hooks
+// run under the configured budget. Detaching their context from the request is
+// what keeps the accounting of a client hangup, and the budget is what replaces
+// the cancellation the request would have provided: without it a hook blocking
+// on a dead store holds its handler goroutine.
+func TestStreamChatCompletion_BudgetsThePostResponseHooks(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		opts        []OptionFunc
+		wantDeadlne bool
+	}{
+		{"default budget", nil, true},
+		{"explicit budget", []OptionFunc{WithPostResponseTimeout(time.Minute)}, true},
+		// Zero means no budget at all, not a deadline in the past — which would
+		// fail every hook on context.DeadlineExceeded and lose the accounting.
+		{"no budget", []OptionFunc{WithPostResponseTimeout(0)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &countingStreamClient{chunks: 3}
+			capture := &capturingPostHook{}
+			opts := append([]OptionFunc{
+				WithHook(&resolverHook{client: client, model: "gpt-4"}),
+				WithHook(capture),
+			}, tc.opts...)
+
+			server := NewServer(opts...)
+			reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+			server.handleChatCompletions(httptest.NewRecorder(), buildChatRequest(t, reqBody))
+
+			if capture.res == nil {
+				t.Fatal("post-response hook was not run")
+			}
+			if capture.ctxErr != nil {
+				t.Errorf("hooks ran on a dead context: %v", capture.ctxErr)
+			}
+			if capture.hasDeadline != tc.wantDeadlne {
+				t.Errorf("hook context has a deadline = %v, want %v", capture.hasDeadline, tc.wantDeadlne)
+			}
+		})
+	}
+}
+
+// TestStreamChatCompletion_BoundsTheUpstreamDrain asserts that the drain of an
+// abandoned upstream honours DrainTimeout. A provider that watches neither its
+// context nor its consumer cannot be released, only given up on.
+func TestStreamChatCompletion_BoundsTheUpstreamDrain(t *testing.T) {
+	client := &endlessStreamClient{}
+	server := NewServer(
+		WithHook(&resolverHook{client: client, model: "gpt-4"}),
+		WithDrainTimeout(50*time.Millisecond),
+	)
+
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(&brokenPipeWriter{}, buildChatRequest(t, reqBody))
+
+	select {
+	case <-client.drainStopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drain never gave up on a provider that ignores its context")
+	}
+}
+
+// endlessStreamClient never closes its channel and never watches its context:
+// what an implementation ignoring the contract looks like. It reports when the
+// reader on the other end stopped consuming.
+type endlessStreamClient struct {
+	drainStopped chan struct{}
+}
+
+func (c *endlessStreamClient) ChatCompletionStream(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk)
+	c.drainStopped = make(chan struct{})
+	go func() {
+		// Blocks for good once nobody reads, which is the point: only the
+		// bounded drain can end this test.
+		for {
+			select {
+			case out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok")):
+			case <-time.After(time.Second):
+				close(c.drainStopped)
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+func (c *endlessStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *endlessStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *endlessStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
 }
