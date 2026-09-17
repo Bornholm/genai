@@ -238,6 +238,14 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		}
 		if event.Usage.JSON.CacheReadInputTokens.Valid() {
 			e.cacheReadTokens = event.Usage.CacheReadInputTokens
+			e.usageSeen = e.usageSeen || e.cacheReadTokens > 0
+		}
+		if event.Usage.JSON.CacheCreationInputTokens.Valid() {
+			e.cacheCreationTokens = event.Usage.CacheCreationInputTokens
+			e.usageSeen = e.usageSeen || e.cacheCreationTokens > 0
+		}
+		if event.Usage.JSON.CacheReadInputTokens.Valid() {
+			e.cacheReadTokens = event.Usage.CacheReadInputTokens
 		}
 		if event.Usage.JSON.CacheCreationInputTokens.Valid() {
 			e.cacheCreationTokens = event.Usage.CacheCreationInputTokens

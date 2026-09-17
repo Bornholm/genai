@@ -111,15 +111,19 @@ func (s *Server) streamChatCompletion(
 			// context nor its consumer would otherwise keep this goroutine for
 			// the whole life of the process. Giving up leaks what the previous
 			// behaviour leaked anyway, and only for that kind of client.
-			timeout := time.NewTimer(s.options.DrainTimeout)
-			defer timeout.Stop()
+			var expired <-chan time.Time
+			if s.options.DrainTimeout > 0 {
+				timeout := time.NewTimer(s.options.DrainTimeout)
+				defer timeout.Stop()
+				expired = timeout.C
+			}
 			for {
 				select {
 				case _, ok := <-chunks:
 					if !ok {
 						return
 					}
-				case <-timeout.C:
+				case <-expired:
 					slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
 						slog.Duration("after", s.options.DrainTimeout))
 					return
@@ -145,7 +149,9 @@ func (s *Server) streamChatCompletion(
 		// Once a write to the response fails the SSE stream is unrecoverable:
 		// stop emitting instead of burning the rest of the upstream stream on a
 		// connection nobody reads.
-		interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+		interruption = &StreamInterruption{
+			Cause: StreamInterruptionClientGone, Err: err, TerminalEventUndelivered: true,
+		}
 		abandonUpstream()
 	} else {
 		chunksEmitted++
@@ -189,7 +195,9 @@ func (s *Server) streamChatCompletion(
 			tracker.Update(chunk)
 			if err := emitter.Emit(w, chunk); err != nil {
 				logStreamWriteError(ctx, "could not emit stream chunk", err)
-				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+				interruption = &StreamInterruption{
+					Cause: StreamInterruptionClientGone, Err: err, TerminalEventUndelivered: true,
+				}
 				abandonUpstream()
 				break
 			}
@@ -230,6 +238,8 @@ func (s *Server) streamChatCompletion(
 				// not end normally for the client either.
 				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
 			}
+			// On the truncated path the cause is already set; either way the
+			// client did not get the closing events.
 			// On the truncated path the cause is already set; record that the
 			// client did not get its closing events either.
 			interruption.TerminalEventUndelivered = true
@@ -273,8 +283,12 @@ func (s *Server) streamChatCompletion(
 	// The budget replaces the request's own cancellation: without one, a hook
 	// blocking on a dead store would hold this handler goroutine forever, which
 	// ordinary client traffic could then exhaust.
-	hookCtx, cancelHooks := context.WithTimeout(context.WithoutCancel(ctx), s.options.PostResponseTimeout)
-	defer cancelHooks()
+	hookCtx := context.WithoutCancel(ctx)
+	if s.options.PostResponseTimeout > 0 {
+		var cancelHooks context.CancelFunc
+		hookCtx, cancelHooks = context.WithTimeout(hookCtx, s.options.PostResponseTimeout)
+		defer cancelHooks()
+	}
 	if err := s.chain.RunPostResponse(hookCtx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
 	}

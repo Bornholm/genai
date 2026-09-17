@@ -15,16 +15,25 @@ import (
 func TestUsageTracker_MarksInterruptedRecords(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
+		tokens          proxy.TokenUsage
 		interruption    *proxy.StreamInterruption
 		wantInterrupted bool
 		wantKnown       bool
 	}{
 		{
 			name:      "completed stream",
+			tokens:    proxy.TokenUsage{PromptTokens: 7, CompletionTokens: 3},
 			wantKnown: true,
 		},
 		{
-			name: "interrupted with published counters",
+			// Mistral asks for no usage at all, so a perfectly complete
+			// response can carry none: unknown, not free.
+			name:   "completed stream, provider published nothing",
+			tokens: proxy.TokenUsage{},
+		},
+		{
+			name:   "interrupted with published counters",
+			tokens: proxy.TokenUsage{PromptTokens: 7, CompletionTokens: 3},
 			interruption: &proxy.StreamInterruption{
 				Cause:        proxy.StreamInterruptionUpstream,
 				PartialUsage: true,
@@ -33,7 +42,8 @@ func TestUsageTracker_MarksInterruptedRecords(t *testing.T) {
 			wantKnown:       true,
 		},
 		{
-			name: "interrupted with nothing published",
+			name:   "interrupted with nothing published",
+			tokens: proxy.TokenUsage{PromptTokens: 7, CompletionTokens: 3},
 			interruption: &proxy.StreamInterruption{
 				Cause: proxy.StreamInterruptionClientGone,
 			},
@@ -45,8 +55,9 @@ func TestUsageTracker_MarksInterruptedRecords(t *testing.T) {
 			tracker := NewUsageTracker(store, 1)
 
 			req := &proxy.ProxyRequest{UserID: "u1", Model: "gpt-4", Type: proxy.RequestTypeChatCompletion}
+			tokens := tc.tokens
 			res := &proxy.ProxyResponse{
-				TokensUsed:   &proxy.TokenUsage{PromptTokens: 7, CompletionTokens: 3},
+				TokensUsed:   &tokens,
 				Interruption: tc.interruption,
 			}
 

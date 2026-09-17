@@ -117,3 +117,16 @@ func TestFormatStreamChunkForwardsReasoningDetails(t *testing.T) {
 		t.Errorf("reasoning detail id = %v, want r1", id)
 	}
 }
+
+// TestFormatStreamChunkOmitsZeroedUsage asserts that a terminal chunk whose
+// usage is all zeros carries no usage field. Providers synthesize one to signal
+// the end of a stream; serialising explicit zeros would tell a client the
+// response cost nothing, where an absent usage says it was not reported.
+func TestFormatStreamChunkOmitsZeroedUsage(t *testing.T) {
+	usage := llm.NewChatCompletionUsage(0, 0, 0)
+	chunk := marshalChunk(t, FormatStreamChunk(llm.NewCompleteStreamChunk(usage), "id", "m", false))
+
+	if got, ok := chunk["usage"]; ok {
+		t.Errorf("usage = %v, want the field to be absent on an all-zero usage", got)
+	}
+}

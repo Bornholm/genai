@@ -326,14 +326,16 @@ type StreamingUsageTracker struct {
 // Update updates the usage tracker with data from a streaming chunk
 func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 	if usage := chunk.Usage(); usage != nil {
-		// An all-zero usage is not a report. Providers synthesize one to carry a
-		// termination signal, and a gateway may return an empty usage object,
-		// both of which would otherwise make Reported() claim counters nobody
-		// published — the confusion between "zero" and "unknown" that flag
-		// exists to prevent.
-		if usage.PromptTokens() > 0 || usage.CompletionTokens() > 0 || usage.TotalTokens() > 0 {
-			t.reported = true
+		// An all-zero usage is not a report, and is ignored outright. Providers
+		// synthesize one to carry a termination signal and a gateway may return
+		// an empty usage object; counting it would make Reported() claim
+		// counters nobody published — the confusion between "zero" and
+		// "unknown" that flag exists to prevent — and letting it through would
+		// wipe counters a previous chunk did publish.
+		if !publishesCounters(usage) {
+			return
 		}
+		t.reported = true
 		t.promptTokens = usage.PromptTokens()
 		t.completionTokens = usage.CompletionTokens()
 		t.totalTokens = usage.TotalTokens()
@@ -351,6 +353,23 @@ func (t *StreamingUsageTracker) Update(chunk StreamChunk) {
 			}
 		}
 	}
+}
+
+// publishesCounters reports whether a usage carries a count worth recording.
+// Cache counters count: a cached prompt with no other counter published is
+// still a measurement, not an absence of one.
+func publishesCounters(usage ChatCompletionUsage) bool {
+	if usage.PromptTokens() > 0 || usage.CompletionTokens() > 0 || usage.TotalTokens() > 0 {
+		return true
+	}
+	type cachedUsage interface{ CachedTokens() int64 }
+	if cu, ok := usage.(cachedUsage); ok && cu.CachedTokens() > 0 {
+		return true
+	}
+	if cc, ok := usage.(CacheCreationReportingUsage); ok && cc.CacheCreationTokens() > 0 {
+		return true
+	}
+	return false
 }
 
 // Reported reports whether any chunk carried usage at all. It tells apart a

@@ -23,10 +23,11 @@ type UsageRecord struct {
 	// chunk. The request was still made and billed upstream.
 	Interrupted bool
 	// TokensKnown says whether PromptTokens and CompletionTokens are counts the
-	// provider actually published. It is false only for an interrupted stream
-	// whose provider reports usage at the end and never got there: the counts
-	// are then unknown rather than null, and a consumer must not read the row
-	// as a free request.
+	// provider actually published. It is false when they are all zero — some
+	// providers report usage only in the final chunk of a stream, which an
+	// interruption never reaches, and some never ask for it at all — and a
+	// consumer must then read the row as unknown rather than as a free
+	// request.
 	TokensKnown bool
 }
 

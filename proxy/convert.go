@@ -1035,7 +1035,12 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 		c.Choices = []openAIStreamChoice{
 			{Index: 0, Delta: openAIStreamDelta{}, FinishReason: &finish},
 		}
-		if usage := chunk.Usage(); usage != nil {
+		// An all-zero usage is omitted rather than serialised: providers
+		// synthesize one to carry the end of the stream, and explicit zeros
+		// would tell a client the response cost nothing, where an absent usage
+		// says it was not reported.
+		if usage := chunk.Usage(); usage != nil &&
+			(usage.PromptTokens() > 0 || usage.CompletionTokens() > 0 || usage.TotalTokens() > 0) {
 			c.Usage = &openAIUsage{
 				PromptTokens:     usage.PromptTokens(),
 				CompletionTokens: usage.CompletionTokens(),

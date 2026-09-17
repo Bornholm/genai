@@ -122,9 +122,32 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 		backoff := c.baseDelay
 		retries := 0
 
+		// Each attempt gets its own context so that the stream of an abandoned
+		// one can be told to stop. Without it the provider goroutine of a
+		// retried attempt stays blocked on a send nobody reads — ctx is still
+		// alive — holding its upstream response open, and billed, for good.
+		var cancelAttempt context.CancelFunc
+		abandonAttempt := func(stream <-chan llm.StreamChunk) {
+			if cancelAttempt == nil {
+				return
+			}
+			cancelAttempt()
+			cancelAttempt = nil
+			go func() {
+				for range stream { //nolint:revive // draining, the values are of no use
+				}
+			}()
+		}
+
 		for {
-			stream, err := c.client.ChatCompletionStream(ctx, funcs...)
+			attemptCtx, cancel := context.WithCancel(ctx)
+			cancelAttempt = cancel
+			stream, err := c.client.ChatCompletionStream(attemptCtx, funcs...)
 			if err != nil {
+				// Nothing was opened, but the attempt context still has to be
+				// released before the next one replaces it.
+				cancelAttempt()
+				cancelAttempt = nil
 				if retries < c.maxRetries && llm.IsRetryable(err) {
 					slog.DebugContext(ctx, "stream open failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
 					retries++
@@ -159,21 +182,28 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 							retryCall = true
 							break streamLoop
 						}
-						sendTerminal(chunk) // non-retryable error — forward and stop
+						abandonAttempt(stream) // non-retryable error — forward and stop
+						sendTerminal(chunk)
 						return
 					}
 					if !send(chunk) {
+						abandonAttempt(stream)
 						return
 					}
 				case <-ctx.Done():
+					abandonAttempt(stream)
 					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 					return
 				}
 			}
 
 			if !retryCall {
+				// The provider closed its channel: nothing left to abandon,
+				// only the attempt context to release.
+				cancelAttempt()
 				return // stream ended normally
 			}
+			abandonAttempt(stream)
 			// retryCall == true: wait (respecting ctx) then open a fresh stream
 			select {
 			case <-time.After(backoff):

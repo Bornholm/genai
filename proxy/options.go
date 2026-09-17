@@ -13,15 +13,17 @@ type Options struct {
 	DefaultClient llm.Client    // fallback client if no resolver matches
 	AuthExtractor AuthExtractor // extracts UserID from requests
 
-	// PostResponseTimeout bounds the post-response hooks of a streamed
-	// response. Their context is detached from the request — on a client
-	// hangup the request context is already canceled, and a usage hook handed
-	// it would lose the accounting — so this budget is what replaces the
-	// request's own cancellation. Default 30s.
+	// PostResponseTimeout bounds the post-response hooks of every streamed
+	// response, completed ones included. Their context is detached from the
+	// request — on a client hangup the request context is already canceled, and
+	// a usage hook handed it would lose the accounting — so this budget is what
+	// replaces the request's own cancellation. Default 30s; zero or less means
+	// no budget, and a blocking hook then holds its handler goroutine.
 	PostResponseTimeout time.Duration
 	// DrainTimeout bounds how long an abandoned upstream stream is drained
 	// for. A provider that honours its context closes its channel right away;
-	// this only caps what a client that honours nothing can hold. Default 30s.
+	// this only caps what a client that honours nothing can hold. Default 30s;
+	// zero or less means no limit.
 	DrainTimeout time.Duration
 }
 
@@ -57,7 +59,8 @@ func WithAuthExtractor(extractor AuthExtractor) OptionFunc {
 }
 
 // WithPostResponseTimeout sets how long the post-response hooks of a streamed
-// response may take before their context is canceled.
+// response may take before their context is canceled. Zero or less means no
+// budget at all, not an immediate deadline.
 func WithPostResponseTimeout(timeout time.Duration) OptionFunc {
 	return func(o *Options) {
 		o.PostResponseTimeout = timeout
@@ -65,6 +68,7 @@ func WithPostResponseTimeout(timeout time.Duration) OptionFunc {
 }
 
 // WithDrainTimeout sets how long an abandoned upstream stream is drained for.
+// Zero or less means no limit, not an immediate give-up.
 func WithDrainTimeout(timeout time.Duration) OptionFunc {
 	return func(o *Options) {
 		o.DrainTimeout = timeout

@@ -72,8 +72,11 @@ const (
 	// legitimate response without a terminal chunk is not a protocol error, and
 	// an error event would let the client retry a response it fully received —
 	// so this cause is for accounting: what the exchange cost is unknown,
-	// PartialUsage says so, and a dropped upstream connection looks exactly
-	// like this.
+	// PartialUsage says so, and an upstream connection dropped cleanly looks
+	// exactly like this. An upstream that goes silent without closing its
+	// channel is a different matter and is not detected here: the read loop has
+	// no inactivity deadline, because no timeout distinguishes a stalled
+	// provider from a long, legitimate generation.
 	StreamInterruptionTruncated StreamInterruptionCause = "stream_truncated"
 )
 
@@ -92,8 +95,9 @@ type StreamInterruption struct {
 	ChunksEmitted int
 	// TerminalEventUndelivered marks an exchange whose last SSE event never
 	// reached the client: the error event of an upstream failure, or the
-	// closing events of a stream that ended otherwise. Cause keeps saying what
-	// stopped the stream — an upstream failure stays
+	// closing events of a stream that ended otherwise. It is always true on a
+	// client hangup, where nothing more could be written by definition. Cause
+	// keeps saying what stopped the stream — an upstream failure stays
 	// StreamInterruptionUpstream even when the client had gone away too — and
 	// this says the client was not there to read how it ended.
 	TerminalEventUndelivered bool

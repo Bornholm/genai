@@ -33,22 +33,40 @@ func (t *UsageTracker) PostResponse(ctx context.Context, req *proxy.ProxyRequest
 		CompletionTokens: res.TokensUsed.CompletionTokens,
 		Timestamp:        time.Now(),
 		RequestType:      req.Type,
-		TokensKnown:      true,
 	}
+
+	// An all-zero row means the provider published nothing, not that the request
+	// was free — some report usage only in the final chunk of a stream, and some
+	// never ask for it at all. Saying so is what keeps a quota or a bill from
+	// reading the row as a free request.
+	record.TokensKnown = record.PromptTokens > 0 || record.CompletionTokens > 0
 
 	// An interrupted stream is recorded like any other — the request was made
 	// and the provider billed what it produced — but the counts are only worth
-	// what the provider published before it stopped. Saying so is what keeps a
-	// quota or a bill from reading a zeroed row as a free request.
+	// what it published before it stopped.
 	if res.Interruption != nil {
 		record.Interrupted = true
-		record.TokensKnown = res.Interruption.PartialUsage
-		if !record.TokensKnown {
-			slog.WarnContext(ctx, "recording an interrupted request with unknown token counts",
-				slog.String("user", req.UserID),
-				slog.String("model", req.Model),
+		record.TokensKnown = record.TokensKnown && res.Interruption.PartialUsage
+	}
+
+	if !record.TokensKnown {
+		// A client hanging up mid-stream is ordinary traffic, logged at debug
+		// for the same reason stream writes are; an upstream failure or a
+		// truncated stream is not.
+		msg := "recording a request with unknown token counts"
+		attrs := []any{
+			slog.String("user", req.UserID),
+			slog.String("model", req.Model),
+		}
+		if res.Interruption != nil {
+			attrs = append(attrs,
 				slog.String("cause", string(res.Interruption.Cause)),
 				slog.Int("chunks_emitted", res.Interruption.ChunksEmitted))
+		}
+		if res.Interruption != nil && res.Interruption.Cause == proxy.StreamInterruptionClientGone {
+			slog.DebugContext(ctx, msg, attrs...)
+		} else {
+			slog.WarnContext(ctx, msg, attrs...)
 		}
 	}
 

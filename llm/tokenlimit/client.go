@@ -46,6 +46,16 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return c.wrapStreamWithTokenTracking(ctx, stream), nil
 }
 
+// abandon releases an upstream stream this wrapper stops reading. A provider
+// blocked on a send nobody receives never runs its cleanup, holding its upstream
+// response open — and billed — for good.
+func abandon(stream <-chan llm.StreamChunk) {
+	go func() {
+		for range stream { //nolint:revive // draining, the values are of no use
+		}
+	}()
+}
+
 func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan llm.StreamChunk) <-chan llm.StreamChunk {
 	// Buffered by one so that the chunk ending the stream has a slot to land in
 	// even when the consumer has already stopped reading — see
@@ -64,6 +74,7 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 			if !llm.SendChunk(ctx, outputChan, chunk) {
 				// The consumer is gone; say why the stream ends rather than
 				// closing the channel on nothing, which reads as a truncation.
+				abandon(stream)
 				llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			}
@@ -74,6 +85,9 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 				if currentTokens > lastCompletionTokens {
 					delta := int(currentTokens - lastCompletionTokens)
 					if err := waitN(ctx, c.chatCompletionLimiter, delta); err != nil {
+						// The upstream is still producing and nobody will read
+						// it again: release it before giving up.
+						abandon(stream)
 						llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(err)))
 						return
 					}
