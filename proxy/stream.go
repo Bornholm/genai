@@ -8,8 +8,17 @@ import (
 	"net"
 	"net/http"
 	"syscall"
+	"time"
 
 	"github.com/bornholm/genai/llm"
+)
+
+const (
+	// drainTimeout bounds how long an abandoned upstream stream is drained for.
+	drainTimeout = 30 * time.Second
+	// postResponseTimeout bounds the post-response hooks, whose context is
+	// detached from the request's.
+	postResponseTimeout = 30 * time.Second
 )
 
 // streamEmitter encodes a stream of llm.StreamChunk values into a
@@ -105,7 +114,24 @@ func (s *Server) streamChatCompletion(
 	abandonUpstream := func() {
 		cancelStream()
 		go func() {
-			for range chunks { //nolint:revive // draining, the values are of no use
+			// Bounded: a provider that honours its context closes the channel
+			// right away, but a third-party client that watches neither its
+			// context nor its consumer would otherwise keep this goroutine for
+			// the whole life of the process. Giving up leaks what the previous
+			// behaviour leaked anyway, and only for that kind of client.
+			timeout := time.NewTimer(drainTimeout)
+			defer timeout.Stop()
+			for {
+				select {
+				case _, ok := <-chunks:
+					if !ok {
+						return
+					}
+				case <-timeout.C:
+					slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
+						slog.Duration("after", drainTimeout))
+					return
+				}
 			}
 		}()
 	}
@@ -245,7 +271,11 @@ func (s *Server) streamChatCompletion(
 	// path r.Context() is already canceled — that is what ended the stream — and
 	// a usage hook writing to a network or SQL store would fail on
 	// context.Canceled, losing the very accounting this path exists to keep.
-	hookCtx := context.WithoutCancel(ctx)
+	// The budget replaces the request's own cancellation: without one, a hook
+	// blocking on a dead store would hold this handler goroutine forever, which
+	// ordinary client traffic could then exhaust.
+	hookCtx, cancelHooks := context.WithTimeout(context.WithoutCancel(ctx), postResponseTimeout)
+	defer cancelHooks()
 	if err := s.chain.RunPostResponse(hookCtx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
 	}

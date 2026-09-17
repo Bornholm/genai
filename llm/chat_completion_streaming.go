@@ -4,7 +4,15 @@ import (
 	"context"
 )
 
-// ChatCompletionStreamingClient defines the interface for streaming chat completions
+// ChatCompletionStreamingClient defines the interface for streaming chat completions.
+//
+// An implementation owes its consumer two things. It must end the stream with a
+// terminal chunk — a complete chunk or an error chunk — because that is how a
+// consumer tells a finished response from one cut short. And it must honour the
+// cancellation of ctx while sending, by selecting on ctx.Done() rather than
+// writing to the channel bare: a consumer is free to stop reading at any point,
+// and an implementation that then blocks forever never runs its own cleanup,
+// keeping whatever connection it holds open.
 type ChatCompletionStreamingClient interface {
 	ChatCompletionStream(ctx context.Context, funcs ...ChatCompletionOptionFunc) (<-chan StreamChunk, error)
 }

@@ -179,6 +179,20 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 	}
 
+	// sendFinal delivers a chunk that reports why the stream is ending, on a
+	// path where the context is already canceled. send would pick between its
+	// two ready cases at random there and drop the chunk about half the time,
+	// leaving the consumer with a silently truncated stream instead of the
+	// cancellation error. The buffered channel takes it without blocking in
+	// practice; if it is full, fall back to giving up like send does.
+	sendFinal := func(chunk llm.StreamChunk) {
+		select {
+		case chunks <- chunk:
+		default:
+			send(chunk)
+		}
+	}
+
 	go func() {
 		defer close(chunks)
 
@@ -240,7 +254,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		for pos := int32(0); pos < int32(maxTokens); pos++ {
 			select {
 			case <-ctx.Done():
-				send(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
+				sendFinal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			default:
 			}

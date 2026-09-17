@@ -193,7 +193,12 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		if err := stream.Err(); err != nil {
-			if httpRes != nil {
+			// httpRes is set as soon as the response headers arrive, so a
+			// failure happening once the stream is flowing would otherwise be
+			// rewritten into an HTTPError carrying the 200 of the stream and an
+			// empty body — the SSE decoder has already consumed it — losing the
+			// real error that alerting and retry decisions are made on.
+			if httpRes != nil && (httpRes.StatusCode < 200 || httpRes.StatusCode > 299) {
 				body, _ := io.ReadAll(httpRes.Body)
 				send(llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))))
 			} else {
@@ -215,10 +220,15 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		// Emit the complete (usage) chunk last so the handler breaks only after
-		// all content and tool call deltas have been consumed.
-		if finalUsage != nil {
-			send(llm.NewCompleteStreamChunk(finalUsage))
+		// all content and tool call deltas have been consumed. It is sent even
+		// when the backend published no usage — Mistral only reports it when it
+		// feels like it, the params builder never asks for it: a consumer tells
+		// a finished stream from a truncated one by this chunk alone, so
+		// withholding it turns every usage-less response into a truncation.
+		if finalUsage == nil {
+			finalUsage = llm.NewChatCompletionUsage(0, 0, 0)
 		}
+		send(llm.NewCompleteStreamChunk(finalUsage))
 	}()
 
 	return chunks, nil

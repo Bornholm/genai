@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -57,18 +56,10 @@ func (w *brokenPipeWriter) Write(p []byte) (int, error) {
 
 func (w *brokenPipeWriter) Flush() {}
 
-// countingStreamClient emits chunks deltas and records how many were consumed.
+// countingStreamClient emits chunks deltas, giving up as soon as the consumer
+// stops reading.
 type countingStreamClient struct {
 	chunks int
-
-	mu       sync.Mutex
-	produced int
-}
-
-func (c *countingStreamClient) producedCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.produced
 }
 
 func (c *countingStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
@@ -79,9 +70,6 @@ func (c *countingStreamClient) ChatCompletionStream(ctx context.Context, _ ...ll
 			chunk := llm.StreamChunk(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok")))
 			select {
 			case out <- chunk:
-				c.mu.Lock()
-				c.produced++
-				c.mu.Unlock()
 			case <-ctx.Done():
 				return
 			}
@@ -126,12 +114,10 @@ func TestStreamChatCompletion_StopsOnClientDisconnect(t *testing.T) {
 	if w.writes != 2 {
 		t.Errorf("writes = %d, want 2 (the stream kept emitting after the client went away)", w.writes)
 	}
-	// The upstream is drained to release the provider goroutine, so the count is
-	// a race by design; what matters is that emitting stopped, which the write
-	// count above asserts, and that the stream was not read to its end here.
-	if produced := client.producedCount(); produced == client.chunks {
-		t.Errorf("consumed all %d upstream chunks after the client went away", produced)
-	}
+	// Nothing is asserted on the upstream count here: it is drained in the
+	// background to release the provider goroutine, so any threshold would be a
+	// race. That the upstream is released at all is what
+	// TestStreamChatCompletion_ReleasesUpstreamOnHangup covers.
 	if !postCalled {
 		t.Error("post-response hook was not run: usage consumed before the disconnect goes unrecorded")
 	}

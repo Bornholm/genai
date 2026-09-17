@@ -85,9 +85,10 @@ type StreamInterruption struct {
 	// StreamInterruptionUpstream and the failed write for
 	// StreamInterruptionClientGone.
 	Err error
-	// ChunksEmitted is how many chunks were written to the client before the
-	// interruption, the first one included. It is the only measure of the
-	// volume produced that is always available — see PartialUsage.
+	// ChunksEmitted is how many content chunks were written to the client
+	// before the interruption, the first one included; error and closing events
+	// are not counted. It is the only measure of the volume produced that is
+	// always available — see PartialUsage.
 	ChunksEmitted int
 	// ErrorEventUndelivered marks an upstream failure whose SSE error event
 	// could not be written either, because the client had gone away too. Cause
