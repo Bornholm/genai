@@ -19,8 +19,9 @@ import (
 // provider (already validated to carry no error). Emit is called for
 // each subsequent chunk. EmitError is called when a mid-stream chunk
 // carries an error; no further calls are made afterwards. Finalize is
-// called once after the loop ends, on the success path only, to write
-// any closing events (e.g. "[DONE]" or "message_stop").
+// called once after the loop ends, to write any closing events (e.g.
+// "[DONE]" or "message_stop"), unless an error event was sent in their
+// place or the client is no longer there to read them.
 type streamEmitter interface {
 	EmitFirst(w io.Writer, chunk llm.StreamChunk) error
 	Emit(w io.Writer, chunk llm.StreamChunk) error
@@ -181,29 +182,36 @@ func (s *Server) streamChatCompletion(
 	}
 
 	// The channel closed without the provider ever signalling completion or
-	// failure. Nothing more is coming, and finalizing here would tell the client
-	// it received a whole response. Report it as its own kind of interruption.
+	// failure. The client keeps the normal closing events — a provider is free
+	// to end a legitimate response without a terminal chunk, and sending an
+	// error instead would let a client retry a response it received in full —
+	// but the hooks are told, because a truncated stream is also what a dropped
+	// upstream connection looks like and its usage is unknown.
 	if interruption == nil && !sawTerminal {
 		err := errors.New("upstream stream ended before completion")
-		slog.ErrorContext(ctx, "stream truncated", slog.Any("error", err))
-		if emitErr := emitter.EmitError(w, err); emitErr != nil {
-			logStreamWriteError(ctx, "could not emit stream error", emitErr)
-		}
-		flush()
+		slog.WarnContext(ctx, "stream ended without a terminal chunk", slog.Any("error", err))
 		interruption = &StreamInterruption{Cause: StreamInterruptionTruncated, Err: err}
 	}
 
 	// An interrupted stream still delivered whatever the provider produced
 	// before it stopped, and the provider billed it, so the usage collected so
-	// far is reported to the hooks below either way. Only the closing events are
-	// skipped: after a client hangup writing them would fail again, and on the
-	// other two paths an error event has already been sent in their place.
-	if interruption == nil {
+	// far is reported to the hooks below either way. The closing events are
+	// skipped on the two paths where they cannot be written or would contradict
+	// what the client was just sent: after a client hangup writing them would
+	// fail again, and after an upstream error the client has already been sent
+	// an error event.
+	if interruption == nil || interruption.Cause == StreamInterruptionTruncated {
 		if err := emitter.Finalize(w, tracker.Usage()); err != nil {
 			logStreamWriteError(ctx, "could not finalize stream", err)
+			if interruption == nil {
+				// Everything was delivered but the terminator: the exchange did
+				// not end normally for the client either.
+				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+			}
 		}
 		flush()
-	} else {
+	}
+	if interruption != nil {
 		interruption.ChunksEmitted = chunksEmitted
 		interruption.PartialUsage = tracker.Reported()
 	}
@@ -233,7 +241,12 @@ func (s *Server) streamChatCompletion(
 		TokensUsed:   streamTokensUsed,
 		Interruption: interruption,
 	}
-	if err := s.chain.RunPostResponse(ctx, req, proxyRes); err != nil {
+	// The hooks run on a context detached from the request. On the client_gone
+	// path r.Context() is already canceled — that is what ended the stream — and
+	// a usage hook writing to a network or SQL store would fail on
+	// context.Canceled, losing the very accounting this path exists to keep.
+	hookCtx := context.WithoutCancel(ctx)
+	if err := s.chain.RunPostResponse(hookCtx, req, proxyRes); err != nil {
 		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
 	}
 }

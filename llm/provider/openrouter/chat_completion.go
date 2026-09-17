@@ -618,6 +618,17 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	// Create streaming channel
 	chunks := make(chan llm.StreamChunk, 10)
 
+	// send writes one chunk, giving up if the consumer abandoned the channel.
+	// Without the select a caller that stops reading — a proxy whose client
+	// hung up — would strand this goroutine, and with it the upstream response
+	// it never gets to close.
+	send := func(chunk llm.StreamChunk) {
+		select {
+		case chunks <- chunk:
+		case <-ctx.Done():
+		}
+	}
+
 	var (
 		promptTokens     atomic.Int64
 		completionTokens atomic.Int64
@@ -634,10 +645,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err != nil {
 			var reqErr *openrouter.RequestError
 			if errors.As(err, &reqErr) {
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error())))
+				send(llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error()))))
 				return
 			}
-			chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+			send(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			return
 		}
 		defer stream.Close()
@@ -649,7 +660,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					// Stream ended normally
 					break
 				}
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				send(llm.NewErrorStreamChunk(errors.WithStack(err)))
 				return
 			}
 
@@ -718,7 +729,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					transcript,
 					toolCallDeltas...,
 				)
-				chunks <- llm.NewStreamChunk(streamDelta)
+				send(llm.NewStreamChunk(streamDelta))
 			} else if deltaReasoning != "" || len(deltaReasoningDetails) > 0 {
 				streamDelta := llm.NewReasoningStreamDelta(
 					llm.RoleAssistant,
@@ -727,14 +738,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					deltaReasoningDetails,
 					toolCallDeltas...,
 				)
-				chunks <- llm.NewStreamChunk(streamDelta)
+				send(llm.NewStreamChunk(streamDelta))
 			} else {
 				streamDelta := llm.NewStreamDelta(
 					llm.RoleAssistant,
 					delta.Content,
 					toolCallDeltas...,
 				)
-				chunks <- llm.NewStreamChunk(streamDelta)
+				send(llm.NewStreamChunk(streamDelta))
 			}
 		}
 
@@ -758,7 +769,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			)
 		}
 
-		chunks <- llm.NewCompleteStreamChunk(usage)
+		send(llm.NewCompleteStreamChunk(usage))
 	}()
 
 	return chunks, nil

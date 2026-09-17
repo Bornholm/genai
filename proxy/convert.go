@@ -1089,7 +1089,12 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 		},
 	}
 
-	if usage := chunk.Usage(); usage != nil {
+	// Usage belongs to the terminal chunk only, like finish_reason above: the
+	// OpenAI API reports it once, at the end, and a client accumulating it
+	// across chunks would multiply its counters. Providers may publish their
+	// running counters on every chunk — the proxy uses them to account for an
+	// interrupted stream — but they stay off the wire.
+	if usage := chunk.Usage(); usage != nil && chunk.IsComplete() {
 		c.Usage = &openAIUsage{
 			PromptTokens:     usage.PromptTokens(),
 			CompletionTokens: usage.CompletionTokens(),

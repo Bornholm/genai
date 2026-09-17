@@ -68,8 +68,12 @@ const (
 	StreamInterruptionClientGone StreamInterruptionCause = "client_gone"
 	// StreamInterruptionTruncated means the provider closed the stream without
 	// ever signalling completion and without reporting an error. The client is
-	// sent an explicit error event rather than the normal closing events, which
-	// would claim a complete response.
+	// sent the normal closing events all the same — a provider ending a
+	// legitimate response without a terminal chunk is not a protocol error, and
+	// an error event would let the client retry a response it fully received —
+	// so this cause is for accounting: what the exchange cost is unknown,
+	// PartialUsage says so, and a dropped upstream connection looks exactly
+	// like this.
 	StreamInterruptionTruncated StreamInterruptionCause = "stream_truncated"
 )
 

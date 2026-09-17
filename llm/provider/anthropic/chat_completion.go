@@ -105,8 +105,15 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err := stream.Err(); err != nil {
 			// The input tokens are known from message_start and the output
 			// tokens from the last message_delta, so a stream that dies
-			// mid-flight still reports what the provider billed.
-			emitter.sendChunk(llm.NewErrorStreamChunkWithUsage(errors.WithStack(mapError(err)), emitter.usage()))
+			// mid-flight still reports what the provider billed. If nothing
+			// was ever published the chunk carries no usage at all: a zeroed
+			// usage would read as "this cost nothing" rather than "unknown".
+			streamErr := errors.WithStack(mapError(err))
+			if emitter.usageSeen {
+				emitter.sendChunk(llm.NewErrorStreamChunkWithUsage(streamErr, emitter.usage()))
+			} else {
+				emitter.sendChunk(llm.NewErrorStreamChunk(streamErr))
+			}
 			return
 		}
 

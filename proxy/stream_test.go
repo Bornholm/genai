@@ -24,6 +24,9 @@ type brokenPipeWriter struct {
 	code      int
 	failAfter int
 	body      bytes.Buffer
+	// onFail runs on the first failed write, the way net/http cancels the
+	// request context when the connection drops.
+	onFail func()
 }
 
 func (w *brokenPipeWriter) Header() http.Header {
@@ -42,6 +45,10 @@ func (w *brokenPipeWriter) Write(p []byte) (int, error) {
 		limit = 1
 	}
 	if w.writes > limit {
+		if w.onFail != nil {
+			w.onFail()
+			w.onFail = nil
+		}
 		return 0, syscall.EPIPE
 	}
 	w.body.Write(p)
@@ -119,8 +126,11 @@ func TestStreamChatCompletion_StopsOnClientDisconnect(t *testing.T) {
 	if w.writes != 2 {
 		t.Errorf("writes = %d, want 2 (the stream kept emitting after the client went away)", w.writes)
 	}
-	if produced := client.producedCount(); produced > 3 {
-		t.Errorf("consumed %d upstream chunks after the client went away, want at most 3", produced)
+	// The upstream is drained to release the provider goroutine, so the count is
+	// a race by design; what matters is that emitting stopped, which the write
+	// count above asserts, and that the stream was not read to its end here.
+	if produced := client.producedCount(); produced == client.chunks {
+		t.Errorf("consumed all %d upstream chunks after the client went away", produced)
 	}
 	if !postCalled {
 		t.Error("post-response hook was not run: usage consumed before the disconnect goes unrecorded")
@@ -211,13 +221,15 @@ func (c *erroringStreamClient) Transcription(_ context.Context, _ []byte, _ ...l
 // capturingPostHook keeps the response it was handed, so a test can assert on
 // the usage and the interruption the chain reported.
 type capturingPostHook struct {
-	res *ProxyResponse
+	res    *ProxyResponse
+	ctxErr error
 }
 
 func (h *capturingPostHook) Name() string  { return "test.capture" }
 func (h *capturingPostHook) Priority() int { return 1 }
-func (h *capturingPostHook) PostResponse(_ context.Context, _ *ProxyRequest, res *ProxyResponse) (*HookResult, error) {
+func (h *capturingPostHook) PostResponse(ctx context.Context, _ *ProxyRequest, res *ProxyResponse) (*HookResult, error) {
 	h.res = res
+	h.ctxErr = ctx.Err()
 	return nil, nil
 }
 
@@ -395,8 +407,67 @@ func TestStreamChatCompletion_ReportsTruncatedStream(t *testing.T) {
 	if got := capture.res.Interruption.ChunksEmitted; got != 3 {
 		t.Errorf("Interruption.ChunksEmitted = %d, want 3", got)
 	}
-	if body := w.Body.String(); strings.Contains(body, "[DONE]") {
-		t.Errorf("response body ends with [DONE] although the stream was truncated:\n%s", body)
+	if capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is true although a truncated stream published no usage")
+	}
+	// The client keeps its normal end of stream: a provider ending a response
+	// without a terminal chunk is not a protocol error, and an error event here
+	// would have it retry a response it already received in full.
+	if body := w.Body.String(); !strings.Contains(body, "[DONE]") {
+		t.Errorf("response body does not end with [DONE]; the client is left hanging:\n%s", body)
+	}
+}
+
+// TestStreamChatCompletion_RunsHooksOnACanceledRequest asserts that the hooks
+// run on a live context. On the client_gone path the request context is already
+// canceled — that is what ended the stream — and a usage hook writing to a
+// network or SQL store would fail on context.Canceled, losing the accounting
+// this whole path exists to keep.
+func TestStreamChatCompletion_RunsHooksOnACanceledRequest(t *testing.T) {
+	client := &countingStreamClient{chunks: 50}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := buildChatRequest(t, `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	req = req.WithContext(ctx)
+
+	// The client hangs up mid-stream: the write fails and the request context
+	// dies with it, as it would under net/http.
+	server.handleChatCompletions(&brokenPipeWriter{onFail: cancel}, req)
+
+	if capture.res == nil {
+		t.Fatal("post-response hook was not run")
+	}
+	if capture.ctxErr != nil {
+		t.Errorf("hooks ran on a dead context (%v): a usage store would refuse the write", capture.ctxErr)
+	}
+}
+
+// TestStreamChatCompletion_KeepsPartialUsageOffTheWire asserts that the running
+// counters providers now publish on every chunk stay internal. The OpenAI API
+// reports usage once, on the last chunk; sending it on each one would have a
+// client accumulating it multiply its counters.
+func TestStreamChatCompletion_KeepsPartialUsageOffTheWire(t *testing.T) {
+	client := &erroringStreamClient{okChunks: 3, promptTokens: 7, err: errors.New("upstream exploded")}
+	resolver := &resolverHook{client: client, model: "gpt-4"}
+	capture := &capturingPostHook{}
+
+	server := NewServer(WithHook(resolver), WithHook(capture))
+
+	w := httptest.NewRecorder()
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(w, buildChatRequest(t, reqBody))
+
+	if body := w.Body.String(); strings.Contains(body, `"usage"`) {
+		t.Errorf("a delta chunk carries usage on the wire:\n%s", body)
+	}
+	// The counters still reached the hooks, which is what they are for.
+	if !capture.res.Interruption.PartialUsage {
+		t.Error("PartialUsage is false: the partial counters were dropped instead of being kept internal")
 	}
 }
 

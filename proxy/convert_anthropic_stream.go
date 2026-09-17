@@ -40,9 +40,23 @@ func newAnthropicStreamEmitter(model string) *anthropicStreamEmitter {
 
 // EmitFirst implements streamEmitter.
 func (e *anthropicStreamEmitter) EmitFirst(w io.Writer, chunk llm.StreamChunk) error {
-	var inputTokens int64
+	// genai folds the cache counters into PromptTokens, the Messages API keeps
+	// them apart: input_tokens there excludes what was read from or written to
+	// the cache, and a client pricing the call off an input_tokens carrying
+	// them would overcharge. Split them back out.
+	var inputTokens, cacheReadTokens, cacheCreationTokens int64
 	if usage := chunk.Usage(); usage != nil {
 		inputTokens = usage.PromptTokens()
+		if cu, ok := usage.(interface{ CachedTokens() int64 }); ok {
+			cacheReadTokens = cu.CachedTokens()
+		}
+		if cc, ok := usage.(llm.CacheCreationReportingUsage); ok {
+			cacheCreationTokens = cc.CacheCreationTokens()
+		}
+		inputTokens -= cacheReadTokens + cacheCreationTokens
+		if inputTokens < 0 {
+			inputTokens = 0
+		}
 	}
 
 	if err := writeAnthropicSSEEvent(w, "message_start", map[string]any{
@@ -56,8 +70,10 @@ func (e *anthropicStreamEmitter) EmitFirst(w io.Writer, chunk llm.StreamChunk) e
 			"stop_reason":   nil,
 			"stop_sequence": nil,
 			"usage": map[string]any{
-				"input_tokens":  inputTokens,
-				"output_tokens": 0,
+				"input_tokens":                inputTokens,
+				"output_tokens":               0,
+				"cache_read_input_tokens":     cacheReadTokens,
+				"cache_creation_input_tokens": cacheCreationTokens,
 			},
 		},
 	}); err != nil {

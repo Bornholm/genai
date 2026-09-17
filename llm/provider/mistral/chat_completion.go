@@ -116,6 +116,17 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	chunks := make(chan llm.StreamChunk, 10)
 
+	// send writes one chunk, giving up if the consumer abandoned the channel.
+	// Without the select a caller that stops reading — a proxy whose client
+	// hung up — would strand this goroutine, and with it the upstream response
+	// it never gets to close.
+	send := func(chunk llm.StreamChunk) {
+		select {
+		case chunks <- chunk:
+		case <-ctx.Done():
+		}
+	}
+
 	go func() {
 		defer close(chunks)
 		defer stream.Close()
@@ -162,7 +173,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 					reasoningDets = append(reasoningDets, chunkDetails...)
 				}
 				if chunkText != "" {
-					chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, chunkText))
+					send(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, chunkText)))
 				}
 			}
 
@@ -177,16 +188,16 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 						tc.Function.Arguments,
 					))
 				}
-				chunks <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "", toolCallDeltas...))
+				send(llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "", toolCallDeltas...)))
 			}
 		}
 
 		if err := stream.Err(); err != nil {
 			if httpRes != nil {
 				body, _ := io.ReadAll(httpRes.Body)
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body))))
+				send(llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))))
 			} else {
-				chunks <- llm.NewErrorStreamChunk(errors.WithStack(err))
+				send(llm.NewErrorStreamChunk(errors.WithStack(err)))
 			}
 			return
 		}
@@ -195,18 +206,18 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// chunk by chunk above) before the CompleteStreamChunk.
 		reasoning := reasoningBuf.String()
 		if reasoning != "" || len(reasoningDets) > 0 {
-			chunks <- llm.NewStreamChunk(llm.NewReasoningStreamDelta(
+			send(llm.NewStreamChunk(llm.NewReasoningStreamDelta(
 				llm.RoleAssistant,
 				"",
 				reasoning,
 				reasoningDets,
-			))
+			)))
 		}
 
 		// Emit the complete (usage) chunk last so the handler breaks only after
 		// all content and tool call deltas have been consumed.
 		if finalUsage != nil {
-			chunks <- llm.NewCompleteStreamChunk(finalUsage)
+			send(llm.NewCompleteStreamChunk(finalUsage))
 		}
 	}()
 
