@@ -235,6 +235,21 @@ func TestSendTerminalChunkSurvivesCancellation(t *testing.T) {
 	}
 }
 
+// TestSendTerminalChunkGivesUpOnAFullChannel asserts the other half: the
+// guarantee is the buffer slot, so a channel with no room and no reader falls
+// back to SendChunk and gives up rather than blocking for good.
+func TestSendTerminalChunkGivesUpOnAFullChannel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	full := make(chan StreamChunk, 1)
+	full <- NewStreamChunk(NewStreamDelta(RoleAssistant, "tok"))
+
+	if SendTerminalChunk(ctx, full, NewErrorStreamChunk(context.Canceled)) {
+		t.Error("SendTerminalChunk reported a delivery on a full channel nobody reads")
+	}
+}
+
 // TestSendChunkGivesUpOnCancellation asserts the other half of the contract: an
 // ordinary delta is not forced on a consumer that walked away.
 func TestSendChunkGivesUpOnCancellation(t *testing.T) {

@@ -656,12 +656,20 @@ func TestStreamChatCompletion_BoundsTheUpstreamDrain(t *testing.T) {
 	)
 
 	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	start := time.Now()
 	server.handleChatCompletions(&brokenPipeWriter{}, buildChatRequest(t, reqBody))
 
 	select {
 	case <-client.drainStopped:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the drain never gave up on a provider that ignores its context")
+	}
+
+	// The budget is the point: the client only reports once nobody has consumed
+	// its sends for 200ms, so anything close to that lower bound means the drain
+	// stopped around DrainTimeout rather than reading the stream to its end.
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("the drain ran for %s, far past the 50ms budget it was given", elapsed)
 	}
 }
 
@@ -681,7 +689,8 @@ func (c *endlessStreamClient) ChatCompletionStream(_ context.Context, _ ...llm.C
 		for {
 			select {
 			case out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok")):
-			case <-time.After(time.Second):
+			case <-time.After(200 * time.Millisecond):
+				// Nobody has taken a chunk for a while: the drain gave up.
 				close(c.drainStopped)
 				return
 			}
@@ -700,4 +709,112 @@ func (c *endlessStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm
 
 func (c *endlessStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
 	return nil, nil
+}
+
+// cancellingStreamClient answers a canceled context with an error chunk
+// carrying it, the way the retry and tokenlimit wrappers do once a client hangs
+// up and the cancellation travels down the chain.
+type cancellingStreamClient struct{}
+
+func (c *cancellingStreamClient) ChatCompletionStream(ctx context.Context, _ ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
+	out := make(chan llm.StreamChunk, 2)
+	go func() {
+		defer close(out)
+		out <- llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "tok"))
+		<-ctx.Done()
+		out <- llm.NewErrorStreamChunk(ctx.Err())
+	}()
+	return out, nil
+}
+
+func (c *cancellingStreamClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return nil, nil
+}
+
+func (c *cancellingStreamClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
+	return nil, nil
+}
+
+func (c *cancellingStreamClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+// TestStreamChatCompletion_CancellationIsNotAnUpstreamFailure asserts that a
+// cancellation coming back as a chunk error is recorded as the client leaving.
+// The whole chain watches the request context, so a wrapper answering its
+// cancellation with an error chunk must not be alerted on as an upstream
+// incident: it is a closed tab.
+func TestStreamChatCompletion_CancellationIsNotAnUpstreamFailure(t *testing.T) {
+	capture := &capturingPostHook{}
+	server := NewServer(
+		WithHook(&resolverHook{client: &cancellingStreamClient{}, model: "gpt-4"}),
+		WithHook(capture),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := buildChatRequest(t, `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	req = req.WithContext(ctx)
+
+	// The client hangs up while the provider is generating: net/http cancels the
+	// request context, and the cancellation travels down the chain.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	server.handleChatCompletions(httptest.NewRecorder(), req)
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionClientGone; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+}
+
+// TestStreamChatCompletion_ReportsAGenuineWriteFailure asserts the other side of
+// that distinction: a write that fails while the client is still there is a
+// server fault, not ordinary traffic, and gets its own cause so accounting does
+// not silence it like a hangup.
+func TestStreamChatCompletion_ReportsAGenuineWriteFailure(t *testing.T) {
+	capture := &capturingPostHook{}
+	server := NewServer(
+		WithHook(&resolverHook{client: &countingStreamClient{chunks: 5}, model: "gpt-4"}),
+		WithHook(capture),
+	)
+
+	reqBody := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	server.handleChatCompletions(&failingWriter{}, buildChatRequest(t, reqBody))
+
+	if capture.res == nil || capture.res.Interruption == nil {
+		t.Fatal("no interruption reported")
+	}
+	if got, want := capture.res.Interruption.Cause, StreamInterruptionWriteFailed; got != want {
+		t.Errorf("Interruption.Cause = %q, want %q", got, want)
+	}
+}
+
+// failingWriter fails its writes with an error that has nothing to do with the
+// client going away.
+type failingWriter struct {
+	header http.Header
+	writes int
+}
+
+func (w *failingWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *failingWriter) WriteHeader(int) {}
+func (w *failingWriter) Flush()          {}
+func (w *failingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > 1 {
+		return 0, errors.New("disk on fire")
+	}
+	return len(p), nil
 }

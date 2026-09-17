@@ -9,10 +9,34 @@ import (
 	"github.com/pkg/errors"
 )
 
+// DefaultDrainTimeout caps how long an abandoned attempt is drained for. A
+// client that honours its context closes its channel at once; this only bounds
+// what one that honours nothing can hold.
+const DefaultDrainTimeout = 30 * time.Second
+
 type Client struct {
-	baseDelay  time.Duration
-	maxRetries int
-	client     llm.Client
+	baseDelay    time.Duration
+	maxRetries   int
+	drainTimeout time.Duration
+	client       llm.Client
+}
+
+// Options holds what NewClient does not take positionally.
+type Options struct {
+	// DrainTimeout caps how long the stream of an abandoned attempt is drained
+	// for. Zero or less means no limit. Default DefaultDrainTimeout.
+	DrainTimeout time.Duration
+}
+
+// OptionFunc is a functional option for the retrying client.
+type OptionFunc func(*Options)
+
+// WithDrainTimeout sets how long the stream of an abandoned attempt is drained
+// for. Zero or less means no limit, not an immediate give-up.
+func WithDrainTimeout(timeout time.Duration) OptionFunc {
+	return func(o *Options) {
+		o.DrainTimeout = timeout
+	}
 }
 
 // Embeddings implements llm.Client.
@@ -106,11 +130,6 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 // Stream errors that are retryable (e.g. 429) trigger a full retry of the call.
 // All retries and stream reading happen inside a goroutine; the returned channel
 // carries both data chunks and any eventual non-retryable error chunk.
-// drainTimeout caps how long an abandoned attempt is drained for. A client that
-// honours its context closes its channel at once; this only bounds what one
-// that honours nothing can hold.
-const drainTimeout = 30 * time.Second
-
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	outCh := make(chan llm.StreamChunk, 10)
 
@@ -139,9 +158,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			cancelAttempt()
 			cancelAttempt = nil
 			go func() {
-				if !llm.DrainStream(stream, drainTimeout) {
+				if !llm.DrainStream(stream, c.drainTimeout) {
 					slog.WarnContext(ctx, "gave up draining an abandoned attempt",
-						slog.Duration("after", drainTimeout))
+						slog.Duration("after", c.drainTimeout))
 				}
 			}()
 		}
@@ -194,7 +213,12 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 						return
 					}
 					if !send(chunk) {
+						// The consumer is gone. Say why the stream ends rather
+						// than closing the channel on nothing, which reads as a
+						// truncation — an upstream incident — instead of the
+						// ordinary hangup it is.
 						abandonAttempt(stream)
+						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 						return
 					}
 				case <-ctx.Done():
@@ -225,11 +249,16 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return outCh, nil
 }
 
-func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int) *Client {
+func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int, funcs ...OptionFunc) *Client {
+	opts := &Options{DrainTimeout: DefaultDrainTimeout}
+	for _, fn := range funcs {
+		fn(opts)
+	}
 	return &Client{
-		baseDelay:  baseDelay,
-		maxRetries: maxRetries,
-		client:     client,
+		baseDelay:    baseDelay,
+		maxRetries:   maxRetries,
+		drainTimeout: opts.DrainTimeout,
+		client:       client,
 	}
 }
 

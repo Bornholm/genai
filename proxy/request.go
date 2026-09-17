@@ -53,8 +53,9 @@ type ProxyResponse struct {
 }
 
 // StreamInterruptionCause tells apart the ways a streamed response stops early.
-// They are not symmetric: one is an upstream failure, one is ordinary client
-// traffic, one is a provider going silent.
+// They are not symmetric: an upstream failure and a failed write are faults,
+// a client hangup is ordinary traffic, and a truncated stream is a provider
+// going silent.
 type StreamInterruptionCause string
 
 const (
@@ -66,6 +67,11 @@ const (
 	// tab, an aborted request, a reverse proxy timing out. The upstream stream is
 	// abandoned at that point.
 	StreamInterruptionClientGone StreamInterruptionCause = "client_gone"
+	// StreamInterruptionWriteFailed means writing the response failed for a
+	// reason that is not the client going away — a wrapped writer with a local
+	// I/O error, an encoder refusing a payload. Unlike a hangup it is a server
+	// fault, and accounting or alerting should treat it as one.
+	StreamInterruptionWriteFailed StreamInterruptionCause = "write_failed"
 	// StreamInterruptionTruncated means the provider closed the stream without
 	// ever signalling completion and without reporting an error. The client is
 	// sent the normal closing events all the same — a provider ending a
@@ -116,10 +122,11 @@ type StreamInterruption struct {
 }
 
 type TokenUsage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	CachedTokens     int
-	Cost             *float64 // provider-reported cost, nil if not available
-	CostCurrency     string
+	PromptTokens        int
+	CompletionTokens    int
+	TotalTokens         int
+	CachedTokens        int
+	CacheCreationTokens int
+	Cost                *float64 // provider-reported cost, nil if not available
+	CostCurrency        string
 }

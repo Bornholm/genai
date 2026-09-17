@@ -135,7 +135,7 @@ func (s *Server) streamChatCompletion(
 		// stop emitting instead of burning the rest of the upstream stream on a
 		// connection nobody reads.
 		interruption = &StreamInterruption{
-			Cause: StreamInterruptionClientGone, Err: err, TerminalEventUndelivered: true,
+			Cause: writeFailureCause(ctx, err), Err: err, TerminalEventUndelivered: true,
 		}
 		abandonUpstream()
 	} else {
@@ -165,8 +165,16 @@ func (s *Server) streamChatCompletion(
 					undelivered = true
 				}
 				flush()
+				// A cancellation travelling back as a chunk error is the
+				// client leaving, not the provider failing: the request context
+				// is what the whole chain watches, and a wrapper answering it
+				// with an error chunk must not be alerted on as an incident.
+				cause := StreamInterruptionUpstream
+				if isClientGone(ctx, chunk.Error()) {
+					cause = StreamInterruptionClientGone
+				}
 				interruption = &StreamInterruption{
-					Cause:                    StreamInterruptionUpstream,
+					Cause:                    cause,
 					Err:                      chunk.Error(),
 					TerminalEventUndelivered: undelivered,
 				}
@@ -181,7 +189,7 @@ func (s *Server) streamChatCompletion(
 			if err := emitter.Emit(w, chunk); err != nil {
 				logStreamWriteError(ctx, "could not emit stream chunk", err)
 				interruption = &StreamInterruption{
-					Cause: StreamInterruptionClientGone, Err: err, TerminalEventUndelivered: true,
+					Cause: writeFailureCause(ctx, err), Err: err, TerminalEventUndelivered: true,
 				}
 				abandonUpstream()
 				break
@@ -221,7 +229,7 @@ func (s *Server) streamChatCompletion(
 			if interruption == nil {
 				// Everything was delivered but the terminator: the exchange did
 				// not end normally for the client either.
-				interruption = &StreamInterruption{Cause: StreamInterruptionClientGone, Err: err}
+				interruption = &StreamInterruption{Cause: writeFailureCause(ctx, err), Err: err}
 			}
 			// On the truncated path the cause is already set; either way the
 			// client did not get the closing events.
@@ -243,6 +251,9 @@ func (s *Server) streamChatCompletion(
 	type cachedUsageStream interface{ CachedTokens() int64 }
 	if cu, ok := usage.(cachedUsageStream); ok {
 		streamTokensUsed.CachedTokens = int(cu.CachedTokens())
+	}
+	if cc, ok := usage.(llm.CacheCreationReportingUsage); ok {
+		streamTokensUsed.CacheCreationTokens = int(cc.CacheCreationTokens())
 	}
 	if cr, ok := usage.(llm.CostReportingUsage); ok {
 		if amount, currency, ok := cr.Cost(); ok {
@@ -273,8 +284,27 @@ func (s *Server) streamChatCompletion(
 		defer cancelHooks()
 	}
 	if err := s.chain.RunPostResponse(hookCtx, req, proxyRes); err != nil {
-		slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
+		if errors.Is(hookCtx.Err(), context.DeadlineExceeded) {
+			// Distinguishable on purpose: this is accounting lost to the budget,
+			// not to a failing hook, and the answer is to raise the budget.
+			slog.WarnContext(ctx, "post-response hooks ran out of their budget",
+				slog.Duration("budget", s.options.PostResponseTimeout),
+				slog.Any("error", err))
+		} else {
+			slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
+		}
 	}
+}
+
+// writeFailureCause tells a client that walked away from a write that failed on
+// its own merits. The distinction is what lets accounting and alerting treat a
+// closed tab as the ordinary traffic it is, and a genuine write failure as the
+// server fault it is.
+func writeFailureCause(ctx context.Context, err error) StreamInterruptionCause {
+	if isClientGone(ctx, err) {
+		return StreamInterruptionClientGone
+	}
+	return StreamInterruptionWriteFailed
 }
 
 // logStreamWriteError reports a failed write to the SSE response. A client

@@ -14,6 +14,7 @@ type Client struct {
 	chatCompletionLimiter *rate.Limiter
 	embeddingsLimiter     *rate.Limiter
 	transcriptionLimiter  *rate.Limiter
+	drainTimeout          time.Duration
 	client                llm.Client
 }
 
@@ -48,19 +49,14 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return c.wrapStreamWithTokenTracking(ctx, stream), nil
 }
 
-// drainTimeout caps how long an abandoned upstream stream is drained for. A
-// client that honours its context closes its channel at once; this only bounds
-// what one that honours nothing can hold.
-const drainTimeout = 30 * time.Second
-
 // abandon releases an upstream stream this wrapper stops reading. A provider
 // blocked on a send nobody receives never runs its cleanup, holding its upstream
 // response open — and billed — for good.
-func abandon(ctx context.Context, stream <-chan llm.StreamChunk) {
+func (c *Client) abandon(ctx context.Context, stream <-chan llm.StreamChunk) {
 	go func() {
-		if !llm.DrainStream(stream, drainTimeout) {
+		if !llm.DrainStream(stream, c.drainTimeout) {
 			slog.WarnContext(ctx, "gave up draining an abandoned upstream stream",
-				slog.Duration("after", drainTimeout))
+				slog.Duration("after", c.drainTimeout))
 		}
 	}()
 }
@@ -83,7 +79,7 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 			if !llm.SendChunk(ctx, outputChan, chunk) {
 				// The consumer is gone; say why the stream ends rather than
 				// closing the channel on nothing, which reads as a truncation.
-				abandon(ctx, stream)
+				c.abandon(ctx, stream)
 				llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 				return
 			}
@@ -96,7 +92,7 @@ func (c *Client) wrapStreamWithTokenTracking(ctx context.Context, stream <-chan 
 					if err := waitN(ctx, c.chatCompletionLimiter, delta); err != nil {
 						// The upstream is still producing and nobody will read
 						// it again: release it before giving up.
-						abandon(ctx, stream)
+						c.abandon(ctx, stream)
 						llm.SendTerminalChunk(ctx, outputChan, llm.NewErrorStreamChunk(errors.WithStack(err)))
 						return
 					}
@@ -151,6 +147,7 @@ func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 		chatCompletionLimiter: opts.ChatCompletionLimiter,
 		embeddingsLimiter:     opts.EmbeddingsLimiter,
 		transcriptionLimiter:  opts.TranscriptionLimiter,
+		drainTimeout:          opts.DrainTimeout,
 		client:                client,
 	}
 }

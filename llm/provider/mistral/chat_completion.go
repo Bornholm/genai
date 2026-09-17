@@ -193,11 +193,19 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			// rewritten into an HTTPError carrying the 200 of the stream and an
 			// empty body — the SSE decoder has already consumed it — losing the
 			// real error that alerting and retry decisions are made on.
+			var streamErr error
 			if httpRes != nil && (httpRes.StatusCode < 200 || httpRes.StatusCode > 299) {
 				body, _ := io.ReadAll(httpRes.Body)
-				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))))
+				streamErr = errors.WithStack(llm.RateLimitError(httpRes.StatusCode, string(body)))
 			} else {
-				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
+				streamErr = errors.WithStack(err)
+			}
+			// Whatever the backend published before it failed was billed, so it
+			// rides on the error chunk, like the other providers.
+			if finalUsage != nil {
+				sendTerminal(llm.NewErrorStreamChunkWithUsage(streamErr, finalUsage))
+			} else {
+				sendTerminal(llm.NewErrorStreamChunk(streamErr))
 			}
 			return
 		}

@@ -42,7 +42,9 @@ func (t *UsageTracker) PostResponse(ctx context.Context, req *proxy.ProxyRequest
 	// as a measurement, like llm.UsagePublishesCounters upstream.
 	record.CachedTokens = res.TokensUsed.CachedTokens
 	record.TokensKnown = record.PromptTokens > 0 || record.CompletionTokens > 0 ||
-		record.CachedTokens > 0 || (res.TokensUsed.Cost != nil && *res.TokensUsed.Cost > 0)
+		res.TokensUsed.TotalTokens > 0 || record.CachedTokens > 0 ||
+		res.TokensUsed.CacheCreationTokens > 0 ||
+		(res.TokensUsed.Cost != nil && *res.TokensUsed.Cost > 0)
 
 	// An interrupted stream is recorded like any other — the request was made
 	// and the provider billed what it produced — but the counts are only worth
