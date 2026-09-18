@@ -47,12 +47,12 @@ func ParseJSON[T any](message Message) ([]T, error) {
 		// that parses does not print [ERROR] from inside a library.
 		repaired, err := jsonrepair.RepairJSON(b)
 		if err != nil {
-			parseErrors = append(parseErrors, errors.Wrapf(err, "could not repair json: %s", b))
+			parseErrors = append(parseErrors, errors.Wrapf(err, "could not repair json: %s", excerpt(b)))
 			continue
 		}
 
 		if err := json.Unmarshal([]byte(repaired), &t); err != nil {
-			parseErrors = append(parseErrors, errors.Wrapf(err, "invalid json: %s", b))
+			parseErrors = append(parseErrors, errors.Wrapf(err, "invalid json: %s", excerpt(b)))
 			continue
 		}
 
@@ -65,6 +65,19 @@ func ParseJSON[T any](message Message) ([]T, error) {
 	}
 
 	return items, nil
+}
+
+// excerpt shortens a block for an error message. A run the model cut short
+// covers the rest of its answer, so quoting it whole means a caller logging the
+// error prints the whole model output.
+func excerpt(block string) string {
+	const max = 200
+
+	if len(block) <= max {
+		return block
+	}
+
+	return block[:max] + "…"
 }
 
 // jsonBlocks returns every top-level `{…}` run of content whose braces balance,
@@ -139,21 +152,51 @@ func jsonBlocks(content string) []string {
 }
 
 // looksLikeObject reports whether an unclosed run starts like the body of a JSON
-// object rather than like prose: a quote is a key about to be written, anything
-// else is a brace the model used for something other than JSON.
+// object rather than like prose. A quoted key followed by a colon is a model
+// writing an object; a lone quote is not enough, since prose quotes a brace
+// often enough (`use "{" as delimiter`) to turn into a junk item.
 func looksLikeObject(fragment string) bool {
-	for i := 1; i < len(fragment); i++ {
-		switch fragment[i] {
-		case ' ', '\t', '\r', '\n':
+	i := skipSpace(fragment, 1)
+	if i >= len(fragment) {
+		return false
+	}
+
+	quote := fragment[i]
+	if quote != '"' && quote != '\'' {
+		return false
+	}
+
+	for i++; i < len(fragment); i++ {
+		if fragment[i] == '\\' {
+			i++
 			continue
-		case '"', '\'':
-			return true
-		default:
-			return false
+		}
+
+		if fragment[i] == quote {
+			break
 		}
 	}
 
-	return false
+	// A key the content never closes is prose, not a key.
+	if i >= len(fragment) {
+		return false
+	}
+
+	i = skipSpace(fragment, i+1)
+
+	return i < len(fragment) && fragment[i] == ':'
+}
+
+func skipSpace(s string, i int) int {
+	for ; i < len(s); i++ {
+		switch s[i] {
+		case ' ', '\t', '\r', '\n':
+		default:
+			return i
+		}
+	}
+
+	return i
 }
 
 // scanJSONBlocks scans content once and returns the balanced top-level blocks it

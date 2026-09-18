@@ -93,17 +93,20 @@ func main() {
 
 	// ParseJSON returns one item per JSON object found in the answer, so a stray
 	// object in the prose can take the first slot. Pick the first item that
-	// actually carries a plan rather than assuming index 0 holds it.
+	// actually carries a plan rather than assuming index 0 holds it. Which
+	// fields make an item the answer depends on the schema: here either half of
+	// the plan is enough, so a model that fills one and not the other still
+	// gets through.
 	var jsonRes Response
 
 	for _, r := range jsonResponses {
-		if r.TaskPlan.DailyPlan != "" {
+		if r.TaskPlan.DailyPlan != "" || len(r.TaskPlan.Tasks) > 0 {
 			jsonRes = r
 			break
 		}
 	}
 
-	if jsonRes.TaskPlan.DailyPlan == "" {
+	if jsonRes.TaskPlan.DailyPlan == "" && len(jsonRes.TaskPlan.Tasks) == 0 {
 		log.Fatalf("[FATAL] No task plan found in %d parsed response(s)", len(jsonResponses))
 	}
 

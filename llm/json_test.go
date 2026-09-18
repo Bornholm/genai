@@ -76,12 +76,11 @@ func TestParseJSON(t *testing.T) {
 			want:    []testVerdict{{Category: "doc"}},
 		},
 		{
-			// The orphan brace starts like an object body, so it is handed to
-			// json-repair as a truncated payload. It lands behind the answer the
-			// restart recovers, which json-repair cannot make sense of.
+			// The quote opens no key, so the orphan brace is prose and only the
+			// answer the restart recovers comes back.
 			name:    "orphan opening brace then unpaired quote",
 			content: `oops {" then {"category":"doc"}`,
-			want:    []testVerdict{{Category: "doc"}, {Category: ""}},
+			want:    []testVerdict{{Category: "doc"}},
 		},
 		{
 			name:    "quoted braces in the prose",
@@ -141,6 +140,20 @@ func TestParseJSON(t *testing.T) {
 			want:    []testVerdict{{}},
 		},
 		{
+			// A brace quoted in the prose used to pass as a truncated payload and
+			// come back as a zero value.
+			name:    "quoted brace in the prose",
+			content: `use "{" as delimiter`,
+			want:    nil,
+		},
+		{
+			// The draft opens a key it never closes, so the slot goes to the
+			// answer behind it, which is truncated too.
+			name:    "draft left open before a truncated answer",
+			content: `{"draft and the answer {"category":"doc`,
+			want:    []testVerdict{{Category: "doc"}},
+		},
+		{
 			name:    "no object at all",
 			content: "I think this is documentation.",
 			want:    nil,
@@ -182,9 +195,10 @@ func TestParseJSON(t *testing.T) {
 			want:    []testVerdict{{Category: "doc"}},
 		},
 		{
+			// `{"bad` never closes its key, so it is not a truncated payload.
 			name:    "answer then an orphan brace",
 			content: `{"category":"doc"} oops {"bad`,
-			want:    []testVerdict{{Category: "doc"}, {Category: ""}},
+			want:    []testVerdict{{Category: "doc"}},
 		},
 		{
 			// A brace the model did not use for JSON must not become an item.
