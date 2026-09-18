@@ -75,9 +75,12 @@ func TestParseJSON(t *testing.T) {
 			want:    []string{"doc"},
 		},
 		{
+			// The orphan brace starts like an object body, so it is handed to
+			// json-repair as a truncated payload; the answer behind it is still
+			// recovered by the restart.
 			name:    "orphan opening brace then unpaired quote",
 			content: `oops {" then {"category":"doc"}`,
-			want:    []string{"doc"},
+			want:    []string{"", "doc"},
 		},
 		{
 			name:    "quoted braces in the prose",
@@ -102,8 +105,42 @@ func TestParseJSON(t *testing.T) {
 			want:    nil,
 		},
 		{
+			// Cut off by a token limit: json-repair closes the object, so the
+			// answer survives.
 			name:    "unterminated object",
 			content: `{"category":"doc"`,
+			want:    []string{"doc"},
+		},
+		{
+			// The nested object closes, so the scan never returns to depth 0. The
+			// repaired outer object now comes first; `meta` follows as an object
+			// found in the content, where it used to stand in for the answer.
+			name:    "truncated object with a closed nested object",
+			content: `{"category":"doc","meta":{"tokens":12}`,
+			want:    []string{"doc", ""},
+		},
+		{
+			// An unescaped apostrophe flips the single quote parity, so the
+			// closing brace is read as string content and the object never
+			// closes. json-repair handles the fragment.
+			name:    "apostrophe inside a single quoted value",
+			content: `{'reason': 'it's ok', 'category': 'doc'}`,
+			want:    []string{"doc"},
+		},
+		{
+			name:    "two unbalanced runs before the answer",
+			content: `a { b { {"category":"doc"}`,
+			want:    []string{"doc"},
+		},
+		{
+			name:    "answer then an orphan brace",
+			content: `{"category":"doc"} oops {"bad`,
+			want:    []string{"doc", ""},
+		},
+		{
+			// A brace the model did not use for JSON must not become an item.
+			name:    "brace in the prose that opens nothing",
+			content: "use { for blocks",
 			want:    nil,
 		},
 	} {

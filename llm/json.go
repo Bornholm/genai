@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"log"
+	"strings"
 
 	jsonrepair "github.com/RealAlexandreAI/json-repair"
 	"github.com/pkg/errors"
@@ -14,6 +15,9 @@ import (
 // decodes to a zero value and takes its place in the slice. Callers should
 // therefore pick the first item carrying the field they expect rather than
 // assume items[0] holds the answer.
+//
+// An object the model cut short is decoded too, json-repair closing it, so a
+// truncated answer still yields its fields.
 //
 // An error is returned only when no block at all could be decoded; a block that
 // fails while another succeeds is logged and skipped.
@@ -51,17 +55,18 @@ func ParseJSON[T any](message Message) ([]T, error) {
 }
 
 // jsonBlocks returns every top-level `{…}` run of content whose braces balance,
-// ignoring the braces that sit inside a JSON string. A regexp cannot do this:
-// the greedy `(?mis)\{.*\}` this replaces matched from the first `{` of the
-// content to its last `}`, so a stray brace anywhere in the prose around the
-// answer merged everything into one unparseable block — and, since the merge
-// always yielded a single match, ParseJSON never returned more than one item
-// despite its slice return type.
+// ignoring the braces that sit inside a string. A regexp cannot do this: the
+// greedy `(?mis)\{.*\}` this replaces matched from the first `{` of the content
+// to its last `}`, so a stray brace anywhere in the prose around the answer
+// merged everything into one unparseable block — and, since the merge always
+// yielded a single match, ParseJSON never returned more than one item despite
+// its slice return type.
 //
-// An opening brace that never closes — a code snippet in the prose, a truncated
-// scratchpad, an unpaired quote that swallows the rest of the content — would
-// otherwise hide every object that follows it. When the scan ends inside such a
-// run, it restarts just after that brace, so the answer is still found.
+// A brace that never closes gets one of two treatments. When what follows it
+// starts like an object body, the run is a payload the model cut short, so it
+// is emitted as it stands for json-repair to close. Otherwise it is prose, a
+// code snippet or a template, and the scan restarts just after it so the
+// objects behind it are still found.
 func jsonBlocks(content string) []string {
 	var blocks []string
 
@@ -74,10 +79,38 @@ func jsonBlocks(content string) []string {
 			break
 		}
 
+		if fragment := content[unclosed:]; looksLikeObject(fragment) {
+			blocks = append(blocks, fragment)
+		}
+
 		content = content[unclosed+1:]
+
+		// Without a closing brace left, no further pass can emit anything, and
+		// stopping here keeps a run of opening braces from costing a scan each.
+		if strings.IndexByte(content, '}') < 0 {
+			break
+		}
 	}
 
 	return blocks
+}
+
+// looksLikeObject reports whether an unclosed run starts like the body of a JSON
+// object rather than like prose: a quote is a key about to be written, anything
+// else is a brace the model used for something other than JSON.
+func looksLikeObject(fragment string) bool {
+	for i := 1; i < len(fragment); i++ {
+		switch fragment[i] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '"', '\'':
+			return true
+		default:
+			return false
+		}
+	}
+
+	return false
 }
 
 // scanJSONBlocks scans content once and returns the balanced top-level blocks it

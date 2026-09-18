@@ -91,12 +91,21 @@ func main() {
 		log.Fatalf("[FATAL] Failed to parse JSON response: %s", err)
 	}
 
-	if len(jsonResponses) == 0 {
-		log.Fatalf("[FATAL] No responses found")
+	// ParseJSON returns one item per JSON object found in the answer, so a stray
+	// object in the prose can take the first slot. Pick the first item that
+	// actually carries a plan rather than assuming index 0 holds it.
+	var jsonRes Response
+
+	for _, r := range jsonResponses {
+		if len(r.TaskPlan.Tasks) > 0 {
+			jsonRes = r
+			break
+		}
 	}
 
-	// Use the first parsed found schema-matching response
-	jsonRes := jsonResponses[0]
+	if len(jsonRes.TaskPlan.Tasks) == 0 {
+		log.Fatalf("[FATAL] No responses found")
+	}
 
 	log.Printf("[PLAN] %s", jsonRes.TaskPlan.DailyPlan)
 	log.Printf("[TOTAL TIME] %d minutes", jsonRes.TaskPlan.TotalTime)
