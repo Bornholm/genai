@@ -97,13 +97,13 @@ func main() {
 	var jsonRes Response
 
 	for _, r := range jsonResponses {
-		if len(r.TaskPlan.Tasks) > 0 {
+		if r.TaskPlan.DailyPlan != "" {
 			jsonRes = r
 			break
 		}
 	}
 
-	if len(jsonRes.TaskPlan.Tasks) == 0 {
+	if jsonRes.TaskPlan.DailyPlan == "" {
 		log.Fatalf("[FATAL] No task plan found in %d parsed response(s)", len(jsonResponses))
 	}
 

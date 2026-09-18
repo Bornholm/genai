@@ -12,6 +12,7 @@ func TestParseJSON(t *testing.T) {
 		name    string
 		content string
 		want    []testVerdict
+		wantErr bool
 	}{
 		{
 			name:    "bare object",
@@ -114,6 +115,32 @@ func TestParseJSON(t *testing.T) {
 			want:    []testVerdict{{Category: "doc", Confidence: 0.8999999761581421}},
 		},
 		{
+			// The prose brace leaves no closing brace anywhere, which used to
+			// stop the scan before the cut-off answer behind it was qualified.
+			name:    "prose brace before a truncated answer",
+			content: `use { for blocks. Answer: {"category":"doc"`,
+			want:    []testVerdict{{Category: "doc"}},
+		},
+		{
+			name:    "unpaired quote before a truncated answer",
+			content: `say "{oops then {"category":"doc`,
+			want:    []testVerdict{{Category: "doc"}},
+		},
+		{
+			// A category that is an object cannot decode into a string.
+			name:    "every block fails to decode",
+			content: `{"category":{"a":1}}`,
+			wantErr: true,
+		},
+		{
+			// The stray `{}` decodes, so the failure of the block carrying the
+			// answer is swallowed and the caller gets a zero value, no error.
+			// Documented in the godoc; pinned here so it stays deliberate.
+			name:    "a stray object hides the failure of the real one",
+			content: `{} and {"category":{"a":1}}`,
+			want:    []testVerdict{{}},
+		},
+		{
 			name:    "no object at all",
 			content: "I think this is documentation.",
 			want:    nil,
@@ -168,6 +195,12 @@ func TestParseJSON(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			items, err := ParseJSON[testVerdict](NewMessage(RoleAssistant, tc.content))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got items: %+v", items)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("unexpected error: %+v", err)
 			}

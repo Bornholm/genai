@@ -24,6 +24,10 @@ import (
 // answer. Callers that need to tell "nothing found" from "the answer was
 // unreadable" should check the fields they expect, not just the error.
 //
+// A run cut short spans the objects that closed inside it, so those objects are
+// returned twice: once on their own and once inside the repaired run. Callers
+// that aggregate over every item should deduplicate.
+//
 // A run left open whose body starts with an unquoted key, as in `{category:
 // "doc"`, is read as prose and dropped, even though json-repair would accept it
 // closed. Telling it apart from a brace used for something other than JSON is
@@ -90,21 +94,38 @@ func jsonBlocks(content string) []string {
 			break
 		}
 
-		// Only the outermost run can be the payload the model was cutting short:
-		// the ones the restart walks into sit inside prose it already skipped.
-		// Keeping just that one also bounds the repair work on content that
-		// leaves brace after brace open.
+		// The outermost run is the payload the model was cutting short; the ones
+		// the restart walks into sit inside prose it already skipped.
 		if truncated == "" && looksLikeObject(content[unclosed:]) {
 			truncated = content[unclosed:]
 		}
 
-		content = content[unclosed+1:]
-
-		// Without a closing brace left, no further pass can emit anything, and
-		// stopping here keeps a run of opening braces from costing a scan each.
-		if strings.IndexByte(content, '}') < 0 {
+		// Nothing between here and the next brace can open a block, so the scan
+		// moves brace to brace rather than a byte at a time.
+		next := strings.IndexByte(content[unclosed+1:], '{')
+		if next < 0 {
 			break
 		}
+
+		content = content[unclosed+1+next:]
+
+		if strings.IndexByte(content, '}') >= 0 {
+			continue
+		}
+
+		// No brace can close any more, so no further pass can emit a balanced
+		// block. A payload the model cut short can still be in there, and one
+		// walk finds it.
+		if truncated == "" {
+			for i := 0; i < len(content); i++ {
+				if content[i] == '{' && looksLikeObject(content[i:]) {
+					truncated = content[i:]
+					break
+				}
+			}
+		}
+
+		break
 	}
 
 	// The truncated run spans everything the restart found inside it, so it goes
