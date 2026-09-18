@@ -2,7 +2,6 @@ package llm
 
 import (
 	"encoding/json"
-	"log"
 	"strings"
 
 	jsonrepair "github.com/RealAlexandreAI/json-repair"
@@ -19,8 +18,16 @@ import (
 // An object the model cut short is decoded too, json-repair closing it, so a
 // truncated answer still yields its fields.
 //
-// An error is returned only when no block at all could be decoded; a block that
-// fails while another succeeds is logged and skipped.
+// An error is returned only when no block at all could be decoded. A block that
+// fails while another succeeds is skipped silently, so a stray `{}` decoding to
+// a zero value is enough to hide the failure of the block that carried the
+// answer. Callers that need to tell "nothing found" from "the answer was
+// unreadable" should check the fields they expect, not just the error.
+//
+// A run left open whose body starts with an unquoted key, as in `{category:
+// "doc"`, is read as prose and dropped, even though json-repair would accept it
+// closed. Telling it apart from a brace used for something other than JSON is
+// not worth the junk items the looser test would let through.
 func ParseJSON[T any](message Message) ([]T, error) {
 	var items []T
 	var parseErrors []error
@@ -30,16 +37,18 @@ func ParseJSON[T any](message Message) ([]T, error) {
 	for _, b := range jsonBlocks {
 		var t T
 
+		// Splitting the content into several blocks makes undecodable ones
+		// routine: prose braces, truncated runs and the objects nested in them.
+		// They are collected in parseErrors rather than logged, so an answer
+		// that parses does not print [ERROR] from inside a library.
 		repaired, err := jsonrepair.RepairJSON(b)
 		if err != nil {
 			parseErrors = append(parseErrors, errors.Wrapf(err, "could not repair json: %s", b))
-			log.Printf("[ERROR] %+v", errors.Wrapf(err, "could not repair json: %s", b))
 			continue
 		}
 
 		if err := json.Unmarshal([]byte(repaired), &t); err != nil {
 			parseErrors = append(parseErrors, errors.Wrapf(err, "invalid json: %s", b))
-			log.Printf("[ERROR] %+v", errors.Wrapf(err, "invalid json: %s", b))
 			continue
 		}
 
@@ -64,11 +73,13 @@ func ParseJSON[T any](message Message) ([]T, error) {
 //
 // A brace that never closes gets one of two treatments. When what follows it
 // starts like an object body, the run is a payload the model cut short, so it
-// is emitted as it stands for json-repair to close. Otherwise it is prose, a
-// code snippet or a template, and the scan restarts just after it so the
-// objects behind it are still found.
+// is emitted as it stands for json-repair to close, after the blocks that
+// closed on their own. Otherwise it is prose, a code snippet or a template, and
+// the scan restarts just after it so the objects behind it are still found.
 func jsonBlocks(content string) []string {
 	var blocks []string
+
+	var truncated string
 
 	for {
 		found, unclosed := scanJSONBlocks(content)
@@ -79,8 +90,12 @@ func jsonBlocks(content string) []string {
 			break
 		}
 
-		if fragment := content[unclosed:]; looksLikeObject(fragment) {
-			blocks = append(blocks, fragment)
+		// Only the outermost run can be the payload the model was cutting short:
+		// the ones the restart walks into sit inside prose it already skipped.
+		// Keeping just that one also bounds the repair work on content that
+		// leaves brace after brace open.
+		if truncated == "" && looksLikeObject(content[unclosed:]) {
+			truncated = content[unclosed:]
 		}
 
 		content = content[unclosed+1:]
@@ -90,6 +105,13 @@ func jsonBlocks(content string) []string {
 		if strings.IndexByte(content, '}') < 0 {
 			break
 		}
+	}
+
+	// The truncated run spans everything the restart found inside it, so it goes
+	// last: a caller looking for the first item carrying its field should meet
+	// the objects that closed on their own before the one json-repair guessed at.
+	if truncated != "" {
+		blocks = append(blocks, truncated)
 	}
 
 	return blocks

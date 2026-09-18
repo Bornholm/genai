@@ -104,7 +104,7 @@ func main() {
 	}
 
 	if len(jsonRes.TaskPlan.Tasks) == 0 {
-		log.Fatalf("[FATAL] No responses found")
+		log.Fatalf("[FATAL] No task plan found in %d parsed response(s)", len(jsonResponses))
 	}
 
 	log.Printf("[PLAN] %s", jsonRes.TaskPlan.DailyPlan)
