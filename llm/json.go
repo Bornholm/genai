@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	jsonrepair "github.com/RealAlexandreAI/json-repair"
 	"github.com/pkg/errors"
@@ -71,14 +72,24 @@ func ParseJSON[T any](message Message) ([]T, error) {
 // covers the rest of its answer, so quoting it whole means a caller logging the
 // error prints the whole model output.
 func excerpt(block string) string {
-	const max = 200
+	max := 200
 
 	if len(block) <= max {
 		return block
 	}
 
+	// Model answers are rarely pure ASCII, and cutting on a byte index splits
+	// whatever rune spans it.
+	for max > 0 && !utf8.RuneStart(block[max]) {
+		max--
+	}
+
 	return block[:max] + "…"
 }
+
+// maxJSONRestarts bounds how many times jsonBlocks reinterprets the rest of the
+// content after an unmatched brace.
+const maxJSONRestarts = 1000
 
 // jsonBlocks returns every top-level `{…}` run of content whose braces balance,
 // ignoring the braces that sit inside a string. A regexp cannot do this: the
@@ -97,6 +108,14 @@ func jsonBlocks(content string) []string {
 	var blocks []string
 
 	var truncated string
+
+	// Each restart reinterprets the rest of the content with a fresh quote and
+	// depth state, which is what recovers an answer hidden behind a stray brace,
+	// but it also means content that is mostly unmatched braces costs a pass per
+	// brace. A model can emit that (a copied template, LaTeX, pasted code), so
+	// the restarts are capped. The bound is far above what prose around an
+	// answer needs and keeps the worst case off the seconds scale.
+	restarts := maxJSONRestarts
 
 	for {
 		found, unclosed := scanJSONBlocks(content)
@@ -122,7 +141,9 @@ func jsonBlocks(content string) []string {
 
 		content = content[unclosed+1+next:]
 
-		if strings.IndexByte(content, '}') >= 0 {
+		restarts--
+
+		if strings.IndexByte(content, '}') >= 0 && restarts > 0 {
 			continue
 		}
 

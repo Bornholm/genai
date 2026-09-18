@@ -1,6 +1,11 @@
 package llm
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
 
 type testVerdict struct {
 	Category   string  `json:"category"`
@@ -227,5 +232,35 @@ func TestParseJSON(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestJSONBlocksBounded guards the restart cap. Without it, content that is
+// mostly unmatched braces costs a pass per brace: 200k braces took 11s.
+func TestJSONBlocksBounded(t *testing.T) {
+	content := strings.Repeat("{", 200000) + "}"
+
+	start := time.Now()
+	blocks := jsonBlocks(content)
+	elapsed := time.Since(start)
+
+	if len(blocks) != 0 {
+		t.Errorf("expected no block, got %d", len(blocks))
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("scan took %s, the restarts are no longer bounded", elapsed)
+	}
+}
+
+func TestExcerptKeepsRunesWhole(t *testing.T) {
+	block := strings.Repeat("é", 300)
+
+	got := excerpt(block)
+
+	if !utf8.ValidString(got) {
+		t.Errorf("excerpt cut a rune in half: %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("expected a truncated excerpt, got %q", got)
 	}
 }
