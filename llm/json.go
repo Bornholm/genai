@@ -8,6 +8,15 @@ import (
 	"github.com/pkg/errors"
 )
 
+// ParseJSON decodes into T every JSON object found in the message content, in
+// the order they appear, and returns one item per object. Prose around and
+// between the objects is ignored, as are stray objects: a `{}` in the prose
+// decodes to a zero value and takes its place in the slice. Callers should
+// therefore pick the first item carrying the field they expect rather than
+// assume items[0] holds the answer.
+//
+// An error is returned only when no block at all could be decoded; a block that
+// fails while another succeeds is logged and skipped.
 func ParseJSON[T any](message Message) ([]T, error) {
 	var items []T
 	var parseErrors []error
@@ -48,10 +57,37 @@ func ParseJSON[T any](message Message) ([]T, error) {
 // answer merged everything into one unparseable block — and, since the merge
 // always yielded a single match, ParseJSON never returned more than one item
 // despite its slice return type.
+//
+// An opening brace that never closes — a code snippet in the prose, a truncated
+// scratchpad, an unpaired quote that swallows the rest of the content — would
+// otherwise hide every object that follows it. When the scan ends inside such a
+// run, it restarts just after that brace, so the answer is still found.
 func jsonBlocks(content string) []string {
 	var blocks []string
+
+	for {
+		found, unclosed := scanJSONBlocks(content)
+
+		blocks = append(blocks, found...)
+
+		if unclosed < 0 {
+			break
+		}
+
+		content = content[unclosed+1:]
+	}
+
+	return blocks
+}
+
+// scanJSONBlocks scans content once and returns the balanced top-level blocks it
+// contains, plus the index of the opening brace left unclosed at the end of the
+// content, or -1 when every brace balanced.
+func scanJSONBlocks(content string) ([]string, int) {
+	var blocks []string
 	depth, start := 0, 0
-	inString, escaped := false, false
+	var quote byte
+	escaped := false
 
 	for i := 0; i < len(content); i++ {
 		c := content[i]
@@ -64,21 +100,23 @@ func jsonBlocks(content string) []string {
 			continue
 		}
 
-		if inString {
+		if quote != 0 {
 			switch {
 			case escaped:
 				escaped = false
 			case c == '\\':
 				escaped = true
-			case c == '"':
-				inString = false
+			case c == quote:
+				quote = 0
 			}
 			continue
 		}
 
 		switch c {
-		case '"':
-			inString = true
+		// json-repair accepts single quoted strings, so the scan has to follow
+		// them too: a `}` inside one does not close the object.
+		case '"', '\'':
+			quote = c
 		case '{':
 			depth++
 		case '}':
@@ -89,5 +127,9 @@ func jsonBlocks(content string) []string {
 		}
 	}
 
-	return blocks
+	if depth > 0 {
+		return blocks, start
+	}
+
+	return blocks, -1
 }

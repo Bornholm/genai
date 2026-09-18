@@ -68,6 +68,35 @@ func TestParseJSON(t *testing.T) {
 			want:    []string{"doc"},
 		},
 		{
+			// An unpaired brace in the prose used to leave the scan one level
+			// deep for the rest of the content, so the answer was never emitted.
+			name:    "orphan opening brace before the answer",
+			content: `the model wrote { then answered {"category":"doc"}`,
+			want:    []string{"doc"},
+		},
+		{
+			name:    "orphan opening brace then unpaired quote",
+			content: `oops {" then {"category":"doc"}`,
+			want:    []string{"doc"},
+		},
+		{
+			name:    "quoted braces in the prose",
+			content: `use format "{x}" then {"category":"doc"}`,
+			want:    []string{"", "doc"},
+		},
+		{
+			name:    "quotes in the prose around the answer",
+			content: `He said "here" {"category":"doc"}`,
+			want:    []string{"doc"},
+		},
+		{
+			// json-repair accepts single quoted strings, so a `}` inside one
+			// must not close the object early.
+			name:    "closing brace inside a single quoted value",
+			content: `{'category':'doc','reason':'a}b'}`,
+			want:    []string{"doc"},
+		},
+		{
 			name:    "no object at all",
 			content: "I think this is documentation.",
 			want:    nil,
