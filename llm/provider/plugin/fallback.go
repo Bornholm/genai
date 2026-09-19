@@ -6,9 +6,13 @@
 //
 // The fallback is inactive until a plugin directory is set. Setting it is
 // the opt-in: from then on an unknown provider name runs a binary, which
-// receives every variable under the provider prefix, API keys included. The
+// inherits the whole environment of the host (go-plugin passes it on, and a
+// native provider needs PATH, HOME and its library paths) and receives the
+// variables under the provider prefix as its options, API keys included. The
 // directory and the PATH are trusted as much as the host binary itself; the
 // handshake only guards against running the wrong kind of program.
+//
+// Discovery relies on POSIX execute bits; Windows is not a target.
 //
 // Every environment variable under the provider prefix is forwarded verbatim
 // to the plugin, which validates them with its own option struct:

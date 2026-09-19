@@ -269,37 +269,37 @@ func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 		}
 	}
 
+	var result llm.Message
 	switch {
 	case role == llm.RoleTool || message.GetToolCallId() != "":
-		return llm.NewToolMessage(message.GetToolCallId(), llm.NewToolResult(message.GetContent(), attachments...)), nil
+		result = llm.NewToolMessage(message.GetToolCallId(), llm.NewToolResult(message.GetContent(), attachments...))
 
 	case role == llm.RoleToolCalls || len(message.GetToolCalls()) > 0:
-		return llm.NewReasoningToolCallsMessageWithContent(
+		result = llm.NewReasoningToolCallsMessageWithContent(
 			message.GetContent(),
 			message.GetReasoning(),
 			reasoningDetailsFromProto(message.GetReasoningDetails()),
 			toolCallsFromProto(message.GetToolCalls())...,
-		), nil
+		)
 
 	case message.GetReasoning() != "" || len(message.GetReasoningDetails()) > 0:
-		return llm.NewAssistantReasoningMessage(
+		result = llm.NewAssistantReasoningMessage(
 			message.GetContent(),
 			message.GetReasoning(),
 			reasoningDetailsFromProto(message.GetReasoningDetails()),
-		), nil
-
-	case len(attachments) > 0 && cacheControl != nil:
-		return llm.NewMultimodalMessageWithCacheControl(role, message.GetContent(), cacheControl, attachments...), nil
+		)
 
 	case len(attachments) > 0:
-		return llm.NewMultimodalMessage(role, message.GetContent(), attachments...), nil
-
-	case cacheControl != nil:
-		return llm.NewMessageWithCacheControl(role, message.GetContent(), cacheControl), nil
+		result = llm.NewMultimodalMessage(role, message.GetContent(), attachments...)
 
 	default:
-		return llm.NewMessage(role, message.GetContent()), nil
+		result = llm.NewMessage(role, message.GetContent())
 	}
+
+	if cacheControl != nil && !llm.SetCacheControl(result, cacheControl) {
+		return nil, errors.Errorf("message of type %T cannot carry a cache control", result)
+	}
+	return result, nil
 }
 
 func messagesToProto(messages []llm.Message) ([]*pluginv1.Message, error) {

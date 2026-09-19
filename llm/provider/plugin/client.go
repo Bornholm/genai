@@ -157,8 +157,13 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		return nil, errors.WithStack(err)
 	}
 
-	stream, err := proc.clients.ChatCompletion.ChatCompletionStream(ctx, req)
+	// The gRPC stream is only released once its context is cancelled or Recv
+	// returned an error. A terminal chunk does neither, so the stream gets a
+	// context of its own, cancelled when the reader is done.
+	streamCtx, cancel := context.WithCancel(ctx)
+	stream, err := proc.clients.ChatCompletion.ChatCompletionStream(streamCtx, req)
 	if err != nil {
+		cancel()
 		return nil, codec.ErrorFromStatus(err)
 	}
 
@@ -166,6 +171,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 	go func() {
 		defer close(chunks)
+		defer cancel()
 
 		for {
 			msg, err := stream.Recv()

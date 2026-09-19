@@ -40,6 +40,8 @@ type ProviderClient interface {
 	Configure(ctx context.Context, in *ConfigureRequest, opts ...grpc.CallOption) (*ConfigureResponse, error)
 	// Release frees a configured client. A host calls it when it is done with
 	// a client so that a long-lived plugin process does not accumulate them.
+	// The host must not have calls in flight for that client: the plugin may
+	// close it at once.
 	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error)
 }
 
@@ -97,6 +99,8 @@ type ProviderServer interface {
 	Configure(context.Context, *ConfigureRequest) (*ConfigureResponse, error)
 	// Release frees a configured client. A host calls it when it is done with
 	// a client so that a long-lived plugin process does not accumulate them.
+	// The host must not have calls in flight for that client: the plugin may
+	// close it at once.
 	Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error)
 	mustEmbedUnimplementedProviderServer()
 }

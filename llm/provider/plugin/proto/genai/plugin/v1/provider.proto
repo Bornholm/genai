@@ -18,6 +18,8 @@ service Provider {
   rpc Configure(ConfigureRequest) returns (ConfigureResponse);
   // Release frees a configured client. A host calls it when it is done with
   // a client so that a long-lived plugin process does not accumulate them.
+  // The host must not have calls in flight for that client: the plugin may
+  // close it at once.
   rpc Release(ReleaseRequest) returns (ReleaseResponse);
 }
 
@@ -265,6 +267,10 @@ message Error {
     KIND_NO_MESSAGE = 3;
     KIND_UNAVAILABLE = 4;
     KIND_VALIDATION = 5;
+    // The call was cancelled or timed out on the plugin side, typically
+    // because the host cancelled its own context.
+    KIND_CANCELED = 6;
+    KIND_DEADLINE_EXCEEDED = 7;
   }
   string message = 1;
   Kind kind = 2;

@@ -215,13 +215,18 @@ func TestChatCompletionStreamCancellation(t *testing.T) {
 
 	cancel()
 
+	var last llm.StreamChunk
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
-		case _, ok := <-chunks:
+		case chunk, ok := <-chunks:
 			if !ok {
+				if last == nil || last.Type() != llm.StreamChunkTypeError || !errors.Is(last.Error(), context.Canceled) {
+					t.Errorf("expected a terminal chunk carrying context.Canceled, got %#v", last)
+				}
 				return
 			}
+			last = chunk
 		case <-deadline:
 			t.Fatal("stream did not close after cancellation")
 		}

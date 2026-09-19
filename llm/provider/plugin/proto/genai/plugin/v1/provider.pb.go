@@ -299,6 +299,10 @@ const (
 	Error_KIND_NO_MESSAGE  Error_Kind = 3
 	Error_KIND_UNAVAILABLE Error_Kind = 4
 	Error_KIND_VALIDATION  Error_Kind = 5
+	// The call was cancelled or timed out on the plugin side, typically
+	// because the host cancelled its own context.
+	Error_KIND_CANCELED          Error_Kind = 6
+	Error_KIND_DEADLINE_EXCEEDED Error_Kind = 7
 )
 
 // Enum value maps for Error_Kind.
@@ -310,14 +314,18 @@ var (
 		3: "KIND_NO_MESSAGE",
 		4: "KIND_UNAVAILABLE",
 		5: "KIND_VALIDATION",
+		6: "KIND_CANCELED",
+		7: "KIND_DEADLINE_EXCEEDED",
 	}
 	Error_Kind_value = map[string]int32{
-		"KIND_UNSPECIFIED": 0,
-		"KIND_HTTP":        1,
-		"KIND_RATE_LIMIT":  2,
-		"KIND_NO_MESSAGE":  3,
-		"KIND_UNAVAILABLE": 4,
-		"KIND_VALIDATION":  5,
+		"KIND_UNSPECIFIED":       0,
+		"KIND_HTTP":              1,
+		"KIND_RATE_LIMIT":        2,
+		"KIND_NO_MESSAGE":        3,
+		"KIND_UNAVAILABLE":       4,
+		"KIND_VALIDATION":        5,
+		"KIND_CANCELED":          6,
+		"KIND_DEADLINE_EXCEEDED": 7,
 	}
 )
 
@@ -2294,21 +2302,23 @@ const file_genai_plugin_v1_provider_proto_rawDesc = "" +
 	"\n" +
 	"embeddings\x18\x01 \x03(\v2\x1a.genai.plugin.v1.EmbeddingR\n" +
 	"embeddings\x126\n" +
-	"\x05usage\x18\x02 \x01(\v2 .genai.plugin.v1.EmbeddingsUsageR\x05usage\"\xa0\x02\n" +
+	"\x05usage\x18\x02 \x01(\v2 .genai.plugin.v1.EmbeddingsUsageR\x05usage\"\xcf\x02\n" +
 	"\x05Error\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12/\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1b.genai.plugin.v1.Error.KindR\x04kind\x12\x1f\n" +
 	"\vstatus_code\x18\x03 \x01(\x05R\n" +
 	"statusCode\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12\x14\n" +
-	"\x05field\x18\x05 \x01(\tR\x05field\"\x80\x01\n" +
+	"\x05field\x18\x05 \x01(\tR\x05field\"\xaf\x01\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tKIND_HTTP\x10\x01\x12\x13\n" +
 	"\x0fKIND_RATE_LIMIT\x10\x02\x12\x13\n" +
 	"\x0fKIND_NO_MESSAGE\x10\x03\x12\x14\n" +
 	"\x10KIND_UNAVAILABLE\x10\x04\x12\x13\n" +
-	"\x0fKIND_VALIDATION\x10\x05*c\n" +
+	"\x0fKIND_VALIDATION\x10\x05\x12\x11\n" +
+	"\rKIND_CANCELED\x10\x06\x12\x1a\n" +
+	"\x16KIND_DEADLINE_EXCEEDED\x10\a*c\n" +
 	"\n" +
 	"Capability\x12\x1a\n" +
 	"\x16CAPABILITY_UNSPECIFIED\x10\x00\x12\x1e\n" +

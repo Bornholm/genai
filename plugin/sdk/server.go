@@ -99,7 +99,9 @@ func (s *server) allocateID() string {
 }
 
 // Release implements pluginv1.ProviderServer. A client implementing io.Closer
-// is closed, which is how a provider holding a model frees it.
+// is closed, which is how a provider holding a model frees it. The host owes
+// the plugin that no call is in flight for the client: the host side only
+// releases from Close, after its own callers are done.
 func (s *server) Release(ctx context.Context, req *pluginv1.ReleaseRequest) (*pluginv1.ReleaseResponse, error) {
 	s.mu.Lock()
 	var client any

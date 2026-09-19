@@ -45,7 +45,7 @@ func (p *Process) Kill() {
 
 // configure asks the plugin for a client of the given capability.
 func (p *Process) configure(ctx context.Context, capability pluginv1.Capability, options map[string]string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, StartTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ConfigureTimeout)
 	defer cancel()
 	res, err := p.clients.Provider.Configure(ctx, &pluginv1.ConfigureRequest{
 		Capability: capability,
@@ -62,6 +62,8 @@ func (p *Process) release(ctx context.Context, clientID string) error {
 	if p.Exited() {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, StartTimeout)
+	defer cancel()
 	_, err := p.clients.Provider.Release(ctx, &pluginv1.ReleaseRequest{ClientId: clientID})
 	if err != nil {
 		return codec.ErrorFromStatus(err)
@@ -79,9 +81,14 @@ func (p *Process) supports(capability pluginv1.Capability) bool {
 }
 
 // StartTimeout bounds the start of a plugin process (handshake and Describe)
-// and each Configure call, so that a plugin stuck loading a model fails
-// instead of hanging the host.
+// and the Release of a client: a binary that never answers fails instead of
+// hanging the host.
 var StartTimeout = 30 * time.Second
+
+// ConfigureTimeout bounds each Configure call. It is separate from
+// StartTimeout because configuring is where a native provider loads its
+// model, which takes minutes for a large one.
+var ConfigureTimeout = 5 * time.Minute
 
 // LogLevel is the level at which plugin logs are relayed to stderr.
 var LogLevel = hclog.Info
@@ -198,4 +205,5 @@ func CleanupClients() {
 	poolMu.Lock()
 	defer poolMu.Unlock()
 	pool = map[string]*Process{}
+	locks = map[string]*sync.Mutex{}
 }

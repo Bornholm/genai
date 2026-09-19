@@ -385,6 +385,28 @@ func NewMultimodalMessage(role Role, content string, attachments ...Attachment) 
 	}
 }
 
+// cacheControlSetter is implemented by every message built on BaseMessage.
+type cacheControlSetter interface {
+	setCacheControl(cacheControl *CacheControl)
+}
+
+func (m *BaseMessage) setCacheControl(cacheControl *CacheControl) {
+	m.cacheControl = cacheControl
+}
+
+// SetCacheControl attaches a cache control hint to a message built on
+// BaseMessage, whatever its kind (tool result, tool calls, reasoning,
+// multimodal). It reports false for a message of another implementation,
+// which keeps its own cache control if it has one.
+func SetCacheControl(message Message, cacheControl *CacheControl) bool {
+	setter, ok := message.(cacheControlSetter)
+	if !ok {
+		return false
+	}
+	setter.setCacheControl(cacheControl)
+	return true
+}
+
 // NewMultimodalMessageWithCacheControl creates a message carrying both
 // attachments and a cache control hint, as a cached prompt with an image
 // needs.

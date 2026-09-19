@@ -17,6 +17,10 @@
 //
 // The host finds the binary as genai-provider-<name> and forwards every
 // environment variable under the provider prefix as Options.
+//
+// Chat completion options arrive as the host built them, with one exception:
+// numbers in ExtraFields are float64, as after decoding JSON, whatever their
+// Go type was on the host.
 package sdk
 
 import (

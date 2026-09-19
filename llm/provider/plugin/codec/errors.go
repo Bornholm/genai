@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"context"
 	stderrors "errors"
 
 	"github.com/bornholm/genai/llm"
@@ -41,6 +42,10 @@ func ErrorToProto(err error) *pluginv1.Error {
 		result.Kind = pluginv1.Error_KIND_VALIDATION
 		result.Field = validationErr.Field
 		result.Message = validationErr.Message
+	case stderrors.Is(err, context.Canceled):
+		result.Kind = pluginv1.Error_KIND_CANCELED
+	case stderrors.Is(err, context.DeadlineExceeded):
+		result.Kind = pluginv1.Error_KIND_DEADLINE_EXCEEDED
 	}
 	return result
 }
@@ -65,6 +70,10 @@ func ErrorFromProto(e *pluginv1.Error) error {
 		return withMessage(llm.ErrUnavailable, e.GetMessage())
 	case pluginv1.Error_KIND_VALIDATION:
 		return llm.NewValidationError(e.GetField(), e.GetMessage())
+	case pluginv1.Error_KIND_CANCELED:
+		return withMessage(context.Canceled, e.GetMessage())
+	case pluginv1.Error_KIND_DEADLINE_EXCEEDED:
+		return withMessage(context.DeadlineExceeded, e.GetMessage())
 	default:
 		return errors.New(e.GetMessage())
 	}
@@ -90,14 +99,19 @@ func (e *wireError) Error() string { return e.message }
 func (e *wireError) Unwrap() error { return e.err }
 
 // ErrorToStatus wraps an error into a gRPC status carrying its typed form as
-// a detail, for unary RPCs. Context errors keep their gRPC code so that the
-// caller can tell a cancellation from a provider failure.
+// a detail, for unary RPCs. Context errors get their gRPC code so that the
+// caller can tell a cancellation from a provider failure even without the
+// detail.
 func ErrorToStatus(err error) error {
 	if err == nil {
 		return nil
 	}
 	code := codes.Unknown
 	switch {
+	case stderrors.Is(err, context.Canceled):
+		code = codes.Canceled
+	case stderrors.Is(err, context.DeadlineExceeded):
+		code = codes.DeadlineExceeded
 	case stderrors.Is(err, llm.ErrUnavailable):
 		code = codes.Unavailable
 	case stderrors.Is(err, llm.ErrRateLimit):
@@ -141,6 +155,12 @@ func ErrorFromStatus(err error) error {
 		return errors.Wrap(llm.ErrUnavailable, st.Message())
 	case codes.ResourceExhausted:
 		return errors.Wrap(llm.ErrRateLimit, st.Message())
+	case codes.Canceled:
+		// Either the host's own context (grpc-go reports it as a status) or
+		// the plugin's: callers check errors.Is(err, context.Canceled).
+		return withMessage(context.Canceled, st.Message())
+	case codes.DeadlineExceeded:
+		return withMessage(context.DeadlineExceeded, st.Message())
 	default:
 		return errors.WithStack(err)
 	}

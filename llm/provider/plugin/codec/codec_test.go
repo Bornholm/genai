@@ -1,6 +1,7 @@
 package codec
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -26,6 +27,9 @@ func TestMessageRoundTrip(t *testing.T) {
 		llm.NewAssistantReasoningMessage("answer", "thought", details),
 		llm.NewReasoningToolCallsMessageWithContent("calling", "why", details, llm.NewToolCall("c1", "tool", `{"a":1}`)),
 		llm.NewToolMessage("c1", llm.NewToolResult("result", image)),
+		withCacheControl(llm.NewToolMessage("c2", llm.NewToolResult("cached result")), ttl),
+		withCacheControl(llm.NewToolCallsMessage(llm.NewToolCall("c3", "tool", `{"a":1}`)), ttl),
+		withCacheControl(llm.NewAssistantReasoningMessage("cached answer", "thought", nil), ttl),
 	}
 
 	for i, original := range messages {
@@ -72,6 +76,11 @@ func TestMessageRoundTrip(t *testing.T) {
 			}
 		}
 	}
+}
+
+func withCacheControl(message llm.Message, ttl string) llm.Message {
+	llm.SetCacheControl(message, &llm.CacheControl{Type: "ephemeral", TTL: &ttl})
+	return message
 }
 
 func TestOptionsRoundTrip(t *testing.T) {
@@ -245,6 +254,8 @@ func TestErrorRoundTrip(t *testing.T) {
 		pkgerrors.WithStack(llm.ErrNoMessage),
 		pkgerrors.Wrap(llm.ErrUnavailable, "gone"),
 		llm.NewValidationError("model", "model is required"),
+		pkgerrors.Wrap(context.Canceled, "upstream"),
+		pkgerrors.WithStack(context.DeadlineExceeded),
 		errors.New("plain"),
 	}
 
@@ -256,7 +267,7 @@ func TestErrorRoundTrip(t *testing.T) {
 		if llm.IsRetryable(decoded) != llm.IsRetryable(original) {
 			t.Errorf("case %d: retryable %v != %v (%v)", i, llm.IsRetryable(decoded), llm.IsRetryable(original), decoded)
 		}
-		for _, sentinel := range []error{llm.ErrRateLimit, llm.ErrNoMessage, llm.ErrUnavailable} {
+		for _, sentinel := range []error{llm.ErrRateLimit, llm.ErrNoMessage, llm.ErrUnavailable, context.Canceled, context.DeadlineExceeded} {
 			if errors.Is(decoded, sentinel) != errors.Is(original, sentinel) {
 				t.Errorf("case %d: errors.Is(%v) changed", i, sentinel)
 			}
@@ -292,6 +303,17 @@ func TestErrorRoundTrip(t *testing.T) {
 	decoded := ErrorFromStatus(ErrorToStatus(llm.RateLimitError(429, "slow")))
 	if !llm.IsRetryable(decoded) || !errors.Is(decoded, llm.ErrRateLimit) {
 		t.Errorf("status round trip lost the error: %v", decoded)
+	}
+
+	// Context errors through a status, with and without the typed detail.
+	if err := ErrorFromStatus(ErrorToStatus(pkgerrors.Wrap(context.Canceled, "upstream"))); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancellation lost through status: %v", err)
+	}
+	if st, _ := status.FromError(ErrorToStatus(context.DeadlineExceeded)); st.Code() != codes.DeadlineExceeded {
+		t.Errorf("deadline should map to codes.DeadlineExceeded, got %v", st.Code())
+	}
+	if err := ErrorFromStatus(status.Error(codes.Canceled, "context canceled")); !errors.Is(err, context.Canceled) {
+		t.Errorf("bare Canceled status should map to context.Canceled, got %v", err)
 	}
 
 	// A bare status without typed detail, from a plugin not built with the SDK.

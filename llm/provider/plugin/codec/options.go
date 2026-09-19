@@ -165,6 +165,10 @@ func ChatCompletionOptionsToProto(opts *llm.ChatCompletionOptions) (*pluginv1.Ch
 
 // ChatCompletionOptionsFromProto rebuilds the option funcs that produce the
 // same llm.ChatCompletionOptions on the other side.
+//
+// ExtraFields travel as a protobuf Struct, so every number comes back as a
+// float64 whatever its Go type was on the host: a plugin reads them the way
+// it would read decoded JSON, not with an int type assertion.
 func ChatCompletionOptionsFromProto(opts *pluginv1.ChatCompletionOptions) ([]llm.ChatCompletionOptionFunc, error) {
 	messages, err := messagesFromProto(opts.GetMessages())
 	if err != nil {
