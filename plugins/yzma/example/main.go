@@ -1,6 +1,3 @@
-// Pour compiler et exécuter cet exemple, le build tag "yzma" est requis :
-//
-//	go run -tags yzma examples/yzma/main.go -model /path/to/model.gguf -lib /path/to/lib
 package main
 
 import (
@@ -12,7 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/bornholm/genai/llm"
-	"github.com/bornholm/genai/llm/provider/yzma"
+	yzma "github.com/bornholm/genai/plugins/yzma/provider"
 )
 
 var (

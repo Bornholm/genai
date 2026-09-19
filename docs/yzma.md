@@ -2,6 +2,8 @@
 
 Yzma is a Go library that provides bindings to llama.cpp for running local LLMs. The genai integration allows you to use Yzma as a provider for chat completion and embeddings.
 
+Yzma ships as a **provider plugin**: a separate binary, `genai-provider-yzma`, that the `genai` CLI (or any program using the `llm/provider/plugin` package) starts on demand. The main module stays free of the llama.cpp bindings. See [plugins/README.md](../plugins/README.md) for how plugins work.
+
 ## Prerequisites
 
 - **GGUF model file**: A quantized LLM model in GGUF format (e.g., from Hugging Face)
@@ -11,38 +13,35 @@ Yzma is a Go library that provides bindings to llama.cpp for running local LLMs.
 
 ## Installation
 
-Le provider Yzma repose sur CGO et des liaisons natives vers llama.cpp. Il est désactivé par défaut et doit être activé explicitement via le build tag `yzma`.
-
-### Build tag requis
-
-Ajoutez le tag `yzma` à toutes vos commandes `go build` / `go run` / `go test` :
+Build the plugin (no CGO required, yzma loads llama.cpp at runtime):
 
 ```bash
-go build -tags yzma ./...
-go run -tags yzma main.go
+make build-plugins
+# -> bin/genai-provider-yzma
 ```
 
-### Import
+Or take the `genai-provider-yzma` binary from its own release archive. The module carries
+`replace` directives pointing at this repository, so `go install
+github.com/bornholm/genai/plugins/yzma@latest` does not work: build it here,
+or use a published binary.
 
-Pour charger tous les providers dont Yzma via le méta-package :
+## Quick Start with the CLI
 
-```go
-import (
-    _ "github.com/bornholm/genai/llm/provider/all" // nécessite -tags yzma pour inclure Yzma
-)
+```bash
+export GENAI_PLUGIN_DIR=./bin
+export GENAI_CHAT_COMPLETION_PROVIDER=yzma
+export GENAI_CHAT_COMPLETION_YZMA_MODEL_PATH=/path/to/model.gguf
+export GENAI_CHAT_COMPLETION_YZMA_LIB_PATH=/path/to/llama.cpp/lib
+export GENAI_CHAT_COMPLETION_YZMA_TEMPERATURE=0.7
+
+genai llm chat
 ```
 
-Pour utiliser Yzma directement sans passer par le registre :
+Embeddings work the same way with the `GENAI_EMBEDDINGS_YZMA_*` prefix. Both capabilities share one plugin process.
 
-```go
-import (
-    "github.com/bornholm/genai/llm/provider/yzma"
-)
-```
+## Using the provider in-process
 
-## Quick Start
-
-### Chat Completion
+The provider package can still be used directly by importing the plugin module, for programs that accept the llama.cpp dependency:
 
 ```go
 package main
@@ -52,7 +51,7 @@ import (
     "log"
 
     "github.com/bornholm/genai/llm"
-    "github.com/bornholm/genai/llm/provider/yzma"
+    yzma "github.com/bornholm/genai/plugins/yzma/provider"
 )
 
 func main() {
@@ -80,6 +79,8 @@ func main() {
     println(resp.Message().Content())
 }
 ```
+
+Importing the package also registers `yzma` in the provider registry, so `provider.Create` resolves it in-process instead of through the plugin.
 
 ### Streaming Chat Completion
 
@@ -121,55 +122,40 @@ embeddings := resp.Embeddings()
 
 ## Configuration Options
 
+Each option has an environment variable form, used through the plugin with the `GENAI_CHAT_COMPLETION_YZMA_` or `GENAI_EMBEDDINGS_YZMA_` prefix.
+
 ### Chat Completion Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `WithModelPath` | string | - | Path to GGUF model file |
-| `WithModelURL` | string | - | URL to download model |
-| `WithLibPath` | string | - | Path to llama.cpp library |
-| `WithProcessor` | string | "auto" | Processing unit (cpu, cuda, metal) |
-| `WithContextSize` | int | 40960 | Context window size |
-| `WithTemperature` | float64 | 1.0 | Sampling temperature |
-| `WithTopK` | int | 20 | Top-k sampling |
-| `WithTopP` | float64 | 1.0 | Top-p sampling |
-| `WithPredictSize` | int | 32768 | Max tokens to generate |
+| Option | Variable | Type | Default | Description |
+|--------|----------|------|---------|-------------|
+| `WithModelPath` | `MODEL_PATH` | string | - | Path to GGUF model file |
+| `WithModelURL` | `MODEL_URL` | string | - | URL to download model |
+| `WithLibPath` | `LIB_PATH` | string | - | Path to llama.cpp library |
+| `WithProcessor` | `PROCESSOR` | string | vide | Processing unit (cpu, cuda, metal); empty auto-detects at download |
+| `WithContextSize` | `CONTEXT_SIZE` | int | 40960 | Context window size |
+| `WithTemperature` | `TEMPERATURE` | float64 | 1.0 | Sampling temperature |
+| `WithTopK` | `TOP_K` | int | 20 | Top-k sampling |
+| `WithTopP` | `TOP_P` | float64 | 1.0 | Top-p sampling |
+| `WithPredictSize` | `PREDICT_SIZE` | int | 32768 | Max tokens to generate |
 
 ### Embeddings Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `WithEmbeddingsModelPath` | string | - | Path to GGUF model file |
-| `WithEmbeddingsModelURL` | string | - | URL to download model |
-| `WithEmbeddingsLibPath` | string | - | Path to llama.cpp library |
-| `WithEmbeddingsProcessor` | string | "auto" | Processing unit |
-| `WithEmbeddingsContextSize` | int | 40960 | Context window size |
-| `WithEmbeddingsNormalize` | bool | true | Normalize output vectors |
-
-## Environment Variables
-
-You can also configure via environment variables:
-
-```bash
-export CHAT_COMPLETION_PROVIDER=yzma
-export CHAT_COMPLETION_MODEL_PATH=/path/to/model.gguf
-export CHAT_COMPLETION_LIB_PATH=/path/to/llama.cpp/lib
-export CHAT_COMPLETION_TEMPERATURE=0.7
-```
-
-Then create client via the registry:
-
-```go
-client, err := provider.Create(ctx)
-```
+| Option | Variable | Type | Default | Description |
+|--------|----------|------|---------|-------------|
+| `WithEmbeddingsModelPath` | `MODEL_PATH` | string | - | Path to GGUF model file |
+| `WithEmbeddingsModelURL` | `MODEL_URL` | string | - | URL to download model |
+| `WithEmbeddingsLibPath` | `LIB_PATH` | string | - | Path to llama.cpp library |
+| `WithEmbeddingsProcessor` | `PROCESSOR` | string | vide | Processing unit; empty auto-detects at download |
+| `WithEmbeddingsContextSize` | `CONTEXT_SIZE` | int | 40960 | Context window size |
+| `WithEmbeddingsNormalize` | `NORMALIZE` | bool | true | Normalize output vectors |
 
 ## Example
 
-See `examples/yzma/main.go` for a complete example with CLI flags.
+See `plugins/yzma/example/main.go` for a complete in-process example with CLI flags.
 
 ```bash
-# Le build tag yzma est requis car le provider est désactivé par défaut
-go run -tags yzma examples/yzma/main.go -model /path/to/model.gguf -lib /path/to/lib -prompt "Hello"
+cd plugins/yzma
+go run ./example -model /path/to/model.gguf -lib /path/to/lib -prompt "Hello"
 ```
 
 ## Supported Models
