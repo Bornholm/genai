@@ -12,6 +12,10 @@ test-sdk-standalone:
 build-wasm:
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o bin/genai.wasm ./wasm
 
+build-plugins:
+	mkdir -p bin
+	cd plugins/yzma && CGO_ENABLED=0 go build -o ../../bin/genai-provider-yzma .
+
 watch: tools/modd/bin/modd
 	tools/modd/bin/modd
 
@@ -25,7 +29,7 @@ release:
 	goreleaser $(GORELEASER_ARGS)
 
 test:
-	$(MAKE) run-with-env CMD="go test -v ./... ./plugin/sdk/..."
+	$(MAKE) run-with-env CMD="go test -v ./... ./plugin/sdk/... ./plugins/yzma/..."
 
 tools/modd/bin/modd:
 	mkdir -p tools/modd/bin
