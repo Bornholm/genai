@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -238,7 +239,7 @@ func TestRateLimitErrorIsRetryable(t *testing.T) {
 		t.Errorf("expected a retryable error, got %+v", err)
 	}
 	var httpErr *llm.HTTPError
-	if !errorsAs(err, &httpErr) || httpErr.StatusCode != 429 || httpErr.Body != "slow down" {
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != 429 || httpErr.Body != "slow down" {
 		t.Errorf("expected the http error to survive, got %+v", err)
 	}
 
@@ -275,7 +276,7 @@ func TestConfigureValidationError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 	var validationErr llm.ValidationError
-	if !errorsAs(err, &validationErr) || validationErr.Field != "model" {
+	if !errors.As(err, &validationErr) || validationErr.Field != "model" {
 		t.Errorf("expected the validation error to survive, got %+v", err)
 	}
 }
@@ -348,6 +349,59 @@ func TestRegistryFallbackProgrammatic(t *testing.T) {
 	}
 	if res.Message().Content() != "echo(prog): hi" {
 		t.Errorf("options did not reach the plugin: %q", res.Message().Content())
+	}
+}
+
+func TestFallbackInactiveWithoutSearchDir(t *testing.T) {
+	dir := SearchDir()
+	SetSearchDir("")
+	t.Cleanup(func() { SetSearchDir(dir) })
+
+	_, err := provider.Create(context.Background(),
+		provider.WithChatCompletion(provider.Name("test"), *NewOptions("test", nil)),
+	)
+	if !errors.Is(err, provider.ErrClientNotFound) {
+		t.Errorf("expected ErrClientNotFound without a plugin directory, got %v", err)
+	}
+}
+
+func TestClientSurvivesPluginDeath(t *testing.T) {
+	client := newTestChatClient(t, map[string]string{"MODEL": "phoenix"})
+	first := client.Process()
+
+	first.Kill()
+	// Killing is asynchronous on the go-plugin side; wait for it to notice.
+	deadline := time.Now().Add(5 * time.Second)
+	for !first.Exited() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !first.Exited() {
+		t.Fatal("process did not exit")
+	}
+
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "back")))
+	if err != nil {
+		t.Fatalf("expected the client to reconfigure on a fresh process, got %+v", err)
+	}
+	if res.Message().Content() != "echo(phoenix): back" {
+		t.Errorf("options were not reapplied: %q", res.Message().Content())
+	}
+	if client.Process() == first {
+		t.Error("expected a new process")
+	}
+}
+
+func TestCloseReleasesClient(t *testing.T) {
+	client := newTestChatClient(t, nil)
+	if err := client.Close(); err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if !errors.Is(err, llm.ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable after Close, got %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Errorf("second Close should be a no-op, got %v", err)
 	}
 }
 

@@ -238,9 +238,11 @@ type StreamChunkType int32
 const (
 	StreamChunkType_STREAM_CHUNK_TYPE_UNSPECIFIED StreamChunkType = 0
 	StreamChunkType_STREAM_CHUNK_TYPE_DELTA       StreamChunkType = 1
-	StreamChunkType_STREAM_CHUNK_TYPE_USAGE       StreamChunkType = 2
-	StreamChunkType_STREAM_CHUNK_TYPE_ERROR       StreamChunkType = 3
-	StreamChunkType_STREAM_CHUNK_TYPE_COMPLETE    StreamChunkType = 4
+	// Mirrors llm.StreamChunkTypeUsage, which no llm constructor produces: the
+	// host rebuilds such a chunk as a delta carrying the usage.
+	StreamChunkType_STREAM_CHUNK_TYPE_USAGE    StreamChunkType = 2
+	StreamChunkType_STREAM_CHUNK_TYPE_ERROR    StreamChunkType = 3
+	StreamChunkType_STREAM_CHUNK_TYPE_COMPLETE StreamChunkType = 4
 )
 
 // Enum value maps for StreamChunkType.
@@ -343,7 +345,7 @@ func (x Error_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Error_Kind.Descriptor instead.
 func (Error_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{24, 0}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{26, 0}
 }
 
 type DescribeRequest struct {
@@ -540,6 +542,86 @@ func (x *ConfigureResponse) GetClientId() string {
 	return ""
 }
 
+type ReleaseRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClientId      string                 `protobuf:"bytes,1,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseRequest) Reset() {
+	*x = ReleaseRequest{}
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseRequest) ProtoMessage() {}
+
+func (x *ReleaseRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseRequest.ProtoReflect.Descriptor instead.
+func (*ReleaseRequest) Descriptor() ([]byte, []int) {
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ReleaseRequest) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+type ReleaseResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReleaseResponse) Reset() {
+	*x = ReleaseResponse{}
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReleaseResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReleaseResponse) ProtoMessage() {}
+
+func (x *ReleaseResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReleaseResponse.ProtoReflect.Descriptor instead.
+func (*ReleaseResponse) Descriptor() ([]byte, []int) {
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{5}
+}
+
 type Attachment struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          AttachmentType         `protobuf:"varint,1,opt,name=type,proto3,enum=genai.plugin.v1.AttachmentType" json:"type,omitempty"`
@@ -552,7 +634,7 @@ type Attachment struct {
 
 func (x *Attachment) Reset() {
 	*x = Attachment{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[4]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -564,7 +646,7 @@ func (x *Attachment) String() string {
 func (*Attachment) ProtoMessage() {}
 
 func (x *Attachment) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[4]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -577,7 +659,7 @@ func (x *Attachment) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Attachment.ProtoReflect.Descriptor instead.
 func (*Attachment) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{4}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Attachment) GetType() AttachmentType {
@@ -618,7 +700,7 @@ type CacheControl struct {
 
 func (x *CacheControl) Reset() {
 	*x = CacheControl{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[5]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +712,7 @@ func (x *CacheControl) String() string {
 func (*CacheControl) ProtoMessage() {}
 
 func (x *CacheControl) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[5]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +725,7 @@ func (x *CacheControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheControl.ProtoReflect.Descriptor instead.
 func (*CacheControl) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{5}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CacheControl) GetType() string {
@@ -676,7 +758,7 @@ type ReasoningDetail struct {
 
 func (x *ReasoningDetail) Reset() {
 	*x = ReasoningDetail{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[6]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -688,7 +770,7 @@ func (x *ReasoningDetail) String() string {
 func (*ReasoningDetail) ProtoMessage() {}
 
 func (x *ReasoningDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[6]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -701,7 +783,7 @@ func (x *ReasoningDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReasoningDetail.ProtoReflect.Descriptor instead.
 func (*ReasoningDetail) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{6}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ReasoningDetail) GetId() string {
@@ -772,7 +854,7 @@ type ToolCall struct {
 
 func (x *ToolCall) Reset() {
 	*x = ToolCall{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[7]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -784,7 +866,7 @@ func (x *ToolCall) String() string {
 func (*ToolCall) ProtoMessage() {}
 
 func (x *ToolCall) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[7]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -797,7 +879,7 @@ func (x *ToolCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCall.ProtoReflect.Descriptor instead.
 func (*ToolCall) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{7}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ToolCall) GetId() string {
@@ -822,7 +904,9 @@ func (x *ToolCall) GetParametersJson() string {
 }
 
 // Message is the wire form of every llm.Message implementation. The fields
-// that are set decide which constructor the receiving side uses.
+// that are set decide which constructor the receiving side uses. Tool call
+// and reasoning messages carry no attachments in llm, so none travel for
+// them either.
 type Message struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	Role         Role                   `protobuf:"varint,1,opt,name=role,proto3,enum=genai.plugin.v1.Role" json:"role,omitempty"`
@@ -842,7 +926,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[8]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -854,7 +938,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[8]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -867,7 +951,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{8}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Message) GetRole() Role {
@@ -938,7 +1022,7 @@ type Tool struct {
 
 func (x *Tool) Reset() {
 	*x = Tool{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[9]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -950,7 +1034,7 @@ func (x *Tool) String() string {
 func (*Tool) ProtoMessage() {}
 
 func (x *Tool) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[9]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -963,7 +1047,7 @@ func (x *Tool) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Tool.ProtoReflect.Descriptor instead.
 func (*Tool) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{9}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Tool) GetName() string {
@@ -999,7 +1083,7 @@ type ResponseSchema struct {
 
 func (x *ResponseSchema) Reset() {
 	*x = ResponseSchema{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[10]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1011,7 +1095,7 @@ func (x *ResponseSchema) String() string {
 func (*ResponseSchema) ProtoMessage() {}
 
 func (x *ResponseSchema) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[10]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1024,7 +1108,7 @@ func (x *ResponseSchema) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResponseSchema.ProtoReflect.Descriptor instead.
 func (*ResponseSchema) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{10}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ResponseSchema) GetName() string {
@@ -1067,7 +1151,7 @@ type ReasoningOptions struct {
 
 func (x *ReasoningOptions) Reset() {
 	*x = ReasoningOptions{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[11]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1079,7 +1163,7 @@ func (x *ReasoningOptions) String() string {
 func (*ReasoningOptions) ProtoMessage() {}
 
 func (x *ReasoningOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[11]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1092,7 +1176,7 @@ func (x *ReasoningOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReasoningOptions.ProtoReflect.Descriptor instead.
 func (*ReasoningOptions) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{11}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ReasoningOptions) GetEffort() string {
@@ -1133,7 +1217,7 @@ type AudioOutputConfig struct {
 
 func (x *AudioOutputConfig) Reset() {
 	*x = AudioOutputConfig{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[12]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1145,7 +1229,7 @@ func (x *AudioOutputConfig) String() string {
 func (*AudioOutputConfig) ProtoMessage() {}
 
 func (x *AudioOutputConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[12]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1158,7 +1242,7 @@ func (x *AudioOutputConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AudioOutputConfig.ProtoReflect.Descriptor instead.
 func (*AudioOutputConfig) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{12}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AudioOutputConfig) GetVoice() string {
@@ -1196,7 +1280,7 @@ type ChatCompletionOptions struct {
 
 func (x *ChatCompletionOptions) Reset() {
 	*x = ChatCompletionOptions{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[13]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1208,7 +1292,7 @@ func (x *ChatCompletionOptions) String() string {
 func (*ChatCompletionOptions) ProtoMessage() {}
 
 func (x *ChatCompletionOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[13]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1221,7 +1305,7 @@ func (x *ChatCompletionOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompletionOptions.ProtoReflect.Descriptor instead.
 func (*ChatCompletionOptions) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{13}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ChatCompletionOptions) GetMessages() []*Message {
@@ -1325,7 +1409,7 @@ type ChatCompletionRequest struct {
 
 func (x *ChatCompletionRequest) Reset() {
 	*x = ChatCompletionRequest{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[14]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1337,7 +1421,7 @@ func (x *ChatCompletionRequest) String() string {
 func (*ChatCompletionRequest) ProtoMessage() {}
 
 func (x *ChatCompletionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[14]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1350,7 +1434,7 @@ func (x *ChatCompletionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompletionRequest.ProtoReflect.Descriptor instead.
 func (*ChatCompletionRequest) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{14}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ChatCompletionRequest) GetClientId() string {
@@ -1382,7 +1466,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[15]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1394,7 +1478,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[15]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1407,7 +1491,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{15}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Usage) GetPromptTokens() int64 {
@@ -1472,7 +1556,7 @@ type ChatCompletionResponse struct {
 
 func (x *ChatCompletionResponse) Reset() {
 	*x = ChatCompletionResponse{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[16]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1484,7 +1568,7 @@ func (x *ChatCompletionResponse) String() string {
 func (*ChatCompletionResponse) ProtoMessage() {}
 
 func (x *ChatCompletionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[16]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1497,7 +1581,7 @@ func (x *ChatCompletionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompletionResponse.ProtoReflect.Descriptor instead.
 func (*ChatCompletionResponse) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{16}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ChatCompletionResponse) GetMessage() *Message {
@@ -1547,7 +1631,7 @@ type ToolCallDelta struct {
 
 func (x *ToolCallDelta) Reset() {
 	*x = ToolCallDelta{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[17]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1559,7 +1643,7 @@ func (x *ToolCallDelta) String() string {
 func (*ToolCallDelta) ProtoMessage() {}
 
 func (x *ToolCallDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[17]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1572,7 +1656,7 @@ func (x *ToolCallDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCallDelta.ProtoReflect.Descriptor instead.
 func (*ToolCallDelta) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{17}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ToolCallDelta) GetIndex() int32 {
@@ -1618,7 +1702,7 @@ type StreamDelta struct {
 
 func (x *StreamDelta) Reset() {
 	*x = StreamDelta{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[18]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1630,7 +1714,7 @@ func (x *StreamDelta) String() string {
 func (*StreamDelta) ProtoMessage() {}
 
 func (x *StreamDelta) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[18]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1643,7 +1727,7 @@ func (x *StreamDelta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamDelta.ProtoReflect.Descriptor instead.
 func (*StreamDelta) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{18}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *StreamDelta) GetRole() Role {
@@ -1707,7 +1791,7 @@ type StreamChunk struct {
 
 func (x *StreamChunk) Reset() {
 	*x = StreamChunk{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[19]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1719,7 +1803,7 @@ func (x *StreamChunk) String() string {
 func (*StreamChunk) ProtoMessage() {}
 
 func (x *StreamChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[19]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1732,7 +1816,7 @@ func (x *StreamChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamChunk.ProtoReflect.Descriptor instead.
 func (*StreamChunk) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{19}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *StreamChunk) GetType() StreamChunkType {
@@ -1774,7 +1858,7 @@ type EmbeddingsRequest struct {
 
 func (x *EmbeddingsRequest) Reset() {
 	*x = EmbeddingsRequest{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[20]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1786,7 +1870,7 @@ func (x *EmbeddingsRequest) String() string {
 func (*EmbeddingsRequest) ProtoMessage() {}
 
 func (x *EmbeddingsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[20]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1799,7 +1883,7 @@ func (x *EmbeddingsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingsRequest.ProtoReflect.Descriptor instead.
 func (*EmbeddingsRequest) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{20}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *EmbeddingsRequest) GetClientId() string {
@@ -1832,7 +1916,7 @@ type Embedding struct {
 
 func (x *Embedding) Reset() {
 	*x = Embedding{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[21]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1844,7 +1928,7 @@ func (x *Embedding) String() string {
 func (*Embedding) ProtoMessage() {}
 
 func (x *Embedding) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[21]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1857,7 +1941,7 @@ func (x *Embedding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Embedding.ProtoReflect.Descriptor instead.
 func (*Embedding) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{21}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Embedding) GetValues() []float64 {
@@ -1877,7 +1961,7 @@ type EmbeddingsUsage struct {
 
 func (x *EmbeddingsUsage) Reset() {
 	*x = EmbeddingsUsage{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[22]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1889,7 +1973,7 @@ func (x *EmbeddingsUsage) String() string {
 func (*EmbeddingsUsage) ProtoMessage() {}
 
 func (x *EmbeddingsUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[22]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1902,7 +1986,7 @@ func (x *EmbeddingsUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingsUsage.ProtoReflect.Descriptor instead.
 func (*EmbeddingsUsage) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{22}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *EmbeddingsUsage) GetPromptTokens() int64 {
@@ -1929,7 +2013,7 @@ type EmbeddingsResponse struct {
 
 func (x *EmbeddingsResponse) Reset() {
 	*x = EmbeddingsResponse{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[23]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1941,7 +2025,7 @@ func (x *EmbeddingsResponse) String() string {
 func (*EmbeddingsResponse) ProtoMessage() {}
 
 func (x *EmbeddingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[23]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1954,7 +2038,7 @@ func (x *EmbeddingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingsResponse.ProtoReflect.Descriptor instead.
 func (*EmbeddingsResponse) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{23}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *EmbeddingsResponse) GetEmbeddings() []*Embedding {
@@ -1987,7 +2071,7 @@ type Error struct {
 
 func (x *Error) Reset() {
 	*x = Error{}
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[24]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1999,7 +2083,7 @@ func (x *Error) String() string {
 func (*Error) ProtoMessage() {}
 
 func (x *Error) ProtoReflect() protoreflect.Message {
-	mi := &file_genai_plugin_v1_provider_proto_msgTypes[24]
+	mi := &file_genai_plugin_v1_provider_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2012,7 +2096,7 @@ func (x *Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Error.ProtoReflect.Descriptor instead.
 func (*Error) Descriptor() ([]byte, []int) {
-	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{24}
+	return file_genai_plugin_v1_provider_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *Error) GetMessage() string {
@@ -2069,7 +2153,10 @@ const file_genai_plugin_v1_provider_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"0\n" +
 	"\x11ConfigureResponse\x12\x1b\n" +
-	"\tclient_id\x18\x01 \x01(\tR\bclientId\"\xad\x01\n" +
+	"\tclient_id\x18\x01 \x01(\tR\bclientId\"-\n" +
+	"\x0eReleaseRequest\x12\x1b\n" +
+	"\tclient_id\x18\x01 \x01(\tR\bclientId\"\x11\n" +
+	"\x0fReleaseResponse\"\xad\x01\n" +
 	"\n" +
 	"Attachment\x123\n" +
 	"\x04type\x18\x01 \x01(\x0e2\x1f.genai.plugin.v1.AttachmentTypeR\x04type\x12\x1b\n" +
@@ -2249,10 +2336,11 @@ const file_genai_plugin_v1_provider_proto_rawDesc = "" +
 	"\x17STREAM_CHUNK_TYPE_DELTA\x10\x01\x12\x1b\n" +
 	"\x17STREAM_CHUNK_TYPE_USAGE\x10\x02\x12\x1b\n" +
 	"\x17STREAM_CHUNK_TYPE_ERROR\x10\x03\x12\x1e\n" +
-	"\x1aSTREAM_CHUNK_TYPE_COMPLETE\x10\x042\xaf\x01\n" +
+	"\x1aSTREAM_CHUNK_TYPE_COMPLETE\x10\x042\xfd\x01\n" +
 	"\bProvider\x12O\n" +
 	"\bDescribe\x12 .genai.plugin.v1.DescribeRequest\x1a!.genai.plugin.v1.DescribeResponse\x12R\n" +
-	"\tConfigure\x12!.genai.plugin.v1.ConfigureRequest\x1a\".genai.plugin.v1.ConfigureResponse2\xd3\x01\n" +
+	"\tConfigure\x12!.genai.plugin.v1.ConfigureRequest\x1a\".genai.plugin.v1.ConfigureResponse\x12L\n" +
+	"\aRelease\x12\x1f.genai.plugin.v1.ReleaseRequest\x1a .genai.plugin.v1.ReleaseResponse2\xd3\x01\n" +
 	"\x0eChatCompletion\x12a\n" +
 	"\x0eChatCompletion\x12&.genai.plugin.v1.ChatCompletionRequest\x1a'.genai.plugin.v1.ChatCompletionResponse\x12^\n" +
 	"\x14ChatCompletionStream\x12&.genai.plugin.v1.ChatCompletionRequest\x1a\x1c.genai.plugin.v1.StreamChunk0\x012c\n" +
@@ -2274,7 +2362,7 @@ func file_genai_plugin_v1_provider_proto_rawDescGZIP() []byte {
 }
 
 var file_genai_plugin_v1_provider_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_genai_plugin_v1_provider_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_genai_plugin_v1_provider_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_genai_plugin_v1_provider_proto_goTypes = []any{
 	(Capability)(0),                // 0: genai.plugin.v1.Capability
 	(Role)(0),                      // 1: genai.plugin.v1.Role
@@ -2286,77 +2374,81 @@ var file_genai_plugin_v1_provider_proto_goTypes = []any{
 	(*DescribeResponse)(nil),       // 7: genai.plugin.v1.DescribeResponse
 	(*ConfigureRequest)(nil),       // 8: genai.plugin.v1.ConfigureRequest
 	(*ConfigureResponse)(nil),      // 9: genai.plugin.v1.ConfigureResponse
-	(*Attachment)(nil),             // 10: genai.plugin.v1.Attachment
-	(*CacheControl)(nil),           // 11: genai.plugin.v1.CacheControl
-	(*ReasoningDetail)(nil),        // 12: genai.plugin.v1.ReasoningDetail
-	(*ToolCall)(nil),               // 13: genai.plugin.v1.ToolCall
-	(*Message)(nil),                // 14: genai.plugin.v1.Message
-	(*Tool)(nil),                   // 15: genai.plugin.v1.Tool
-	(*ResponseSchema)(nil),         // 16: genai.plugin.v1.ResponseSchema
-	(*ReasoningOptions)(nil),       // 17: genai.plugin.v1.ReasoningOptions
-	(*AudioOutputConfig)(nil),      // 18: genai.plugin.v1.AudioOutputConfig
-	(*ChatCompletionOptions)(nil),  // 19: genai.plugin.v1.ChatCompletionOptions
-	(*ChatCompletionRequest)(nil),  // 20: genai.plugin.v1.ChatCompletionRequest
-	(*Usage)(nil),                  // 21: genai.plugin.v1.Usage
-	(*ChatCompletionResponse)(nil), // 22: genai.plugin.v1.ChatCompletionResponse
-	(*ToolCallDelta)(nil),          // 23: genai.plugin.v1.ToolCallDelta
-	(*StreamDelta)(nil),            // 24: genai.plugin.v1.StreamDelta
-	(*StreamChunk)(nil),            // 25: genai.plugin.v1.StreamChunk
-	(*EmbeddingsRequest)(nil),      // 26: genai.plugin.v1.EmbeddingsRequest
-	(*Embedding)(nil),              // 27: genai.plugin.v1.Embedding
-	(*EmbeddingsUsage)(nil),        // 28: genai.plugin.v1.EmbeddingsUsage
-	(*EmbeddingsResponse)(nil),     // 29: genai.plugin.v1.EmbeddingsResponse
-	(*Error)(nil),                  // 30: genai.plugin.v1.Error
-	nil,                            // 31: genai.plugin.v1.ConfigureRequest.OptionsEntry
-	(*structpb.Struct)(nil),        // 32: google.protobuf.Struct
-	(*structpb.Value)(nil),         // 33: google.protobuf.Value
+	(*ReleaseRequest)(nil),         // 10: genai.plugin.v1.ReleaseRequest
+	(*ReleaseResponse)(nil),        // 11: genai.plugin.v1.ReleaseResponse
+	(*Attachment)(nil),             // 12: genai.plugin.v1.Attachment
+	(*CacheControl)(nil),           // 13: genai.plugin.v1.CacheControl
+	(*ReasoningDetail)(nil),        // 14: genai.plugin.v1.ReasoningDetail
+	(*ToolCall)(nil),               // 15: genai.plugin.v1.ToolCall
+	(*Message)(nil),                // 16: genai.plugin.v1.Message
+	(*Tool)(nil),                   // 17: genai.plugin.v1.Tool
+	(*ResponseSchema)(nil),         // 18: genai.plugin.v1.ResponseSchema
+	(*ReasoningOptions)(nil),       // 19: genai.plugin.v1.ReasoningOptions
+	(*AudioOutputConfig)(nil),      // 20: genai.plugin.v1.AudioOutputConfig
+	(*ChatCompletionOptions)(nil),  // 21: genai.plugin.v1.ChatCompletionOptions
+	(*ChatCompletionRequest)(nil),  // 22: genai.plugin.v1.ChatCompletionRequest
+	(*Usage)(nil),                  // 23: genai.plugin.v1.Usage
+	(*ChatCompletionResponse)(nil), // 24: genai.plugin.v1.ChatCompletionResponse
+	(*ToolCallDelta)(nil),          // 25: genai.plugin.v1.ToolCallDelta
+	(*StreamDelta)(nil),            // 26: genai.plugin.v1.StreamDelta
+	(*StreamChunk)(nil),            // 27: genai.plugin.v1.StreamChunk
+	(*EmbeddingsRequest)(nil),      // 28: genai.plugin.v1.EmbeddingsRequest
+	(*Embedding)(nil),              // 29: genai.plugin.v1.Embedding
+	(*EmbeddingsUsage)(nil),        // 30: genai.plugin.v1.EmbeddingsUsage
+	(*EmbeddingsResponse)(nil),     // 31: genai.plugin.v1.EmbeddingsResponse
+	(*Error)(nil),                  // 32: genai.plugin.v1.Error
+	nil,                            // 33: genai.plugin.v1.ConfigureRequest.OptionsEntry
+	(*structpb.Struct)(nil),        // 34: google.protobuf.Struct
+	(*structpb.Value)(nil),         // 35: google.protobuf.Value
 }
 var file_genai_plugin_v1_provider_proto_depIdxs = []int32{
 	0,  // 0: genai.plugin.v1.DescribeResponse.capabilities:type_name -> genai.plugin.v1.Capability
 	0,  // 1: genai.plugin.v1.ConfigureRequest.capability:type_name -> genai.plugin.v1.Capability
-	31, // 2: genai.plugin.v1.ConfigureRequest.options:type_name -> genai.plugin.v1.ConfigureRequest.OptionsEntry
+	33, // 2: genai.plugin.v1.ConfigureRequest.options:type_name -> genai.plugin.v1.ConfigureRequest.OptionsEntry
 	2,  // 3: genai.plugin.v1.Attachment.type:type_name -> genai.plugin.v1.AttachmentType
 	3,  // 4: genai.plugin.v1.Attachment.source:type_name -> genai.plugin.v1.AttachmentSource
 	1,  // 5: genai.plugin.v1.Message.role:type_name -> genai.plugin.v1.Role
-	10, // 6: genai.plugin.v1.Message.attachments:type_name -> genai.plugin.v1.Attachment
-	11, // 7: genai.plugin.v1.Message.cache_control:type_name -> genai.plugin.v1.CacheControl
-	13, // 8: genai.plugin.v1.Message.tool_calls:type_name -> genai.plugin.v1.ToolCall
-	12, // 9: genai.plugin.v1.Message.reasoning_details:type_name -> genai.plugin.v1.ReasoningDetail
-	32, // 10: genai.plugin.v1.Tool.parameters:type_name -> google.protobuf.Struct
-	33, // 11: genai.plugin.v1.ResponseSchema.schema:type_name -> google.protobuf.Value
-	14, // 12: genai.plugin.v1.ChatCompletionOptions.messages:type_name -> genai.plugin.v1.Message
-	15, // 13: genai.plugin.v1.ChatCompletionOptions.tools:type_name -> genai.plugin.v1.Tool
-	16, // 14: genai.plugin.v1.ChatCompletionOptions.response_schema:type_name -> genai.plugin.v1.ResponseSchema
-	17, // 15: genai.plugin.v1.ChatCompletionOptions.reasoning:type_name -> genai.plugin.v1.ReasoningOptions
-	18, // 16: genai.plugin.v1.ChatCompletionOptions.audio:type_name -> genai.plugin.v1.AudioOutputConfig
-	32, // 17: genai.plugin.v1.ChatCompletionOptions.extra_fields:type_name -> google.protobuf.Struct
-	19, // 18: genai.plugin.v1.ChatCompletionRequest.options:type_name -> genai.plugin.v1.ChatCompletionOptions
-	14, // 19: genai.plugin.v1.ChatCompletionResponse.message:type_name -> genai.plugin.v1.Message
-	13, // 20: genai.plugin.v1.ChatCompletionResponse.tool_calls:type_name -> genai.plugin.v1.ToolCall
-	21, // 21: genai.plugin.v1.ChatCompletionResponse.usage:type_name -> genai.plugin.v1.Usage
-	12, // 22: genai.plugin.v1.ChatCompletionResponse.reasoning_details:type_name -> genai.plugin.v1.ReasoningDetail
+	12, // 6: genai.plugin.v1.Message.attachments:type_name -> genai.plugin.v1.Attachment
+	13, // 7: genai.plugin.v1.Message.cache_control:type_name -> genai.plugin.v1.CacheControl
+	15, // 8: genai.plugin.v1.Message.tool_calls:type_name -> genai.plugin.v1.ToolCall
+	14, // 9: genai.plugin.v1.Message.reasoning_details:type_name -> genai.plugin.v1.ReasoningDetail
+	34, // 10: genai.plugin.v1.Tool.parameters:type_name -> google.protobuf.Struct
+	35, // 11: genai.plugin.v1.ResponseSchema.schema:type_name -> google.protobuf.Value
+	16, // 12: genai.plugin.v1.ChatCompletionOptions.messages:type_name -> genai.plugin.v1.Message
+	17, // 13: genai.plugin.v1.ChatCompletionOptions.tools:type_name -> genai.plugin.v1.Tool
+	18, // 14: genai.plugin.v1.ChatCompletionOptions.response_schema:type_name -> genai.plugin.v1.ResponseSchema
+	19, // 15: genai.plugin.v1.ChatCompletionOptions.reasoning:type_name -> genai.plugin.v1.ReasoningOptions
+	20, // 16: genai.plugin.v1.ChatCompletionOptions.audio:type_name -> genai.plugin.v1.AudioOutputConfig
+	34, // 17: genai.plugin.v1.ChatCompletionOptions.extra_fields:type_name -> google.protobuf.Struct
+	21, // 18: genai.plugin.v1.ChatCompletionRequest.options:type_name -> genai.plugin.v1.ChatCompletionOptions
+	16, // 19: genai.plugin.v1.ChatCompletionResponse.message:type_name -> genai.plugin.v1.Message
+	15, // 20: genai.plugin.v1.ChatCompletionResponse.tool_calls:type_name -> genai.plugin.v1.ToolCall
+	23, // 21: genai.plugin.v1.ChatCompletionResponse.usage:type_name -> genai.plugin.v1.Usage
+	14, // 22: genai.plugin.v1.ChatCompletionResponse.reasoning_details:type_name -> genai.plugin.v1.ReasoningDetail
 	1,  // 23: genai.plugin.v1.StreamDelta.role:type_name -> genai.plugin.v1.Role
-	23, // 24: genai.plugin.v1.StreamDelta.tool_calls:type_name -> genai.plugin.v1.ToolCallDelta
-	12, // 25: genai.plugin.v1.StreamDelta.reasoning_details:type_name -> genai.plugin.v1.ReasoningDetail
+	25, // 24: genai.plugin.v1.StreamDelta.tool_calls:type_name -> genai.plugin.v1.ToolCallDelta
+	14, // 25: genai.plugin.v1.StreamDelta.reasoning_details:type_name -> genai.plugin.v1.ReasoningDetail
 	4,  // 26: genai.plugin.v1.StreamChunk.type:type_name -> genai.plugin.v1.StreamChunkType
-	24, // 27: genai.plugin.v1.StreamChunk.delta:type_name -> genai.plugin.v1.StreamDelta
-	21, // 28: genai.plugin.v1.StreamChunk.usage:type_name -> genai.plugin.v1.Usage
-	30, // 29: genai.plugin.v1.StreamChunk.error:type_name -> genai.plugin.v1.Error
-	27, // 30: genai.plugin.v1.EmbeddingsResponse.embeddings:type_name -> genai.plugin.v1.Embedding
-	28, // 31: genai.plugin.v1.EmbeddingsResponse.usage:type_name -> genai.plugin.v1.EmbeddingsUsage
+	26, // 27: genai.plugin.v1.StreamChunk.delta:type_name -> genai.plugin.v1.StreamDelta
+	23, // 28: genai.plugin.v1.StreamChunk.usage:type_name -> genai.plugin.v1.Usage
+	32, // 29: genai.plugin.v1.StreamChunk.error:type_name -> genai.plugin.v1.Error
+	29, // 30: genai.plugin.v1.EmbeddingsResponse.embeddings:type_name -> genai.plugin.v1.Embedding
+	30, // 31: genai.plugin.v1.EmbeddingsResponse.usage:type_name -> genai.plugin.v1.EmbeddingsUsage
 	5,  // 32: genai.plugin.v1.Error.kind:type_name -> genai.plugin.v1.Error.Kind
 	6,  // 33: genai.plugin.v1.Provider.Describe:input_type -> genai.plugin.v1.DescribeRequest
 	8,  // 34: genai.plugin.v1.Provider.Configure:input_type -> genai.plugin.v1.ConfigureRequest
-	20, // 35: genai.plugin.v1.ChatCompletion.ChatCompletion:input_type -> genai.plugin.v1.ChatCompletionRequest
-	20, // 36: genai.plugin.v1.ChatCompletion.ChatCompletionStream:input_type -> genai.plugin.v1.ChatCompletionRequest
-	26, // 37: genai.plugin.v1.Embeddings.Embeddings:input_type -> genai.plugin.v1.EmbeddingsRequest
-	7,  // 38: genai.plugin.v1.Provider.Describe:output_type -> genai.plugin.v1.DescribeResponse
-	9,  // 39: genai.plugin.v1.Provider.Configure:output_type -> genai.plugin.v1.ConfigureResponse
-	22, // 40: genai.plugin.v1.ChatCompletion.ChatCompletion:output_type -> genai.plugin.v1.ChatCompletionResponse
-	25, // 41: genai.plugin.v1.ChatCompletion.ChatCompletionStream:output_type -> genai.plugin.v1.StreamChunk
-	29, // 42: genai.plugin.v1.Embeddings.Embeddings:output_type -> genai.plugin.v1.EmbeddingsResponse
-	38, // [38:43] is the sub-list for method output_type
-	33, // [33:38] is the sub-list for method input_type
+	10, // 35: genai.plugin.v1.Provider.Release:input_type -> genai.plugin.v1.ReleaseRequest
+	22, // 36: genai.plugin.v1.ChatCompletion.ChatCompletion:input_type -> genai.plugin.v1.ChatCompletionRequest
+	22, // 37: genai.plugin.v1.ChatCompletion.ChatCompletionStream:input_type -> genai.plugin.v1.ChatCompletionRequest
+	28, // 38: genai.plugin.v1.Embeddings.Embeddings:input_type -> genai.plugin.v1.EmbeddingsRequest
+	7,  // 39: genai.plugin.v1.Provider.Describe:output_type -> genai.plugin.v1.DescribeResponse
+	9,  // 40: genai.plugin.v1.Provider.Configure:output_type -> genai.plugin.v1.ConfigureResponse
+	11, // 41: genai.plugin.v1.Provider.Release:output_type -> genai.plugin.v1.ReleaseResponse
+	24, // 42: genai.plugin.v1.ChatCompletion.ChatCompletion:output_type -> genai.plugin.v1.ChatCompletionResponse
+	27, // 43: genai.plugin.v1.ChatCompletion.ChatCompletionStream:output_type -> genai.plugin.v1.StreamChunk
+	31, // 44: genai.plugin.v1.Embeddings.Embeddings:output_type -> genai.plugin.v1.EmbeddingsResponse
+	39, // [39:45] is the sub-list for method output_type
+	33, // [33:39] is the sub-list for method input_type
 	33, // [33:33] is the sub-list for extension type_name
 	33, // [33:33] is the sub-list for extension extendee
 	0,  // [0:33] is the sub-list for field type_name
@@ -2367,18 +2459,18 @@ func file_genai_plugin_v1_provider_proto_init() {
 	if File_genai_plugin_v1_provider_proto != nil {
 		return
 	}
-	file_genai_plugin_v1_provider_proto_msgTypes[5].OneofWrappers = []any{}
-	file_genai_plugin_v1_provider_proto_msgTypes[11].OneofWrappers = []any{}
+	file_genai_plugin_v1_provider_proto_msgTypes[7].OneofWrappers = []any{}
 	file_genai_plugin_v1_provider_proto_msgTypes[13].OneofWrappers = []any{}
 	file_genai_plugin_v1_provider_proto_msgTypes[15].OneofWrappers = []any{}
-	file_genai_plugin_v1_provider_proto_msgTypes[20].OneofWrappers = []any{}
+	file_genai_plugin_v1_provider_proto_msgTypes[17].OneofWrappers = []any{}
+	file_genai_plugin_v1_provider_proto_msgTypes[22].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_genai_plugin_v1_provider_proto_rawDesc), len(file_genai_plugin_v1_provider_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   26,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

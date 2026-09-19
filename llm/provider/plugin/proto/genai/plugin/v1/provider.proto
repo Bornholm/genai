@@ -8,9 +8,17 @@ option go_package = "github.com/bornholm/genai/llm/provider/plugin/proto/genai/p
 
 // Provider is served by every plugin binary. It describes what the plugin can
 // do and instantiates configured clients.
+//
+// Compatibility: protocol.ProtocolVersion must be bumped on every change that
+// an older host or plugin cannot handle (removed or renumbered fields, changed
+// semantics). protocol.ProtoChecksum pins this file so that a change to it
+// fails a test until both are looked at.
 service Provider {
   rpc Describe(DescribeRequest) returns (DescribeResponse);
   rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+  // Release frees a configured client. A host calls it when it is done with
+  // a client so that a long-lived plugin process does not accumulate them.
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
 }
 
 // ChatCompletion mirrors llm.ChatCompletionClient and
@@ -49,6 +57,12 @@ message ConfigureRequest {
 message ConfigureResponse {
   string client_id = 1;
 }
+
+message ReleaseRequest {
+  string client_id = 1;
+}
+
+message ReleaseResponse {}
 
 enum Role {
   ROLE_UNSPECIFIED = 0;
@@ -104,7 +118,9 @@ message ToolCall {
 }
 
 // Message is the wire form of every llm.Message implementation. The fields
-// that are set decide which constructor the receiving side uses.
+// that are set decide which constructor the receiving side uses. Tool call
+// and reasoning messages carry no attachments in llm, so none travel for
+// them either.
 message Message {
   Role role = 1;
   string content = 2;
@@ -187,6 +203,8 @@ message ChatCompletionResponse {
 enum StreamChunkType {
   STREAM_CHUNK_TYPE_UNSPECIFIED = 0;
   STREAM_CHUNK_TYPE_DELTA = 1;
+  // Mirrors llm.StreamChunkTypeUsage, which no llm constructor produces: the
+  // host rebuilds such a chunk as a delta carrying the usage.
   STREAM_CHUNK_TYPE_USAGE = 2;
   STREAM_CHUNK_TYPE_ERROR = 3;
   STREAM_CHUNK_TYPE_COMPLETE = 4;

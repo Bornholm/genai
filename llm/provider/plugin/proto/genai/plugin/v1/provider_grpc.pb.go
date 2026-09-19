@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	Provider_Describe_FullMethodName  = "/genai.plugin.v1.Provider/Describe"
 	Provider_Configure_FullMethodName = "/genai.plugin.v1.Provider/Configure"
+	Provider_Release_FullMethodName   = "/genai.plugin.v1.Provider/Release"
 )
 
 // ProviderClient is the client API for Provider service.
@@ -29,9 +30,17 @@ const (
 //
 // Provider is served by every plugin binary. It describes what the plugin can
 // do and instantiates configured clients.
+//
+// Compatibility: protocol.ProtocolVersion must be bumped on every change that
+// an older host or plugin cannot handle (removed or renumbered fields, changed
+// semantics). protocol.ProtoChecksum pins this file so that a change to it
+// fails a test until both are looked at.
 type ProviderClient interface {
 	Describe(ctx context.Context, in *DescribeRequest, opts ...grpc.CallOption) (*DescribeResponse, error)
 	Configure(ctx context.Context, in *ConfigureRequest, opts ...grpc.CallOption) (*ConfigureResponse, error)
+	// Release frees a configured client. A host calls it when it is done with
+	// a client so that a long-lived plugin process does not accumulate them.
+	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error)
 }
 
 type providerClient struct {
@@ -62,15 +71,33 @@ func (c *providerClient) Configure(ctx context.Context, in *ConfigureRequest, op
 	return out, nil
 }
 
+func (c *providerClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseResponse)
+	err := c.cc.Invoke(ctx, Provider_Release_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ProviderServer is the server API for Provider service.
 // All implementations must embed UnimplementedProviderServer
 // for forward compatibility.
 //
 // Provider is served by every plugin binary. It describes what the plugin can
 // do and instantiates configured clients.
+//
+// Compatibility: protocol.ProtocolVersion must be bumped on every change that
+// an older host or plugin cannot handle (removed or renumbered fields, changed
+// semantics). protocol.ProtoChecksum pins this file so that a change to it
+// fails a test until both are looked at.
 type ProviderServer interface {
 	Describe(context.Context, *DescribeRequest) (*DescribeResponse, error)
 	Configure(context.Context, *ConfigureRequest) (*ConfigureResponse, error)
+	// Release frees a configured client. A host calls it when it is done with
+	// a client so that a long-lived plugin process does not accumulate them.
+	Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error)
 	mustEmbedUnimplementedProviderServer()
 }
 
@@ -86,6 +113,9 @@ func (UnimplementedProviderServer) Describe(context.Context, *DescribeRequest) (
 }
 func (UnimplementedProviderServer) Configure(context.Context, *ConfigureRequest) (*ConfigureResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Configure not implemented")
+}
+func (UnimplementedProviderServer) Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Release not implemented")
 }
 func (UnimplementedProviderServer) mustEmbedUnimplementedProviderServer() {}
 func (UnimplementedProviderServer) testEmbeddedByValue()                  {}
@@ -144,6 +174,24 @@ func _Provider_Configure_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Provider_Release_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ProviderServer).Release(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Provider_Release_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ProviderServer).Release(ctx, req.(*ReleaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Provider_ServiceDesc is the grpc.ServiceDesc for Provider service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -158,6 +206,10 @@ var Provider_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Configure",
 			Handler:    _Provider_Configure_Handler,
+		},
+		{
+			MethodName: "Release",
+			Handler:    _Provider_Release_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

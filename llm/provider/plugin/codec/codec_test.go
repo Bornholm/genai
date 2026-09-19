@@ -6,6 +6,8 @@ import (
 
 	"github.com/bornholm/genai/llm"
 	pkgerrors "github.com/pkg/errors"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestMessageRoundTrip(t *testing.T) {
@@ -20,6 +22,7 @@ func TestMessageRoundTrip(t *testing.T) {
 		llm.NewMessage(llm.RoleSystem, "sys"),
 		llm.NewMessageWithCacheControl(llm.RoleUser, "cached", &llm.CacheControl{Type: "ephemeral", TTL: &ttl}),
 		llm.NewMultimodalMessage(llm.RoleUser, "look", image),
+		llm.NewMultimodalMessageWithCacheControl(llm.RoleUser, "cached look", &llm.CacheControl{Type: "ephemeral", TTL: &ttl}, image),
 		llm.NewAssistantReasoningMessage("answer", "thought", details),
 		llm.NewReasoningToolCallsMessageWithContent("calling", "why", details, llm.NewToolCall("c1", "tool", `{"a":1}`)),
 		llm.NewToolMessage("c1", llm.NewToolResult("result", image)),
@@ -272,6 +275,15 @@ func TestErrorRoundTrip(t *testing.T) {
 		}
 	}
 
+	wrapped := ErrorFromProto(ErrorToProto(pkgerrors.Wrap(llm.ErrNoMessage, "provider acme")))
+	if !errors.Is(wrapped, llm.ErrNoMessage) || wrapped.Error() != "provider acme: no message" {
+		t.Errorf("context around the sentinel was lost: %q", wrapped.Error())
+	}
+	plain := ErrorFromProto(ErrorToProto(llm.NewHTTPError(500, "oops")))
+	if plain.Error() != "http 500: oops" {
+		t.Errorf("message duplicated: %q", plain.Error())
+	}
+
 	if ErrorToProto(nil) != nil || ErrorFromProto(nil) != nil {
 		t.Error("nil should stay nil")
 	}
@@ -280,5 +292,13 @@ func TestErrorRoundTrip(t *testing.T) {
 	decoded := ErrorFromStatus(ErrorToStatus(llm.RateLimitError(429, "slow")))
 	if !llm.IsRetryable(decoded) || !errors.Is(decoded, llm.ErrRateLimit) {
 		t.Errorf("status round trip lost the error: %v", decoded)
+	}
+
+	// A bare status without typed detail, from a plugin not built with the SDK.
+	if err := ErrorFromStatus(status.Error(codes.ResourceExhausted, "429")); !errors.Is(err, llm.ErrRateLimit) || !llm.IsRetryable(err) {
+		t.Errorf("ResourceExhausted should map to ErrRateLimit, got %v", err)
+	}
+	if err := ErrorFromStatus(status.Error(codes.NotFound, "unknown client")); !errors.Is(err, llm.ErrUnavailable) {
+		t.Errorf("NotFound should map to ErrUnavailable, got %v", err)
 	}
 }

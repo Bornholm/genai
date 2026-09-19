@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"io"
 	"strconv"
 	"sync"
 	"time"
@@ -22,6 +23,8 @@ type server struct {
 	pluginv1.UnimplementedProviderServer
 	cfg Config
 
+	// mu guards the maps only. Factories run outside of it: loading a model
+	// for a second client must not freeze the requests of the first.
 	mu         sync.RWMutex
 	nextID     int
 	chat       map[string]llm.ChatCompletionClient
@@ -55,12 +58,6 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		opts = Options{}
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.nextID++
-	id := strconv.Itoa(s.nextID)
-
 	switch req.GetCapability() {
 	case pluginv1.Capability_CAPABILITY_CHAT_COMPLETION:
 		if s.cfg.ChatCompletion == nil {
@@ -70,7 +67,11 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		if err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
+		s.mu.Lock()
+		id := s.allocateID()
 		s.chat[id] = client
+		s.mu.Unlock()
+		return &pluginv1.ConfigureResponse{ClientId: id}, nil
 
 	case pluginv1.Capability_CAPABILITY_EMBEDDINGS:
 		if s.cfg.Embeddings == nil {
@@ -80,13 +81,46 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		if err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
+		s.mu.Lock()
+		id := s.allocateID()
 		s.embeddings[id] = client
+		s.mu.Unlock()
+		return &pluginv1.ConfigureResponse{ClientId: id}, nil
 
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown capability %q", req.GetCapability().String())
 	}
+}
 
-	return &pluginv1.ConfigureResponse{ClientId: id}, nil
+// allocateID must be called with mu held for writing.
+func (s *server) allocateID() string {
+	s.nextID++
+	return strconv.Itoa(s.nextID)
+}
+
+// Release implements pluginv1.ProviderServer. A client implementing io.Closer
+// is closed, which is how a provider holding a model frees it.
+func (s *server) Release(ctx context.Context, req *pluginv1.ReleaseRequest) (*pluginv1.ReleaseResponse, error) {
+	s.mu.Lock()
+	var client any
+	if c, ok := s.chat[req.GetClientId()]; ok {
+		client = c
+		delete(s.chat, req.GetClientId())
+	} else if c, ok := s.embeddings[req.GetClientId()]; ok {
+		client = c
+		delete(s.embeddings, req.GetClientId())
+	}
+	s.mu.Unlock()
+
+	if client == nil {
+		return nil, status.Errorf(codes.NotFound, "unknown client %q", req.GetClientId())
+	}
+	if closer, ok := client.(io.Closer); ok {
+		if err := closer.Close(); err != nil {
+			return nil, codec.ErrorToStatus(err)
+		}
+	}
+	return &pluginv1.ReleaseResponse{}, nil
 }
 
 func (s *server) chatCompletionServer() pluginv1.ChatCompletionServer {

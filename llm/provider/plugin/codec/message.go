@@ -250,12 +250,23 @@ func MessageToProto(message llm.Message) (*pluginv1.Message, error) {
 }
 
 // MessageFromProto rebuilds a message, choosing the llm constructor from the
-// fields that are set.
+// fields that are set. Tool call and reasoning messages cannot carry
+// attachments in llm (their Attachments() is nil), so the wire form never
+// has any for them; every other combination is preserved.
 func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 	role := RoleFromProto(message.GetRole())
 	attachments, err := attachmentsFromProto(message.GetAttachments())
 	if err != nil {
 		return nil, errors.WithStack(err)
+	}
+
+	var cacheControl *llm.CacheControl
+	if cc := message.GetCacheControl(); cc != nil {
+		cacheControl = &llm.CacheControl{Type: cc.GetType()}
+		if cc.Ttl != nil {
+			ttl := cc.GetTtl()
+			cacheControl.TTL = &ttl
+		}
 	}
 
 	switch {
@@ -277,16 +288,14 @@ func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 			reasoningDetailsFromProto(message.GetReasoningDetails()),
 		), nil
 
+	case len(attachments) > 0 && cacheControl != nil:
+		return llm.NewMultimodalMessageWithCacheControl(role, message.GetContent(), cacheControl, attachments...), nil
+
 	case len(attachments) > 0:
 		return llm.NewMultimodalMessage(role, message.GetContent(), attachments...), nil
 
-	case message.GetCacheControl() != nil:
-		control := &llm.CacheControl{Type: message.GetCacheControl().GetType()}
-		if message.GetCacheControl().Ttl != nil {
-			ttl := message.GetCacheControl().GetTtl()
-			control.TTL = &ttl
-		}
-		return llm.NewMessageWithCacheControl(role, message.GetContent(), control), nil
+	case cacheControl != nil:
+		return llm.NewMessageWithCacheControl(role, message.GetContent(), cacheControl), nil
 
 	default:
 		return llm.NewMessage(role, message.GetContent()), nil

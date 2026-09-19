@@ -385,6 +385,15 @@ func NewMultimodalMessage(role Role, content string, attachments ...Attachment) 
 	}
 }
 
+// NewMultimodalMessageWithCacheControl creates a message carrying both
+// attachments and a cache control hint, as a cached prompt with an image
+// needs.
+func NewMultimodalMessageWithCacheControl(role Role, content string, cacheControl *CacheControl, attachments ...Attachment) *MultimodalMessage {
+	message := NewMultimodalMessage(role, content, attachments...)
+	message.cacheControl = cacheControl
+	return message
+}
+
 // NewMessageWithAttachments creates a new message with attachments (alias for NewMultimodalMessage)
 func NewMessageWithAttachments(role Role, content string, attachments ...Attachment) *MultimodalMessage {
 	return NewMultimodalMessage(role, content, attachments...)

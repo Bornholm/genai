@@ -56,19 +56,38 @@ func ErrorFromProto(e *pluginv1.Error) error {
 		if status == 0 {
 			status = 429
 		}
-		return errors.WithStack(llm.RateLimitError(status, e.GetBody()))
+		return withMessage(llm.RateLimitError(status, e.GetBody()), e.GetMessage())
 	case pluginv1.Error_KIND_HTTP:
-		return errors.WithStack(llm.NewHTTPError(int(e.GetStatusCode()), e.GetBody()))
+		return withMessage(llm.NewHTTPError(int(e.GetStatusCode()), e.GetBody()), e.GetMessage())
 	case pluginv1.Error_KIND_NO_MESSAGE:
-		return errors.WithStack(llm.ErrNoMessage)
+		return withMessage(llm.ErrNoMessage, e.GetMessage())
 	case pluginv1.Error_KIND_UNAVAILABLE:
-		return errors.Wrap(llm.ErrUnavailable, e.GetMessage())
+		return withMessage(llm.ErrUnavailable, e.GetMessage())
 	case pluginv1.Error_KIND_VALIDATION:
 		return llm.NewValidationError(e.GetField(), e.GetMessage())
 	default:
 		return errors.New(e.GetMessage())
 	}
 }
+
+// withMessage keeps the text the plugin side produced around a typed error
+// (provider name, failing call) while errors.Is and errors.As still reach the
+// rebuilt typed error underneath.
+func withMessage(err error, message string) error {
+	if message == "" || message == err.Error() {
+		return errors.WithStack(err)
+	}
+	return errors.WithStack(&wireError{message: message, err: err})
+}
+
+// wireError is a typed error whose text is the one that crossed the wire.
+type wireError struct {
+	message string
+	err     error
+}
+
+func (e *wireError) Error() string { return e.message }
+func (e *wireError) Unwrap() error { return e.err }
 
 // ErrorToStatus wraps an error into a gRPC status carrying its typed form as
 // a detail, for unary RPCs. Context errors keep their gRPC code so that the
@@ -111,11 +130,17 @@ func ErrorFromStatus(err error) error {
 			return ErrorFromProto(typed)
 		}
 	}
+	// No typed detail: a plugin not built with the SDK, or a failure of the
+	// transport itself. Map what the gRPC code alone says.
 	switch st.Code() {
 	case codes.Unavailable:
 		return errors.Wrap(llm.ErrUnavailable, st.Message())
-	case codes.Canceled:
-		return errors.WithStack(err)
+	case codes.NotFound:
+		// The plugin does not know the client: it restarted since it was
+		// configured.
+		return errors.Wrap(llm.ErrUnavailable, st.Message())
+	case codes.ResourceExhausted:
+		return errors.Wrap(llm.ErrRateLimit, st.Message())
 	default:
 		return errors.WithStack(err)
 	}

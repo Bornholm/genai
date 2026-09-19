@@ -16,7 +16,14 @@ import (
 const PluginName = "provider"
 
 // ProtocolVersion is bumped on every incompatible change to provider.proto.
+// A mismatch between host and plugin surfaces as a handshake error rather
+// than as opaque gRPC failures.
 const ProtocolVersion = 1
+
+// ProtoChecksum is the SHA-256 of provider.proto at the time ProtocolVersion
+// was last reviewed. A test compares it to the file: editing the proto means
+// updating this constant, and deciding whether the change is compatible.
+const ProtoChecksum = "8e1c0f80185ec2457b1c81110f13a9f889494fb3d0ad78ffed14f9329baede15"
 
 // MaxMessageSize bounds a single gRPC message in both directions. Attachments
 // travel base64 encoded inside messages, so the default 4 MiB is too small.

@@ -23,9 +23,10 @@ var (
 	searchDir   = os.Getenv(SearchDirEnv)
 )
 
-// SetSearchDir sets the directory searched before the PATH. It must be called
-// before the provider options are resolved, since resolution is what triggers
-// the lookup.
+// SetSearchDir sets the directory searched before the PATH, and enables the
+// registry fallback: with no directory set, unknown provider names stay
+// unknown and no binary is run. It must be called before the provider
+// options are resolved, since resolution is what triggers the lookup.
 func SetSearchDir(dir string) {
 	searchDirMu.Lock()
 	defer searchDirMu.Unlock()

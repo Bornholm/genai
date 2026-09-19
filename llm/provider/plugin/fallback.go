@@ -4,6 +4,12 @@
 // looked up as a genai-provider-<name> binary in the plugin directory
 // (GENAI_PLUGIN_DIR or SetSearchDir) and then in the PATH.
 //
+// The fallback is inactive until a plugin directory is set. Setting it is
+// the opt-in: from then on an unknown provider name runs a binary, which
+// receives every variable under the provider prefix, API keys included. The
+// directory and the PATH are trusted as much as the host binary itself; the
+// handshake only guards against running the wrong kind of program.
+//
 // Every environment variable under the provider prefix is forwarded verbatim
 // to the plugin, which validates them with its own option struct:
 //
@@ -81,7 +87,7 @@ func init() {
 }
 
 func fallback(capability provider.Capability, name provider.Name) (*provider.FallbackEntry, bool) {
-	if !IsValidName(name) {
+	if SearchDir() == "" || !IsValidName(name) {
 		return nil, false
 	}
 
