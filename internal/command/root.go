@@ -7,6 +7,8 @@ import (
 	"sort"
 
 	"github.com/bornholm/genai/internal/logx"
+	"github.com/bornholm/genai/llm/provider/plugin"
+	"github.com/hashicorp/go-hclog"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 )
@@ -26,18 +28,26 @@ func Main(name string, version string, usage string, commands ...*cli.Command) {
 				}
 			}
 
+			if pluginDir := ctx.String("plugin-dir"); pluginDir != "" {
+				plugin.SetSearchDir(pluginDir)
+			}
+
 			logLevel := ctx.String("log-level")
 			slogLevel := slog.LevelWarn
+			plugin.LogLevel = hclog.Warn
 
 			switch logLevel {
 			case "debug":
 				slogLevel = slog.LevelDebug
+				plugin.LogLevel = hclog.Debug
 			case "info":
 				slogLevel = slog.LevelInfo
+				plugin.LogLevel = hclog.Info
 			case "warn":
 				slogLevel = slog.LevelWarn
 			case "error":
 				slogLevel = slog.LevelError
+				plugin.LogLevel = hclog.Error
 			}
 
 			logger := slog.New(logx.ContextHandler{
@@ -67,6 +77,11 @@ func Main(name string, version string, usage string, commands ...*cli.Command) {
 				Usage:   "Set logging level",
 				Value:   "info",
 			},
+			&cli.StringFlag{
+				Name:    "plugin-dir",
+				EnvVars: []string{plugin.SearchDirEnv},
+				Usage:   "Directory searched for provider plugins (genai-provider-<name>) before the PATH",
+			},
 		},
 	}
 
@@ -87,7 +102,9 @@ func Main(name string, version string, usage string, commands ...*cli.Command) {
 	sort.Sort(cli.FlagsByName(app.Flags))
 	sort.Sort(cli.CommandsByName(app.Commands))
 
-	if err := app.Run(os.Args); err != nil {
+	err := app.Run(os.Args)
+	plugin.CleanupClients()
+	if err != nil {
 		os.Exit(1)
 	}
 }

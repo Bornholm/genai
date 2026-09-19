@@ -26,11 +26,94 @@ type providerEntry struct {
 	createClient func(ctx context.Context, opts any) (any, error)
 }
 
+// Capability names one of the client kinds a provider can offer.
+type Capability string
+
+const (
+	CapabilityChatCompletion  Capability = "chat_completion"
+	CapabilityEmbeddings      Capability = "embeddings"
+	CapabilityTranscription   Capability = "transcription"
+	CapabilityImageGeneration Capability = "image_generation"
+)
+
+// FallbackEntry is what a FallbackFunc returns for a provider it can serve.
+// NewOptions must return a non-nil pointer to a struct; CreateClient receives
+// that pointer back, populated, and returns a client implementing the
+// interface of the requested capability.
+type FallbackEntry struct {
+	NewOptions   func() any
+	CreateClient func(ctx context.Context, opts any) (any, error)
+}
+
+// FallbackFunc resolves a provider name that no in-process registration
+// covers. It is how dynamically loaded providers plug into the registry: the
+// registry asks each fallback, in registration order, and uses the first one
+// that answers.
+type FallbackFunc func(capability Capability, name Name) (*FallbackEntry, bool)
+
+// RawEnvConsumer is implemented by option types that want every environment
+// variable under their provider prefix, not only the ones matching a struct
+// field. A dynamically loaded provider validates its own options, so the host
+// forwards them verbatim.
+type RawEnvConsumer interface {
+	SetRawEnv(vars map[string]string)
+}
+
 type Registry struct {
 	chatCompletionEntries  map[Name]providerEntry
 	embeddingsEntries      map[Name]providerEntry
 	transcriptionEntries   map[Name]providerEntry
 	imageGenerationEntries map[Name]providerEntry
+	fallbacks              []FallbackFunc
+}
+
+// RegisterFallback adds a resolver consulted for provider names that have no
+// in-process registration, in the global registry.
+func RegisterFallback(fn FallbackFunc) {
+	defaultRegistry.fallbacks = append(defaultRegistry.fallbacks, fn)
+}
+
+func (r *Registry) entries(capability Capability) map[Name]providerEntry {
+	switch capability {
+	case CapabilityChatCompletion:
+		return r.chatCompletionEntries
+	case CapabilityEmbeddings:
+		return r.embeddingsEntries
+	case CapabilityTranscription:
+		return r.transcriptionEntries
+	case CapabilityImageGeneration:
+		return r.imageGenerationEntries
+	default:
+		return nil
+	}
+}
+
+// lookup finds the entry for a provider, in-process registrations first, then
+// fallbacks in registration order.
+func (r *Registry) lookup(capability Capability, name Name) (providerEntry, bool) {
+	if entry, ok := r.entries(capability)[name]; ok {
+		return entry, true
+	}
+	for _, fn := range r.fallbacks {
+		fallback, ok := fn(capability, name)
+		if !ok || fallback == nil {
+			continue
+		}
+		return providerEntry{
+			newOptions:   fallback.NewOptions,
+			createClient: fallback.CreateClient,
+		}, true
+	}
+	return providerEntry{}, false
+}
+
+// newOptions returns a fresh options value for the provider, or nil when it is
+// unknown to both the in-process registrations and the fallbacks.
+func (r *Registry) newOptions(capability Capability, name Name) any {
+	if entry, ok := r.lookup(capability, name); ok {
+		return entry.newOptions()
+	}
+	return nil
 }
 
 // RegisterChatCompletion enregistre un provider de chat completion dans le registry global.
@@ -94,37 +177,25 @@ func RegisterImageGeneration[T any](
 // NewImageGenerationProviderOptions retourne une instance d'options (avec les defaults)
 // pour le provider de génération d'images donné, ou nil si le provider n'est pas enregistré.
 func NewImageGenerationProviderOptions(name Name) any {
-	if entry, ok := defaultRegistry.imageGenerationEntries[name]; ok {
-		return entry.newOptions()
-	}
-	return nil
+	return defaultRegistry.newOptions(CapabilityImageGeneration, name)
 }
 
 // NewChatCompletionProviderOptions retourne une instance d'options (avec les defaults)
 // pour le provider de chat completion donné, ou nil si le provider n'est pas enregistré.
 func NewChatCompletionProviderOptions(name Name) any {
-	if entry, ok := defaultRegistry.chatCompletionEntries[name]; ok {
-		return entry.newOptions()
-	}
-	return nil
+	return defaultRegistry.newOptions(CapabilityChatCompletion, name)
 }
 
 // NewEmbeddingsProviderOptions retourne une instance d'options (avec les defaults)
 // pour le provider d'embeddings donné, ou nil si le provider n'est pas enregistré.
 func NewEmbeddingsProviderOptions(name Name) any {
-	if entry, ok := defaultRegistry.embeddingsEntries[name]; ok {
-		return entry.newOptions()
-	}
-	return nil
+	return defaultRegistry.newOptions(CapabilityEmbeddings, name)
 }
 
 // NewTranscriptionProviderOptions retourne une instance d'options (avec les defaults)
 // pour le provider de transcription donné, ou nil si le provider n'est pas enregistré.
 func NewTranscriptionProviderOptions(name Name) any {
-	if entry, ok := defaultRegistry.transcriptionEntries[name]; ok {
-		return entry.newOptions()
-	}
-	return nil
+	return defaultRegistry.newOptions(CapabilityTranscription, name)
 }
 
 // Create crée un llm.Client à partir des options résolues.
@@ -134,22 +205,22 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 		return nil, errors.WithStack(err)
 	}
 
-	chatCompletion, err := createClientFromResolved[llm.ChatCompletionClient](ctx, opts.ChatCompletion, r.chatCompletionEntries)
+	chatCompletion, err := createClientFromResolved[llm.ChatCompletionClient](ctx, r, CapabilityChatCompletion, opts.ChatCompletion)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
 
-	embeddings, err := createClientFromResolved[llm.EmbeddingsClient](ctx, opts.Embeddings, r.embeddingsEntries)
+	embeddings, err := createClientFromResolved[llm.EmbeddingsClient](ctx, r, CapabilityEmbeddings, opts.Embeddings)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
 
-	transcription, err := createClientFromResolved[llm.TranscriptionClient](ctx, opts.Transcription, r.transcriptionEntries)
+	transcription, err := createClientFromResolved[llm.TranscriptionClient](ctx, r, CapabilityTranscription, opts.Transcription)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
 
-	imageGeneration, err := createClientFromResolved[llm.ImageGenerationClient](ctx, opts.ImageGeneration, r.imageGenerationEntries)
+	imageGeneration, err := createClientFromResolved[llm.ImageGenerationClient](ctx, r, CapabilityImageGeneration, opts.ImageGeneration)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
@@ -164,8 +235,9 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 // createClientFromResolved crée un client T à partir des options résolues.
 func createClientFromResolved[T any](
 	ctx context.Context,
+	r *Registry,
+	capability Capability,
 	resolved *ResolvedClientOptions,
-	entries map[Name]providerEntry,
 ) (T, error) {
 	var zero T
 
@@ -177,7 +249,7 @@ func createClientFromResolved[T any](
 		return zero, llm.NewValidationError("provider", "provider is required")
 	}
 
-	entry, exists := entries[resolved.Provider]
+	entry, exists := r.lookup(capability, resolved.Provider)
 	if !exists {
 		return zero, errors.Wrapf(ErrClientNotFound, "could not find client factory for provider '%s'", resolved.Provider)
 	}

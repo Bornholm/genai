@@ -687,6 +687,26 @@ func NewChatCompletionUsageWithCost(promptTokens, completionTokens, totalTokens,
 	}
 }
 
+// NewChatCompletionUsageFull creates a usage carrying every counter a
+// provider can report: cache reads, cache writes and cost. It is what a
+// component rebuilding a usage from a serialized form needs, since the other
+// constructors each cover one combination.
+func NewChatCompletionUsageFull(promptTokens, completionTokens, totalTokens, cachedTokens, cacheCreationTokens int64, cost *float64, currency string) *BaseChatCompletionUsage {
+	usage := &BaseChatCompletionUsage{
+		promptTokens:        promptTokens,
+		completionTokens:    completionTokens,
+		totalTokens:         totalTokens,
+		cachedTokens:        cachedTokens,
+		cacheCreationTokens: cacheCreationTokens,
+	}
+	if cost != nil {
+		c := *cost
+		usage.cost = &c
+		usage.costCurrency = currency
+	}
+	return usage
+}
+
 var _ CostReportingUsage = &BaseChatCompletionUsage{}
 var _ CacheCreationReportingUsage = &BaseChatCompletionUsage{}
 
