@@ -86,10 +86,30 @@ func resolveOptions(
 		if err := env.ParseWithOptions(specificOpts, env.Options{Prefix: providerPrefix}); err != nil {
 			return nil, errors.Wrapf(err, "could not parse options for provider '%s'", clientOpts.Provider)
 		}
+		if consumer, ok := specificOpts.(provider.RawEnvConsumer); ok {
+			consumer.SetRawEnv(rawEnv(providerPrefix))
+		}
 	}
 
 	return &provider.ResolvedClientOptions{
 		Provider: clientOpts.Provider,
 		Specific: specificOpts,
 	}, nil
+}
+
+// rawEnv collects every environment variable starting with prefix, keyed
+// without it.
+func rawEnv(prefix string) map[string]string {
+	vars := map[string]string{}
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		key, value, found := strings.Cut(kv[len(prefix):], "=")
+		if !found || key == "" {
+			continue
+		}
+		vars[key] = value
+	}
+	return vars
 }

@@ -20,6 +20,8 @@ type LLMConfig struct {
 	EnvPrefix                string `yaml:"envPrefix"`
 	TokenLimitChatCompletion int    `yaml:"tokenLimitChatCompletion"`
 	TokenLimitEmbeddings     int    `yaml:"tokenLimitEmbeddings"`
+	// PluginDir is searched for provider plugins before the PATH.
+	PluginDir string `yaml:"pluginDir"`
 }
 
 // AgentConfig contient les paramètres partagés entre les commandes do et a2a.
