@@ -223,8 +223,9 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 	// holds (a plugin client keeps a configured instance, possibly a loaded
 	// model, in its process): close the ones already built on the way out.
 	var created []any
+	success := false
 	defer func() {
-		if err == nil {
+		if success {
 			return
 		}
 		for _, client := range created {
@@ -256,13 +257,13 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
+	created = append(created, imageGeneration)
 
 	if chatCompletion == nil && embeddings == nil && transcription == nil && imageGeneration == nil {
-		err = errors.WithStack(ErrNotConfigured)
-		return nil, err
+		return nil, errors.WithStack(ErrNotConfigured)
 	}
 
-	err = nil
+	success = true
 	return NewClientWithImageGeneration(chatCompletion, embeddings, transcription, imageGeneration), nil
 }
 

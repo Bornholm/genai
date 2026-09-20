@@ -26,8 +26,9 @@
 //	GENAI_CHAT_COMPLETION_PROVIDER=yzma
 //	GENAI_CHAT_COMPLETION_YZMA_MODEL_PATH=/models/qwen.gguf
 //
-// COMMAND overrides the resolved binary path for one capability, and is
-// enough on its own to enable the fallback for that provider:
+// COMMAND overrides the resolved binary path for one capability. From the
+// environment it needs the directory to be set as well; given in code
+// (Options.Command) it enables the fallback on its own:
 //
 //	GENAI_CHAT_COMPLETION_YZMA_COMMAND=/opt/genai/genai-provider-yzma
 package plugin
@@ -42,17 +43,19 @@ import (
 )
 
 // CommandOption is the option key overriding the resolved binary path.
-// Giving it, through the environment (GENAI_CHAT_COMPLETION_<NAME>_COMMAND)
-// or programmatically, enables the fallback for that provider even without
-// a plugin directory.
 const CommandOption = "COMMAND"
 
 // Options is what the registry hands to a plugin provider. Every variable
 // under the provider prefix lands in Env; Command overrides the lookup.
 type Options struct {
+	// Name is the provider name; the registry fills it in, and options built
+	// in code may leave it empty.
 	Name    provider.Name
 	Command string `env:"COMMAND"`
 	Env     map[string]string
+
+	// fromEnv records that the options were populated from the environment.
+	fromEnv bool
 }
 
 var _ provider.RawEnvConsumer = &Options{}
@@ -60,11 +63,13 @@ var _ provider.RawEnvConsumer = &Options{}
 // SetRawEnv implements provider.RawEnvConsumer.
 func (o *Options) SetRawEnv(vars map[string]string) {
 	o.Env = vars
+	o.fromEnv = true
 }
 
-// Validate implements provider.Validator.
+// Validate implements provider.Validator. The name is checked against the
+// provider's when the client is created; here an empty one is fine.
 func (o *Options) Validate() error {
-	if !IsValidName(o.Name) {
+	if o.Name != "" && !IsValidName(o.Name) {
 		return llm.NewValidationError("provider", "invalid plugin provider name")
 	}
 	return nil
@@ -92,8 +97,10 @@ func (o *Options) forwarded() map[string]string {
 }
 
 // NewOptions returns options for the named plugin provider, for programmatic
-// configuration:
+// configuration. The fallback still needs its opt-in: a plugin directory
+// (SetSearchDir or GENAI_PLUGIN_DIR), or a COMMAND entry naming the binary.
 //
+//	plugin.SetSearchDir("/opt/genai/plugins")
 //	provider.WithChatCompletion("acme", plugin.NewOptions("acme", map[string]string{"API_KEY": key}))
 func NewOptions(name provider.Name, env map[string]string) Options {
 	return Options{Name: name, Env: env}
@@ -104,12 +111,15 @@ func init() {
 }
 
 // enabled reports whether the fallback answers at all: once a plugin
-// directory is set, or when the options name a binary through COMMAND.
+// directory is set, or when the options were built in code with a COMMAND.
+// A COMMAND arriving through the environment does not count on its own: a
+// .env file can set it, and setting the directory is what turns
+// configuration sources into a way to run binaries.
 func enabled(opts *Options) bool {
 	if SearchDir() != "" {
 		return true
 	}
-	return opts != nil && (opts.Command != "" || opts.Env[CommandOption] != "")
+	return opts != nil && opts.Command != "" && !opts.fromEnv
 }
 
 // pluginOptions checks the options the registry hands over. The fallback
@@ -125,13 +135,16 @@ func pluginOptions(name provider.Name, opts any) (*Options, error) {
 		o = *v
 	}
 	if o == nil {
-		return nil, llm.NewValidationError("provider", fmt.Sprintf("provider %q is served by a plugin and takes plugin.Options, not %T", name, opts))
+		return nil, llm.NewValidationError("provider", fmt.Sprintf("provider %q has no in-process registration (missing import?) and, as a plugin, takes plugin.Options, not %T", name, opts))
 	}
 	if o.Name != "" && o.Name != name {
 		return nil, llm.NewValidationError("provider", fmt.Sprintf("options for plugin %q were given to provider %q", o.Name, name))
 	}
+	if o.Name == "" {
+		o.Name = name
+	}
 	if !enabled(o) {
-		return nil, errors.Wrapf(ErrPluginNotFound, "provider %q is unknown and no plugin directory is set", name)
+		return nil, errors.Wrapf(ErrPluginNotFound, "provider %q has no in-process registration and no plugin directory is set", name)
 	}
 	return o, nil
 }

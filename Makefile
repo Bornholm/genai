@@ -21,7 +21,7 @@ release:
 	goreleaser $(GORELEASER_ARGS)
 
 test:
-	$(MAKE) run-with-env CMD="go test -v ./..."
+	$(MAKE) run-with-env CMD="go test -v ./... ./plugin/sdk/..."
 
 tools/modd/bin/modd:
 	mkdir -p tools/modd/bin

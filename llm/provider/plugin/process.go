@@ -81,6 +81,10 @@ func (p *Process) supports(capability pluginv1.Capability) bool {
 	return false
 }
 
+// The timeouts below are plain variables, read without synchronization:
+// set them before the first plugin call, as the CLI does, not while calls
+// are in flight.
+
 // StartTimeout bounds the start of a plugin process (handshake and
 // Describe): a binary that never answers fails instead of hanging the host.
 var StartTimeout = 30 * time.Second

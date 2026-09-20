@@ -287,6 +287,9 @@ func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 		result = llm.NewToolMessage(message.GetToolCallId(), llm.NewToolResult(message.GetContent(), attachments...))
 
 	case role == llm.RoleToolCalls || len(message.GetToolCalls()) > 0:
+		if len(attachments) > 0 {
+			return nil, errors.New("a tool calls message cannot carry attachments")
+		}
 		if message.GetReasoning() != "" || len(message.GetReasoningDetails()) > 0 {
 			result = llm.NewReasoningToolCallsMessageWithContent(
 				message.GetContent(),
@@ -299,6 +302,9 @@ func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 		}
 
 	case message.GetReasoning() != "" || len(message.GetReasoningDetails()) > 0:
+		if len(attachments) > 0 {
+			return nil, errors.New("a reasoning message cannot carry attachments")
+		}
 		result = llm.NewAssistantReasoningMessage(
 			message.GetContent(),
 			message.GetReasoning(),

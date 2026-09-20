@@ -20,7 +20,8 @@ type LLMConfig struct {
 	EnvPrefix                string `yaml:"envPrefix"`
 	TokenLimitChatCompletion int    `yaml:"tokenLimitChatCompletion"`
 	TokenLimitEmbeddings     int    `yaml:"tokenLimitEmbeddings"`
-	// PluginDir is searched for provider plugins before the PATH.
+	// PluginDir is the only directory searched for provider plugins
+	// (genai-provider-<name>); the PATH is never consulted.
 	PluginDir string `yaml:"pluginDir"`
 }
 

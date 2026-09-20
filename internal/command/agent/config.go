@@ -138,6 +138,8 @@ func loadBaseConfig(r *cfgResolver) baseConfig {
 	})
 	// The plugin directory is only known globally (--plugin-dir); the YAML
 	// config may still set it, and must do so before the provider is resolved.
+	// This is process-wide state, acceptable here: internal/command is the
+	// CLI binary, not a library.
 	if r.yamlCfg != nil && r.yamlCfg.LLM != nil && r.yamlCfg.LLM.PluginDir != "" && !r.cliCtx.IsSet("plugin-dir") {
 		plugin.SetSearchDir(r.yamlCfg.LLM.PluginDir)
 	}

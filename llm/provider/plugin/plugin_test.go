@@ -471,14 +471,20 @@ func TestWrongOptionsTypeIsAnError(t *testing.T) {
 	}
 }
 
-func TestCommandAloneEnablesFallback(t *testing.T) {
+func TestCommandFromEnvNeedsDirectory(t *testing.T) {
 	dir := SearchDir()
 	SetSearchDir("")
 	t.Cleanup(func() { SetSearchDir(dir) })
 	t.Setenv("CMDTEST_CHAT_COMPLETION_PROVIDER", "test")
 	t.Setenv("CMDTEST_CHAT_COMPLETION_TEST_COMMAND", testPluginPath)
-	t.Setenv("CMDTEST_CHAT_COMPLETION_TEST_MODEL", "cmd")
 
+	if _, err := provider.Create(context.Background(), env.With("CMDTEST_")); !errors.Is(err, ErrPluginNotFound) {
+		t.Errorf("a COMMAND from the environment must not run a binary without a plugin directory, got %v", err)
+	}
+
+	// With the directory set, COMMAND overrides the lookup.
+	SetSearchDir(t.TempDir())
+	t.Setenv("CMDTEST_CHAT_COMPLETION_TEST_MODEL", "cmd")
 	client, err := provider.Create(context.Background(), env.With("CMDTEST_"))
 	if err != nil {
 		t.Fatalf("could not create client: %+v", err)
@@ -539,22 +545,6 @@ func TestStreamFromCompletionOnlyClient(t *testing.T) {
 	}
 }
 
-func TestCommandAloneEnablesFallbackWithoutPrefix(t *testing.T) {
-	dir := SearchDir()
-	SetSearchDir("")
-	t.Cleanup(func() { SetSearchDir(dir) })
-	t.Setenv("CHAT_COMPLETION_PROVIDER", "test")
-	t.Setenv("CHAT_COMPLETION_TEST_COMMAND", testPluginPath)
-
-	client, err := provider.Create(context.Background(), env.With(""))
-	if err != nil {
-		t.Fatalf("could not create client with an empty prefix: %+v", err)
-	}
-	if _, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi"))); err != nil {
-		t.Fatalf("unexpected error: %+v", err)
-	}
-}
-
 func TestProviderPanicDoesNotKillPlugin(t *testing.T) {
 	panicking := newTestChatClient(t, map[string]string{"PANIC": "true"})
 	healthy := newTestChatClient(t, map[string]string{"MODEL": "ok"})
@@ -591,9 +581,9 @@ func TestCommandAloneEnablesFallbackProgrammatically(t *testing.T) {
 	SetSearchDir("")
 	t.Cleanup(func() { SetSearchDir(dir) })
 
-	client, err := provider.Create(context.Background(),
-		provider.WithChatCompletion(provider.Name("test"), NewOptions("test", map[string]string{CommandOption: testPluginPath, "MODEL": "prog-cmd"})),
-	)
+	opts := NewOptions("test", map[string]string{"MODEL": "prog-cmd"})
+	opts.Command = testPluginPath
+	client, err := provider.Create(context.Background(), provider.WithChatCompletion(provider.Name("test"), opts))
 	if err != nil {
 		t.Fatalf("could not create client: %+v", err)
 	}
@@ -681,5 +671,21 @@ func TestOptionsNameMustMatchProvider(t *testing.T) {
 	var validationErr llm.ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Errorf("expected a validation error for a mismatched name, got %v", err)
+	}
+}
+
+func TestValueOptionsWithoutName(t *testing.T) {
+	client, err := provider.Create(context.Background(),
+		provider.WithChatCompletion(provider.Name("test"), Options{Env: map[string]string{"MODEL": "noname"}}),
+	)
+	if err != nil {
+		t.Fatalf("options without a name should be accepted, got %+v", err)
+	}
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	if res.Message().Content() != "echo(noname): hi" {
+		t.Errorf("unexpected content %q", res.Message().Content())
 	}
 }

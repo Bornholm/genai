@@ -420,3 +420,13 @@ func TestDeltaChunkWithoutDeltaIsAnError(t *testing.T) {
 		t.Error("expected an error for a delta chunk without delta")
 	}
 }
+
+func TestAttachmentsOnReasoningMessagesAreErrors(t *testing.T) {
+	attachment := &pluginv1.Attachment{Type: pluginv1.AttachmentType_ATTACHMENT_TYPE_IMAGE, MimeType: "image/png", Source: pluginv1.AttachmentSource_ATTACHMENT_SOURCE_URL, Data: "https://example.com/a.png"}
+	if _, err := MessageFromProto(&pluginv1.Message{Role: pluginv1.Role_ROLE_ASSISTANT, Reasoning: "why", Attachments: []*pluginv1.Attachment{attachment}}); err == nil {
+		t.Error("expected an error for attachments on a reasoning message")
+	}
+	if _, err := MessageFromProto(&pluginv1.Message{Role: pluginv1.Role_ROLE_TOOL_CALLS, ToolCalls: []*pluginv1.ToolCall{{Id: "c", Name: "t"}}, Attachments: []*pluginv1.Attachment{attachment}}); err == nil {
+		t.Error("expected an error for attachments on a tool calls message")
+	}
+}

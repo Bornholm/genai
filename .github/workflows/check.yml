@@ -23,7 +23,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Build
-        run: go build -v ./...
+        run: go build -v ./... ./plugin/sdk/...
 
   test:
     strategy:
@@ -41,4 +41,4 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
-        run: go test ./...
+        run: go test ./... ./plugin/sdk/...
