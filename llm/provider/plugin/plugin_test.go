@@ -521,3 +521,50 @@ func TestStreamFromCompletionOnlyClient(t *testing.T) {
 		t.Errorf("unexpected reconstruction: %q %q %q", content, reasoning, params)
 	}
 }
+
+func TestCommandAloneEnablesFallbackWithoutPrefix(t *testing.T) {
+	dir := SearchDir()
+	SetSearchDir("")
+	t.Cleanup(func() { SetSearchDir(dir) })
+	t.Setenv("CHAT_COMPLETION_PROVIDER", "test")
+	t.Setenv("CHAT_COMPLETION_TEST_COMMAND", testPluginPath)
+
+	client, err := provider.Create(context.Background(), env.With(""))
+	if err != nil {
+		t.Fatalf("could not create client with an empty prefix: %+v", err)
+	}
+	if _, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi"))); err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+}
+
+func TestProviderPanicDoesNotKillPlugin(t *testing.T) {
+	panicking := newTestChatClient(t, map[string]string{"PANIC": "true"})
+	healthy := newTestChatClient(t, map[string]string{"MODEL": "ok"})
+
+	_, err := panicking.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if err == nil || !strings.Contains(err.Error(), "provider panicked") {
+		t.Errorf("expected a panic reported as an error, got %v", err)
+	}
+	if panicking.Process().Exited() {
+		t.Fatal("the plugin process died on a provider panic")
+	}
+	if _, err := healthy.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi"))); err != nil {
+		t.Errorf("the other client on the same process broke: %+v", err)
+	}
+}
+
+func TestCancelledCallerDoesNotWaitForSetup(t *testing.T) {
+	client := newTestChatClient(t, map[string]string{"MODEL": "m"})
+	// Hold the setup slot as a reconfiguration in progress would.
+	client.session.setup <- struct{}{}
+	defer func() { <-client.session.setup }()
+	client.session.invalidate(client.session.generation)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := client.ChatCompletion(ctx, llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected the caller's deadline to win, got %v", err)
+	}
+}

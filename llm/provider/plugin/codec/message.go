@@ -213,6 +213,9 @@ func toolCallsFromProto(toolCalls []*pluginv1.ToolCall) []llm.ToolCall {
 // MessageToProto converts a message, whatever its concrete type, by probing
 // the optional interfaces it implements.
 func MessageToProto(message llm.Message) (*pluginv1.Message, error) {
+	if message == nil {
+		return nil, errors.New("message is nil")
+	}
 	result := &pluginv1.Message{
 		Role:        RoleToProto(message.Role()),
 		Content:     message.Content(),

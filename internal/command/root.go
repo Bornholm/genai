@@ -34,20 +34,20 @@ func Main(name string, version string, usage string, commands ...*cli.Command) {
 
 			logLevel := ctx.String("log-level")
 			slogLevel := slog.LevelWarn
-			plugin.LogLevel = hclog.Warn
+			plugin.SetLogLevel(hclog.Warn)
 
 			switch logLevel {
 			case "debug":
 				slogLevel = slog.LevelDebug
-				plugin.LogLevel = hclog.Debug
+				plugin.SetLogLevel(hclog.Debug)
 			case "info":
 				slogLevel = slog.LevelInfo
-				plugin.LogLevel = hclog.Info
+				plugin.SetLogLevel(hclog.Info)
 			case "warn":
 				slogLevel = slog.LevelWarn
 			case "error":
 				slogLevel = slog.LevelError
-				plugin.LogLevel = hclog.Error
+				plugin.SetLogLevel(hclog.Error)
 			}
 
 			logger := slog.New(logx.ContextHandler{

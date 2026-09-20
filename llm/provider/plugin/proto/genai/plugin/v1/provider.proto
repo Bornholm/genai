@@ -272,9 +272,12 @@ message Error {
     KIND_CANCELED = 6;
     KIND_DEADLINE_EXCEEDED = 7;
   }
+  // The full text of the error as the plugin saw it.
   string message = 1;
   Kind kind = 2;
   int32 status_code = 3;
+  // HTTP response body for KIND_HTTP and KIND_RATE_LIMIT; the bare field
+  // message for KIND_VALIDATION.
   string body = 4;
   string field = 5;
 }

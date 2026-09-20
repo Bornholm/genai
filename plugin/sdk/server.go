@@ -71,6 +71,9 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		if err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
+		if err := abandoned(ctx, client); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		id := s.allocateID()
 		s.chat[id] = client
@@ -85,6 +88,9 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		if err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
+		if err := abandoned(ctx, client); err != nil {
+			return nil, err
+		}
 		s.mu.Lock()
 		id := s.allocateID()
 		s.embeddings[id] = client
@@ -94,6 +100,20 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown capability %q", req.GetCapability().String())
 	}
+}
+
+// abandoned closes a freshly built client when the host gave up on the
+// Configure call meanwhile: gRPC would drop the response, the host would
+// never learn the id, and the client would stay registered for the life of
+// the process. It returns the status to answer with in that case.
+func abandoned(ctx context.Context, client any) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	if closer, ok := client.(io.Closer); ok {
+		_ = closer.Close()
+	}
+	return codec.ErrorToStatus(ctx.Err())
 }
 
 // allocateID must be called with mu held for writing.
@@ -107,25 +127,33 @@ func (s *server) allocateID() string {
 // the plugin that no call is in flight for the client: the host side only
 // releases from Close, after its own callers are done.
 func (s *server) Release(ctx context.Context, req *pluginv1.ReleaseRequest) (*pluginv1.ReleaseResponse, error) {
-	s.mu.Lock()
+	id := req.GetClientId()
+
+	s.mu.RLock()
 	var client any
-	if c, ok := s.chat[req.GetClientId()]; ok {
+	if c, ok := s.chat[id]; ok {
 		client = c
-		delete(s.chat, req.GetClientId())
-	} else if c, ok := s.embeddings[req.GetClientId()]; ok {
+	} else if c, ok := s.embeddings[id]; ok {
 		client = c
-		delete(s.embeddings, req.GetClientId())
 	}
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	if client == nil {
-		return nil, status.Errorf(codes.NotFound, "unknown client %q", req.GetClientId())
+		return nil, status.Errorf(codes.NotFound, "unknown client %q", id)
 	}
+
+	// Close first, forget only on success: a client whose Close failed stays
+	// reachable for another attempt instead of leaking without an id.
 	if closer, ok := client.(io.Closer); ok {
 		if err := closer.Close(); err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
 	}
+
+	s.mu.Lock()
+	delete(s.chat, id)
+	delete(s.embeddings, id)
+	s.mu.Unlock()
 	return &pluginv1.ReleaseResponse{}, nil
 }
 

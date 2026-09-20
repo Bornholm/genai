@@ -32,12 +32,13 @@ type session struct {
 	// older generation does not trigger a second one.
 	generation uint64
 
-	// setup serializes reconfigurations.
-	setup sync.Mutex
+	// setup serializes reconfigurations. It is a channel rather than a
+	// mutex so that a caller waiting behind one honours its own context.
+	setup chan struct{}
 }
 
 func newSession(ctx context.Context, path string, capability pluginv1.Capability, options map[string]string) (*session, error) {
-	s := &session{path: path, capability: capability, options: options}
+	s := &session{path: path, capability: capability, options: options, setup: make(chan struct{}, 1)}
 	if _, _, _, err := s.ensure(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -65,8 +66,12 @@ func (s *session) ensure(ctx context.Context) (*Process, string, uint64, error) 
 		return proc, clientID, generation, nil
 	}
 
-	s.setup.Lock()
-	defer s.setup.Unlock()
+	select {
+	case s.setup <- struct{}{}:
+		defer func() { <-s.setup }()
+	case <-ctx.Done():
+		return nil, "", 0, errors.WithStack(ctx.Err())
+	}
 
 	// Another caller may have reconfigured while we waited.
 	if proc, clientID, generation, closed := s.current(); closed || proc != nil {
@@ -78,6 +83,11 @@ func (s *session) ensure(ctx context.Context) (*Process, string, uint64, error) 
 
 	proc, err := acquire(ctx, s.path)
 	if err != nil {
+		// A start abandoned by the caller is a cancellation, not an
+		// unavailable plugin.
+		if ctx.Err() != nil {
+			return nil, "", 0, errors.Wrap(ctx.Err(), err.Error())
+		}
 		return nil, "", 0, errors.Wrap(llm.ErrUnavailable, err.Error())
 	}
 	if !proc.supports(s.capability) {
@@ -136,7 +146,9 @@ func (s *session) process() *Process {
 }
 
 // call runs fn against the live client, reconfiguring once when the plugin
-// reports that it does not know the client.
+// reports that it does not know the client. A process dying during the call
+// is not replayed: the call fails with llm.ErrUnavailable and the next one
+// reconfigures, so the caller decides whether to retry.
 func (s *session) call(ctx context.Context, fn func(proc *Process, clientID string) error) error {
 	for attempt := 0; ; attempt++ {
 		proc, clientID, generation, err := s.ensure(ctx)
@@ -219,8 +231,8 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 //
 // Unlike in-process providers, the call returns only once the first chunk
 // has arrived: a plugin that forgot the client reports it on that first
-// chunk, and the session reconfigures on it. The wait is bounded by
-// StartTimeout, after which the call fails.
+// chunk, and the session reconfigures on it. That first chunk is the
+// provider's first token, so the wait is bounded by FirstChunkTimeout.
 func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	// The gRPC stream is only released once its context is cancelled or Recv
 	// returned an error. A terminal chunk does neither, so the stream gets a
@@ -288,8 +300,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 }
 
 // recvFirst waits for the first chunk of a freshly opened stream, at most
-// StartTimeout. Recv itself cannot take a context, so the wait runs aside
-// and the stream is left to its context on timeout; the caller cancels it.
+// FirstChunkTimeout. Recv itself cannot take a context, so the wait runs
+// aside and the stream is left to its context on timeout; the caller
+// cancels it.
 func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*pluginv1.StreamChunk, error) {
 	type result struct {
 		chunk *pluginv1.StreamChunk
@@ -306,7 +319,7 @@ func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*plug
 			return nil, codec.ErrorFromStatus(r.err)
 		}
 		return r.chunk, nil
-	case <-time.After(StartTimeout):
+	case <-time.After(FirstChunkTimeout):
 		return nil, errors.Wrap(llm.ErrUnavailable, "plugin did not send a first chunk in time")
 	}
 }

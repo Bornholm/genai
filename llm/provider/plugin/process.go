@@ -18,8 +18,9 @@ import (
 )
 
 // Process is a running plugin binary. One process serves every capability the
-// binary offers, so a provider like yzma loads its model once even when it is
-// configured for both chat and embeddings.
+// binary offers; each capability is still configured on its own, so whether
+// a provider like yzma loads its model once for chat and embeddings is up
+// to the plugin's factories sharing an instance.
 type Process struct {
 	path    string
 	client  *goplugin.Client
@@ -90,9 +91,30 @@ var StartTimeout = 30 * time.Second
 // model, which takes minutes for a large one.
 var ConfigureTimeout = 5 * time.Minute
 
-// LogLevel is the level at which plugin logs are relayed to stderr. Set it
-// before the first plugin starts: it is read without synchronization.
-var LogLevel = hclog.Info
+// FirstChunkTimeout bounds the wait for the first chunk of a stream, which
+// is the provider's time to first token: for a local model with a long
+// prompt that takes minutes, hence a budget aligned on ConfigureTimeout.
+var FirstChunkTimeout = 5 * time.Minute
+
+var (
+	logLevelMu sync.RWMutex
+	logLevel   = hclog.Info
+)
+
+// SetLogLevel sets the level at which plugin logs are relayed to stderr. It
+// applies to plugins started afterwards.
+func SetLogLevel(level hclog.Level) {
+	logLevelMu.Lock()
+	defer logLevelMu.Unlock()
+	logLevel = level
+}
+
+// LogLevel returns the level at which plugin logs are relayed to stderr.
+func LogLevel() hclog.Level {
+	logLevelMu.RLock()
+	defer logLevelMu.RUnlock()
+	return logLevel
+}
 
 // pool holds one process per binary path. poolMu only guards the maps; the
 // start of a given binary is serialized by its own lock so that a slow plugin
@@ -149,7 +171,7 @@ func start(ctx context.Context, path string) (*Process, error) {
 	logger := hclog.New(&hclog.LoggerOptions{
 		Name:   "plugin",
 		Output: os.Stderr,
-		Level:  LogLevel,
+		Level:  LogLevel(),
 	})
 
 	client := goplugin.NewClient(&goplugin.ClientConfig{

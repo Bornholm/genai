@@ -26,12 +26,15 @@ package sdk
 import (
 	"context"
 	"os"
+	"runtime/debug"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider/plugin/protocol"
 	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ChatCompletionFactory builds a chat completion client from its options. The
@@ -87,9 +90,37 @@ func Serve(cfg Config) {
 			opts = append(opts,
 				grpc.MaxRecvMsgSize(protocol.MaxMessageSize),
 				grpc.MaxSendMsgSize(protocol.MaxMessageSize),
+				// A panic in one provider must not take down the process
+				// that other configured clients share.
+				grpc.ChainUnaryInterceptor(recoverUnary(logger)),
+				grpc.ChainStreamInterceptor(recoverStream(logger)),
 			)
 			return grpc.NewServer(opts...)
 		},
 		Logger: logger,
 	})
+}
+
+func recoverUnary(logger hclog.Logger) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (res any, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("provider panicked", "method", info.FullMethod, "panic", r, "stack", string(debug.Stack()))
+				err = status.Errorf(codes.Internal, "provider panicked: %v", r)
+			}
+		}()
+		return handler(ctx, req)
+	}
+}
+
+func recoverStream(logger hclog.Logger) grpc.StreamServerInterceptor {
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("provider panicked", "method", info.FullMethod, "panic", r, "stack", string(debug.Stack()))
+				err = status.Errorf(codes.Internal, "provider panicked: %v", r)
+			}
+		}()
+		return handler(srv, stream)
+	}
 }

@@ -2067,12 +2067,15 @@ func (x *EmbeddingsResponse) GetUsage() *EmbeddingsUsage {
 // typed error, so that llm.IsRetryable and errors.Is/As keep working across
 // the process boundary.
 type Error struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
-	Kind          Error_Kind             `protobuf:"varint,2,opt,name=kind,proto3,enum=genai.plugin.v1.Error_Kind" json:"kind,omitempty"`
-	StatusCode    int32                  `protobuf:"varint,3,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
-	Body          string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	Field         string                 `protobuf:"bytes,5,opt,name=field,proto3" json:"field,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The full text of the error as the plugin saw it.
+	Message    string     `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Kind       Error_Kind `protobuf:"varint,2,opt,name=kind,proto3,enum=genai.plugin.v1.Error_Kind" json:"kind,omitempty"`
+	StatusCode int32      `protobuf:"varint,3,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
+	// HTTP response body for KIND_HTTP and KIND_RATE_LIMIT; the bare field
+	// message for KIND_VALIDATION.
+	Body          string `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	Field         string `protobuf:"bytes,5,opt,name=field,proto3" json:"field,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

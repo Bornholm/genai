@@ -23,7 +23,7 @@ const ProtocolVersion = 1
 // ProtoChecksum is the SHA-256 of provider.proto at the time ProtocolVersion
 // was last reviewed. A test compares it to the file: editing the proto means
 // updating this constant, and deciding whether the change is compatible.
-const ProtoChecksum = "c8825aad4b7c47eb057057e4c09706f18921ca660022e4c51a5fe12915dc5e2a"
+const ProtoChecksum = "a96f9c1769ab719ec2744ede7ab1798bfcf8a06f96ddd93177152f20e536ac8c"
 
 // MaxMessageSize bounds a single gRPC message in both directions. Attachments
 // travel base64 encoded inside messages, so the default 4 MiB is too small.

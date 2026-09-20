@@ -50,9 +50,11 @@ func ErrorToProto(err error) *pluginv1.Error {
 	case stderrors.Is(err, llm.ErrUnavailable):
 		result.Kind = pluginv1.Error_KIND_UNAVAILABLE
 	case stderrors.As(err, &validationErr):
+		// Message keeps the full text; the bare field message travels in
+		// Body so that the host rebuilds the same ValidationError.
 		result.Kind = pluginv1.Error_KIND_VALIDATION
 		result.Field = validationErr.Field
-		result.Message = validationErr.Message
+		result.Body = validationErr.Message
 	case stderrors.Is(err, context.Canceled):
 		result.Kind = pluginv1.Error_KIND_CANCELED
 	case stderrors.Is(err, context.DeadlineExceeded):
@@ -80,7 +82,7 @@ func ErrorFromProto(e *pluginv1.Error) error {
 	case pluginv1.Error_KIND_UNAVAILABLE:
 		return withMessage(llm.ErrUnavailable, e.GetMessage())
 	case pluginv1.Error_KIND_VALIDATION:
-		return llm.NewValidationError(e.GetField(), e.GetMessage())
+		return withMessage(llm.NewValidationError(e.GetField(), e.GetBody()), e.GetMessage())
 	case pluginv1.Error_KIND_CANCELED:
 		return withMessage(context.Canceled, e.GetMessage())
 	case pluginv1.Error_KIND_DEADLINE_EXCEEDED:

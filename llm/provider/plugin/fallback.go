@@ -47,9 +47,13 @@ const CommandOption = "COMMAND"
 // the provider, whatever its prefix: the registry does not tell the fallback
 // which prefix is in use, and the options are not parsed yet at lookup.
 func commandInEnv(capability provider.Capability, name provider.Name) bool {
-	suffix := "_" + strings.ToUpper(string(capability)) + "_" + strings.ReplaceAll(strings.ToUpper(string(name)), "-", "_") + "_" + CommandOption + "="
+	unprefixed := strings.ToUpper(string(capability)) + "_" + strings.ReplaceAll(strings.ToUpper(string(name)), "-", "_") + "_" + CommandOption
 	for _, kv := range os.Environ() {
-		if strings.Contains(kv, suffix) && !strings.HasSuffix(kv, "=") {
+		key, value, found := strings.Cut(kv, "=")
+		if !found || value == "" {
+			continue
+		}
+		if key == unprefixed || strings.HasSuffix(key, "_"+unprefixed) {
 			return true
 		}
 	}

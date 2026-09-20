@@ -3,6 +3,7 @@ package codec
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -293,6 +294,15 @@ func TestErrorRoundTrip(t *testing.T) {
 	plain := ErrorFromProto(ErrorToProto(llm.NewHTTPError(500, "oops")))
 	if plain.Error() != "http 500: oops" {
 		t.Errorf("message duplicated: %q", plain.Error())
+	}
+
+	validation := ErrorFromProto(ErrorToProto(pkgerrors.Wrap(llm.NewValidationError("model", "model is required"), "provider acme")))
+	var ve llm.ValidationError
+	if !errors.As(validation, &ve) || ve.Message != "model is required" || !strings.HasPrefix(validation.Error(), "provider acme: ") {
+		t.Errorf("validation context lost: %v", validation)
+	}
+	if _, err := MessageToProto(nil); err == nil {
+		t.Error("expected an error for a nil message")
 	}
 
 	if ErrorToProto(nil) != nil || ErrorFromProto(nil) != nil {

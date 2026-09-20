@@ -5,6 +5,7 @@
 //	FAIL_WITH=validation   Configure fails with a validation error
 //	HANG=true              streams block until the host cancels
 //	NO_STREAM=true         the client does not implement streaming
+//	PANIC=true             every chat completion call panics
 package main
 
 import (
@@ -22,6 +23,7 @@ type options struct {
 	FailWith string `env:"FAIL_WITH"`
 	Hang     bool   `env:"HANG"`
 	NoStream bool   `env:"NO_STREAM"`
+	Panic    bool   `env:"PANIC"`
 }
 
 func (o *options) Validate() error {
@@ -79,6 +81,9 @@ func lastContent(opts *llm.ChatCompletionOptions) string {
 }
 
 func (c *chatClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	if c.opts.Panic {
+		panic("provider bug")
+	}
 	if err := c.fail(); err != nil {
 		return nil, err
 	}
