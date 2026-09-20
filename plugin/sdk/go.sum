@@ -1,7 +1,7 @@
 github.com/RealAlexandreAI/json-repair v0.0.14 h1:4kTqotVonDVTio5n2yweRUELVcNe2x518wl0bCsw0t0=
 github.com/RealAlexandreAI/json-repair v0.0.14/go.mod h1:GKJi5borR78O8c7HCVbgqjhoiVibZ6hJldxbc6dGrAI=
-github.com/bornholm/genai v0.42.1-0.20260920115138-8839905c2655 h1:wQ4Vc/dEIVVSSDRan1YLUZQ76uo5ixNiW8ZJCB0ln/g=
-github.com/bornholm/genai v0.42.1-0.20260920115138-8839905c2655/go.mod h1:HRmbaPlzF1CIc5gqblJmpNrh9FlKc5fwZ6EnBiadH0w=
+github.com/bornholm/genai v0.43.0 h1:Sf1PodKUysf1E8HvWCzmzaC/B3Dt7K9dO+tsM05n4KI=
+github.com/bornholm/genai v0.43.0/go.mod h1:HRmbaPlzF1CIc5gqblJmpNrh9FlKc5fwZ6EnBiadH0w=
 github.com/bufbuild/protocompile v0.14.1 h1:iA73zAf/fyljNjQKwYzUHD6AD4R8KMasmwa/FBatYVw=
 github.com/bufbuild/protocompile v0.14.1/go.mod h1:ppVdAIhbr2H8asPk6k4pY7t9zB1OU5DoEw9xY/FUi1c=
 github.com/caarlos0/env/v11 v11.3.1 h1:cArPWC15hWmEt+gWk7YBi7lEXTXCvpaSdCiZE2X5mCA=
