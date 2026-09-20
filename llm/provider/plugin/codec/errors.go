@@ -3,6 +3,7 @@ package codec
 import (
 	"context"
 	stderrors "errors"
+	"strings"
 
 	"github.com/bornholm/genai/llm"
 	pluginv1 "github.com/bornholm/genai/llm/provider/plugin/proto/genai/plugin/v1"
@@ -10,6 +11,16 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// ErrUnknownClient is what the host gets when a live plugin process does not
+// know the client id it was given: the plugin forgot the client. It wraps
+// llm.ErrUnavailable; the host side reconfigures once on it.
+var ErrUnknownClient = errors.Wrap(llm.ErrUnavailable, "unknown plugin client")
+
+// ErrMessageTooLarge is what the host gets when a request or a response
+// exceeds protocol.MaxMessageSize. It is not retryable: the same call would
+// fail the same way.
+var ErrMessageTooLarge = errors.New("message larger than the plugin protocol allows")
 
 // ErrorToProto captures the parts of an error the host needs to rebuild a
 // typed one: the retry decorator relies on llm.IsRetryable, callers on
@@ -150,10 +161,13 @@ func ErrorFromStatus(err error) error {
 	case codes.Unavailable:
 		return errors.Wrap(llm.ErrUnavailable, st.Message())
 	case codes.NotFound:
-		// The plugin does not know the client: it restarted since it was
-		// configured.
-		return errors.Wrap(llm.ErrUnavailable, st.Message())
+		return errors.Wrap(ErrUnknownClient, st.Message())
 	case codes.ResourceExhausted:
+		// grpc-go reports an oversized message with this same code; that is
+		// a hard failure, not a rate limit to retry.
+		if isMessageTooLarge(st.Message()) {
+			return errors.Wrap(ErrMessageTooLarge, st.Message())
+		}
 		return errors.Wrap(llm.ErrRateLimit, st.Message())
 	case codes.Canceled:
 		// Either the host's own context (grpc-go reports it as a status) or
@@ -164,4 +178,10 @@ func ErrorFromStatus(err error) error {
 	default:
 		return errors.WithStack(err)
 	}
+}
+
+// isMessageTooLarge recognizes the messages grpc-go produces when a message
+// exceeds MaxCallRecvMsgSize or MaxCallSendMsgSize.
+func isMessageTooLarge(message string) bool {
+	return strings.Contains(message, "message larger than max")
 }

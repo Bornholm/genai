@@ -275,12 +275,16 @@ func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 		result = llm.NewToolMessage(message.GetToolCallId(), llm.NewToolResult(message.GetContent(), attachments...))
 
 	case role == llm.RoleToolCalls || len(message.GetToolCalls()) > 0:
-		result = llm.NewReasoningToolCallsMessageWithContent(
-			message.GetContent(),
-			message.GetReasoning(),
-			reasoningDetailsFromProto(message.GetReasoningDetails()),
-			toolCallsFromProto(message.GetToolCalls())...,
-		)
+		if message.GetReasoning() != "" || len(message.GetReasoningDetails()) > 0 {
+			result = llm.NewReasoningToolCallsMessageWithContent(
+				message.GetContent(),
+				message.GetReasoning(),
+				reasoningDetailsFromProto(message.GetReasoningDetails()),
+				toolCallsFromProto(message.GetToolCalls())...,
+			)
+		} else {
+			result = llm.NewToolCallsMessageWithContent(message.GetContent(), toolCallsFromProto(message.GetToolCalls())...)
+		}
 
 	case message.GetReasoning() != "" || len(message.GetReasoningDetails()) > 0:
 		result = llm.NewAssistantReasoningMessage(

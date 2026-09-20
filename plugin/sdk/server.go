@@ -58,12 +58,16 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		opts = Options{}
 	}
 
+	// The RPC context dies when Configure returns; a factory that keeps its
+	// context (background goroutine, HTTP client) must not inherit that.
+	factoryCtx := context.WithoutCancel(ctx)
+
 	switch req.GetCapability() {
 	case pluginv1.Capability_CAPABILITY_CHAT_COMPLETION:
 		if s.cfg.ChatCompletion == nil {
 			return nil, status.Error(codes.Unimplemented, "plugin does not offer chat completion")
 		}
-		client, err := s.cfg.ChatCompletion(ctx, opts)
+		client, err := s.cfg.ChatCompletion(factoryCtx, opts)
 		if err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
@@ -77,7 +81,7 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		if s.cfg.Embeddings == nil {
 			return nil, status.Error(codes.Unimplemented, "plugin does not offer embeddings")
 		}
-		client, err := s.cfg.Embeddings(ctx, opts)
+		client, err := s.cfg.Embeddings(factoryCtx, opts)
 		if err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
@@ -237,6 +241,10 @@ func (c *chatCompletionServer) ChatCompletionStream(req *pluginv1.ChatCompletion
 
 // streamFromCompletion answers a streaming request for a client that only
 // implements ChatCompletion, as a single delta followed by a complete chunk.
+// A stream delta carries text, reasoning and tool calls only: attachments
+// and cache control of the response message do not fit and are dropped,
+// which is why a provider answering multimodally should implement
+// ChatCompletionStream itself.
 func (c *chatCompletionServer) streamFromCompletion(ctx context.Context, client llm.ChatCompletionClient, funcs []llm.ChatCompletionOptionFunc, stream pluginv1.ChatCompletion_ChatCompletionStreamServer) error {
 	res, err := client.ChatCompletion(ctx, funcs...)
 	if err != nil {

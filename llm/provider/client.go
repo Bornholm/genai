@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"io"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -105,7 +106,28 @@ func NewClientWithImageGeneration(chatCompletion llm.ChatCompletionClient, embed
 	return client
 }
 
+// Close releases the underlying clients that implement io.Closer, such as
+// plugin clients holding a configured instance in a plugin process. Clients
+// without a Close are left alone. Every closer is called even when one
+// fails; the first error is returned.
+func (c *Client) Close() error {
+	var first error
+	seen := map[io.Closer]bool{}
+	for _, sub := range []any{c.chatCompletion, c.embeddings, c.transcription, c.imageGeneration} {
+		closer, ok := sub.(io.Closer)
+		if !ok || seen[closer] {
+			continue
+		}
+		seen[closer] = true
+		if err := closer.Close(); err != nil && first == nil {
+			first = errors.WithStack(err)
+		}
+	}
+	return first
+}
+
 var (
 	_ llm.Client                = &Client{}
 	_ llm.ImageGenerationClient = &Client{}
+	_ io.Closer                 = &Client{}
 )

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"sync"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -64,12 +65,17 @@ type Registry struct {
 	embeddingsEntries      map[Name]providerEntry
 	transcriptionEntries   map[Name]providerEntry
 	imageGenerationEntries map[Name]providerEntry
-	fallbacks              []FallbackFunc
+
+	fallbacksMu sync.RWMutex
+	fallbacks   []FallbackFunc
 }
 
 // RegisterFallback adds a resolver consulted for provider names that have no
-// in-process registration, in the global registry.
+// in-process registration, in the global registry. Unlike the Register*
+// functions, it may be called while the registry is in use.
 func RegisterFallback(fn FallbackFunc) {
+	defaultRegistry.fallbacksMu.Lock()
+	defer defaultRegistry.fallbacksMu.Unlock()
 	defaultRegistry.fallbacks = append(defaultRegistry.fallbacks, fn)
 }
 
@@ -94,7 +100,10 @@ func (r *Registry) lookup(capability Capability, name Name) (providerEntry, bool
 	if entry, ok := r.entries(capability)[name]; ok {
 		return entry, true
 	}
-	for _, fn := range r.fallbacks {
+	r.fallbacksMu.RLock()
+	fallbacks := r.fallbacks
+	r.fallbacksMu.RUnlock()
+	for _, fn := range fallbacks {
 		fallback, ok := fn(capability, name)
 		if !ok || fallback == nil {
 			continue

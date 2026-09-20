@@ -36,7 +36,9 @@ import (
 
 // ChatCompletionFactory builds a chat completion client from its options. The
 // returned client may also implement llm.ChatCompletionStreamingClient; when
-// it does not, streaming requests are answered from ChatCompletion.
+// it does not, streaming requests are answered from ChatCompletion, as one
+// delta without the response's attachments. The context outlives the
+// Configure call and may be kept by the client.
 type ChatCompletionFactory func(ctx context.Context, opts Options) (llm.ChatCompletionClient, error)
 
 // EmbeddingsFactory builds an embeddings client from its options.

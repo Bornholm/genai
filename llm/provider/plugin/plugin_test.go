@@ -414,7 +414,30 @@ func TestUnknownPluginError(t *testing.T) {
 	_, err := provider.Create(context.Background(),
 		provider.WithChatCompletion(provider.Name("nope"), *NewOptions("nope", nil)),
 	)
-	if err == nil || !strings.Contains(err.Error(), "plugin not found") {
-		t.Errorf("expected plugin not found, got %v", err)
+	if !errors.Is(err, ErrPluginNotFound) || !errors.Is(err, provider.ErrClientNotFound) {
+		t.Errorf("expected plugin not found wrapping ErrClientNotFound, got %v", err)
+	}
+}
+
+func TestRegistryClientClose(t *testing.T) {
+	client, err := provider.Create(context.Background(),
+		provider.WithChatCompletion(provider.Name("test"), *NewOptions("test", nil)),
+		provider.WithEmbeddings(provider.Name("test"), *NewOptions("test", nil)),
+	)
+	if err != nil {
+		t.Fatalf("could not create client: %+v", err)
+	}
+	closer, ok := client.(interface{ Close() error })
+	if !ok {
+		t.Fatal("expected the registry client to be closable")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	if _, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi"))); !errors.Is(err, llm.ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable after Close, got %v", err)
+	}
+	if _, err := client.Embeddings(context.Background(), []string{"x"}); !errors.Is(err, llm.ErrUnavailable) {
+		t.Errorf("expected ErrUnavailable after Close, got %v", err)
 	}
 }

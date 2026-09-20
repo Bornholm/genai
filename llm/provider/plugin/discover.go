@@ -13,7 +13,9 @@ import (
 )
 
 // ErrPluginNotFound is returned when no binary serves the requested provider.
-var ErrPluginNotFound = errors.New("plugin not found")
+// It wraps provider.ErrClientNotFound, so callers checking for an unknown
+// provider keep working once the plugin fallback is active.
+var ErrPluginNotFound = errors.Wrap(provider.ErrClientNotFound, "plugin not found")
 
 // SearchDirEnv names the environment variable holding the plugin directory.
 const SearchDirEnv = "GENAI_PLUGIN_DIR"

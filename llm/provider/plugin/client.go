@@ -13,73 +13,139 @@ import (
 
 // session is a configured client inside a plugin process. It remembers how it
 // was configured so that it can configure itself again on a fresh process
-// when the plugin died: a crash while loading a model is the likeliest
-// failure of a native provider, and it should cost one failed call, not the
-// rest of the host's life.
+// when the plugin died, or when a live plugin forgot the client: a crash
+// while loading a model is the likeliest failure of a native provider, and
+// it should cost one failed call, not the rest of the host's life.
 type session struct {
 	path       string
 	capability pluginv1.Capability
 	options    map[string]string
 
+	// mu guards the fields below and is never held across an RPC, so that
+	// Close and concurrent calls are not stuck behind a reconfiguration.
 	mu       sync.Mutex
 	proc     *Process
 	clientID string
 	closed   bool
+	// generation counts reconfigurations; a caller that saw a failure on an
+	// older generation does not trigger a second one.
+	generation uint64
+
+	// setup serializes reconfigurations.
+	setup sync.Mutex
 }
 
 func newSession(ctx context.Context, path string, capability pluginv1.Capability, options map[string]string) (*session, error) {
 	s := &session{path: path, capability: capability, options: options}
-	if _, _, err := s.ensure(ctx); err != nil {
+	if _, _, _, err := s.ensure(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	return s, nil
 }
 
-// ensure returns a live process and client id, reconfiguring after a crash.
-func (s *session) ensure(ctx context.Context) (*Process, string, error) {
+// current returns the live process and client id, if any.
+func (s *session) current() (proc *Process, clientID string, generation uint64, closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil, "", errors.Wrap(llm.ErrUnavailable, "plugin client is closed")
+	if s.proc != nil && !s.proc.Exited() && s.clientID != "" {
+		return s.proc, s.clientID, s.generation, s.closed
 	}
-	if s.proc != nil && !s.proc.Exited() {
-		return s.proc, s.clientID, nil
+	return nil, "", s.generation, s.closed
+}
+
+// ensure returns a live process and client id, reconfiguring after a crash
+// or an invalidation.
+func (s *session) ensure(ctx context.Context) (*Process, string, uint64, error) {
+	proc, clientID, generation, closed := s.current()
+	if closed {
+		return nil, "", 0, errors.Wrap(llm.ErrUnavailable, "plugin client is closed")
+	}
+	if proc != nil {
+		return proc, clientID, generation, nil
+	}
+
+	s.setup.Lock()
+	defer s.setup.Unlock()
+
+	// Another caller may have reconfigured while we waited.
+	if proc, clientID, generation, closed := s.current(); closed || proc != nil {
+		if closed {
+			return nil, "", 0, errors.Wrap(llm.ErrUnavailable, "plugin client is closed")
+		}
+		return proc, clientID, generation, nil
 	}
 
 	proc, err := acquire(ctx, s.path)
 	if err != nil {
-		return nil, "", errors.Wrap(llm.ErrUnavailable, err.Error())
+		return nil, "", 0, errors.Wrap(llm.ErrUnavailable, err.Error())
 	}
 	if !proc.supports(s.capability) {
-		return nil, "", errors.Errorf("plugin %q does not support %s", proc.info.GetName(), s.capability.String())
+		return nil, "", 0, errors.Errorf("plugin %q does not support %s", proc.info.GetName(), s.capability.String())
 	}
-	clientID, err := proc.configure(ctx, s.capability, s.options)
+	clientID, err = proc.configure(ctx, s.capability, s.options)
 	if err != nil {
-		return nil, "", errors.Wrapf(err, "could not configure %s client of plugin %q", s.capability.String(), proc.info.GetName())
+		return nil, "", 0, errors.Wrapf(err, "could not configure %s client of plugin %q", s.capability.String(), proc.info.GetName())
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = proc.release(ctx, clientID)
+		return nil, "", 0, errors.Wrap(llm.ErrUnavailable, "plugin client is closed")
 	}
 	s.proc, s.clientID = proc, clientID
-	return proc, clientID, nil
+	s.generation++
+	generation = s.generation
+	s.mu.Unlock()
+	return proc, clientID, generation, nil
+}
+
+// invalidate drops the client id of the given generation, so that the next
+// call reconfigures. A newer generation is left alone.
+func (s *session) invalidate(generation uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generation == generation {
+		s.clientID = ""
+	}
 }
 
 // close releases the client on the plugin side.
 func (s *session) close(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
-	if s.proc == nil {
+	proc, clientID := s.proc, s.clientID
+	s.mu.Unlock()
+	if proc == nil || clientID == "" {
 		return nil
 	}
-	return s.proc.release(ctx, s.clientID)
+	return proc.release(ctx, clientID)
 }
 
 func (s *session) process() *Process {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.proc
+}
+
+// call runs fn against the live client, reconfiguring once when the plugin
+// reports that it does not know the client.
+func (s *session) call(ctx context.Context, fn func(proc *Process, clientID string) error) error {
+	for attempt := 0; ; attempt++ {
+		proc, clientID, generation, err := s.ensure(ctx)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		err = fn(proc, clientID)
+		if err == nil || attempt > 0 || !errors.Is(err, codec.ErrUnknownClient) {
+			return err
+		}
+		s.invalidate(generation)
+	}
 }
 
 // ChatCompletionClient talks to a configured chat completion client inside a
@@ -124,21 +190,21 @@ func (c *ChatCompletionClient) request(clientID string, funcs []llm.ChatCompleti
 
 // ChatCompletion implements llm.ChatCompletionClient.
 func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
-	proc, clientID, err := c.session.ensure(ctx)
+	var decoded llm.ChatCompletionResponse
+	err := c.session.call(ctx, func(proc *Process, clientID string) error {
+		req, err := c.request(clientID, funcs)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		res, err := proc.clients.ChatCompletion.ChatCompletion(ctx, req)
+		if err != nil {
+			return codec.ErrorFromStatus(err)
+		}
+		decoded, err = codec.ChatCompletionResponseFromProto(res)
+		return errors.WithStack(err)
+	})
 	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	req, err := c.request(clientID, funcs)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	res, err := proc.clients.ChatCompletion.ChatCompletion(ctx, req)
-	if err != nil {
-		return nil, codec.ErrorFromStatus(err)
-	}
-	decoded, err := codec.ChatCompletionResponseFromProto(res)
-	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	return decoded, nil
 }
@@ -148,23 +214,32 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 // Cancelling ctx cancels the gRPC stream, which cancels the server context on
 // the plugin side and, through it, the provider's own upstream call.
 func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
-	proc, clientID, err := c.session.ensure(ctx)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	req, err := c.request(clientID, funcs)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
 	// The gRPC stream is only released once its context is cancelled or Recv
 	// returned an error. A terminal chunk does neither, so the stream gets a
 	// context of its own, cancelled when the reader is done.
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream, err := proc.clients.ChatCompletion.ChatCompletionStream(streamCtx, req)
+
+	var stream pluginv1.ChatCompletion_ChatCompletionStreamClient
+	err := c.session.call(ctx, func(proc *Process, clientID string) error {
+		req, err := c.request(clientID, funcs)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		stream, err = proc.clients.ChatCompletion.ChatCompletionStream(streamCtx, req)
+		if err != nil {
+			return codec.ErrorFromStatus(err)
+		}
+		// An unknown client surfaces on the first Recv, not on the open.
+		first, err := stream.Recv()
+		if err != nil {
+			return codec.ErrorFromStatus(err)
+		}
+		stream = &prefetchedStream{ChatCompletion_ChatCompletionStreamClient: stream, first: first}
+		return nil
+	})
 	if err != nil {
 		cancel()
-		return nil, codec.ErrorFromStatus(err)
+		return nil, err
 	}
 
 	chunks := make(chan llm.StreamChunk, 10)
@@ -205,6 +280,22 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	return chunks, nil
 }
 
+// prefetchedStream hands back the first message read while opening the
+// stream, then reads from the underlying stream.
+type prefetchedStream struct {
+	pluginv1.ChatCompletion_ChatCompletionStreamClient
+	first *pluginv1.StreamChunk
+}
+
+func (s *prefetchedStream) Recv() (*pluginv1.StreamChunk, error) {
+	if s.first != nil {
+		first := s.first
+		s.first = nil
+		return first, nil
+	}
+	return s.ChatCompletion_ChatCompletionStreamClient.Recv()
+}
+
 // EmbeddingsClient talks to a configured embeddings client inside a plugin
 // process.
 type EmbeddingsClient struct {
@@ -233,19 +324,23 @@ func (c *EmbeddingsClient) Close() error {
 
 // Embeddings implements llm.EmbeddingsClient.
 func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
-	proc, clientID, err := c.session.ensure(ctx)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
 	opts := llm.NewEmbeddingsOptions(funcs...)
-	req := &pluginv1.EmbeddingsRequest{ClientId: clientID, Inputs: inputs}
-	if opts.Dimensions != nil {
-		dims := int64(*opts.Dimensions)
-		req.Dimensions = &dims
-	}
-	res, err := proc.clients.Embeddings.Embeddings(ctx, req)
+	var decoded *codec.EmbeddingsResponse
+	err := c.session.call(ctx, func(proc *Process, clientID string) error {
+		req := &pluginv1.EmbeddingsRequest{ClientId: clientID, Inputs: inputs}
+		if opts.Dimensions != nil {
+			dims := int64(*opts.Dimensions)
+			req.Dimensions = &dims
+		}
+		res, err := proc.clients.Embeddings.Embeddings(ctx, req)
+		if err != nil {
+			return codec.ErrorFromStatus(err)
+		}
+		decoded = codec.EmbeddingsResponseFromProto(res)
+		return nil
+	})
 	if err != nil {
-		return nil, codec.ErrorFromStatus(err)
+		return nil, err
 	}
-	return codec.EmbeddingsResponseFromProto(res), nil
+	return decoded, nil
 }

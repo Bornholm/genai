@@ -90,7 +90,8 @@ var StartTimeout = 30 * time.Second
 // model, which takes minutes for a large one.
 var ConfigureTimeout = 5 * time.Minute
 
-// LogLevel is the level at which plugin logs are relayed to stderr.
+// LogLevel is the level at which plugin logs are relayed to stderr. Set it
+// before the first plugin starts: it is read without synchronization.
 var LogLevel = hclog.Info
 
 // pool holds one process per binary path. poolMu only guards the maps; the
@@ -204,6 +205,7 @@ func CleanupClients() {
 	goplugin.CleanupClients()
 	poolMu.Lock()
 	defer poolMu.Unlock()
+	// locks is kept: an acquire in flight holds one of them, and a per-path
+	// mutex is small and harmless.
 	pool = map[string]*Process{}
-	locks = map[string]*sync.Mutex{}
 }

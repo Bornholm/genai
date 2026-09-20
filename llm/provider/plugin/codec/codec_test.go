@@ -23,7 +23,7 @@ func TestMessageRoundTrip(t *testing.T) {
 		llm.NewMessage(llm.RoleSystem, "sys"),
 		llm.NewMessageWithCacheControl(llm.RoleUser, "cached", &llm.CacheControl{Type: "ephemeral", TTL: &ttl}),
 		llm.NewMultimodalMessage(llm.RoleUser, "look", image),
-		llm.NewMultimodalMessageWithCacheControl(llm.RoleUser, "cached look", &llm.CacheControl{Type: "ephemeral", TTL: &ttl}, image),
+		withCacheControl(llm.NewMultimodalMessage(llm.RoleUser, "cached look", image), ttl),
 		llm.NewAssistantReasoningMessage("answer", "thought", details),
 		llm.NewReasoningToolCallsMessageWithContent("calling", "why", details, llm.NewToolCall("c1", "tool", `{"a":1}`)),
 		llm.NewToolMessage("c1", llm.NewToolResult("result", image)),
@@ -320,7 +320,11 @@ func TestErrorRoundTrip(t *testing.T) {
 	if err := ErrorFromStatus(status.Error(codes.ResourceExhausted, "429")); !errors.Is(err, llm.ErrRateLimit) || !llm.IsRetryable(err) {
 		t.Errorf("ResourceExhausted should map to ErrRateLimit, got %v", err)
 	}
-	if err := ErrorFromStatus(status.Error(codes.NotFound, "unknown client")); !errors.Is(err, llm.ErrUnavailable) {
-		t.Errorf("NotFound should map to ErrUnavailable, got %v", err)
+	if err := ErrorFromStatus(status.Error(codes.NotFound, "unknown client")); !errors.Is(err, ErrUnknownClient) || !errors.Is(err, llm.ErrUnavailable) {
+		t.Errorf("NotFound should map to ErrUnknownClient, got %v", err)
+	}
+	tooLarge := ErrorFromStatus(status.Error(codes.ResourceExhausted, "grpc: received message larger than max (70000000 vs. 67108864)"))
+	if !errors.Is(tooLarge, ErrMessageTooLarge) || errors.Is(tooLarge, llm.ErrRateLimit) || llm.IsRetryable(tooLarge) {
+		t.Errorf("an oversized message must not look like a retryable rate limit, got %v", tooLarge)
 	}
 }
