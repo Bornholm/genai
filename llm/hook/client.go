@@ -2,6 +2,7 @@ package hook
 
 import (
 	"context"
+	"io"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -328,3 +329,12 @@ func NewClient(client llm.Client, funcs ...OptionFunc) *Client {
 }
 
 var _ llm.Client = &Client{}
+
+// Close releases the wrapped client when it implements io.Closer, so that a
+// plugin client stays releasable behind this decorator.
+func (c *Client) Close() error {
+	if closer, ok := c.client.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}

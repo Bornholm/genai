@@ -2,6 +2,7 @@ package tokenlimit
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"time"
 
@@ -164,6 +165,15 @@ func waitN(ctx context.Context, limiter *rate.Limiter, n int) error {
 			return err
 		}
 		n -= take
+	}
+	return nil
+}
+
+// Close releases the wrapped client when it implements io.Closer, so that a
+// plugin client stays releasable behind this decorator.
+func (c *Client) Close() error {
+	if closer, ok := c.client.(io.Closer); ok {
+		return closer.Close()
 	}
 	return nil
 }

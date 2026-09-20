@@ -138,35 +138,32 @@ func (s *server) allocateID() string {
 // Release implements pluginv1.ProviderServer. A client implementing io.Closer
 // is closed, which is how a provider holding a model frees it. The host owes
 // the plugin that no call is in flight for the client: the host side only
-// releases from Close, after its own callers are done.
+// releases from Close, after its own callers are done. The client is
+// forgotten before Close runs, so that two concurrent Release calls close it
+// once, and stays forgotten if Close fails: the host never retries, and a
+// client nobody can reach is worse than a Close error reported once.
 func (s *server) Release(ctx context.Context, req *pluginv1.ReleaseRequest) (*pluginv1.ReleaseResponse, error) {
 	id := req.GetClientId()
 
-	s.mu.RLock()
+	s.mu.Lock()
 	var client any
 	if c, ok := s.chat[id]; ok {
 		client = c
+		delete(s.chat, id)
 	} else if c, ok := s.embeddings[id]; ok {
 		client = c
+		delete(s.embeddings, id)
 	}
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	if client == nil {
 		return nil, status.Errorf(codes.NotFound, "unknown client %q", id)
 	}
-
-	// Close first, forget only on success: a client whose Close failed stays
-	// reachable for another attempt instead of leaking without an id.
 	if closer, ok := client.(io.Closer); ok {
 		if err := closer.Close(); err != nil {
 			return nil, codec.ErrorToStatus(err)
 		}
 	}
-
-	s.mu.Lock()
-	delete(s.chat, id)
-	delete(s.embeddings, id)
-	s.mu.Unlock()
 	return &pluginv1.ReleaseResponse{}, nil
 }
 

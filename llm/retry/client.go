@@ -2,6 +2,7 @@ package retry
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"time"
 
@@ -263,3 +264,12 @@ func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int, funcs
 }
 
 var _ llm.Client = &Client{}
+
+// Close releases the wrapped client when it implements io.Closer, so that a
+// plugin client stays releasable behind this decorator.
+func (c *Client) Close() error {
+	if closer, ok := c.client.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}

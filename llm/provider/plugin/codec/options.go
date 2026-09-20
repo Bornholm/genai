@@ -186,8 +186,20 @@ func ChatCompletionOptionsFromProto(opts *pluginv1.ChatCompletionOptions) ([]llm
 		}
 		funcs = append(funcs, llm.WithTools(tools...))
 	}
-	if opts.GetToolChoice() != "" {
-		funcs = append(funcs, llm.WithToolChoice(llm.ToolChoice(opts.GetToolChoice())))
+	if choice := opts.GetToolChoice(); choice != "" {
+		switch llm.ToolChoice(choice) {
+		case llm.ToolChoiceNone, llm.ToolChoiceAuto, llm.ToolChoiceRequired:
+			funcs = append(funcs, llm.WithToolChoice(llm.ToolChoice(choice)))
+		default:
+			return nil, errors.Errorf("unknown tool choice %q", choice)
+		}
+	}
+	if format := opts.GetResponseFormat(); format != "" {
+		switch llm.ResponseFormat(format) {
+		case llm.ResponseFormatDefault, llm.ResponseFormatJSON:
+		default:
+			return nil, errors.Errorf("unknown response format %q", format)
+		}
 	}
 	if opts.Temperature != nil {
 		funcs = append(funcs, llm.WithTemperature(opts.GetTemperature()))

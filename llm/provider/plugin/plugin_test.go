@@ -639,3 +639,27 @@ func TestCancelledCallerDoesNotWaitForProcessStart(t *testing.T) {
 		t.Errorf("expected the caller's deadline to win over the process lock, got %v", err)
 	}
 }
+
+func TestDecoratorsRelayClose(t *testing.T) {
+	client := newTestChatClient(t, nil)
+	wrapped := retry.NewClient(provider.NewClient(client, nil, nil), time.Millisecond, 1)
+	if err := wrapped.Close(); err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	if _, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi"))); !errors.Is(err, llm.ErrUnavailable) {
+		t.Errorf("Close did not reach the plugin client through the decorator: %v", err)
+	}
+}
+
+func TestCloseAfterPluginDeathIsNotAnError(t *testing.T) {
+	client := newTestChatClient(t, nil)
+	proc := client.Process()
+	proc.Kill()
+	deadline := time.Now().Add(5 * time.Second)
+	for !proc.Exited() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := client.Close(); err != nil {
+		t.Errorf("closing a client whose process died should be a no-op, got %v", err)
+	}
+}

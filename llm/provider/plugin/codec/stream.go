@@ -46,11 +46,14 @@ func StreamDeltaToProto(delta llm.StreamDelta) *pluginv1.StreamDelta {
 }
 
 // StreamDeltaFromProto rebuilds a delta.
-func StreamDeltaFromProto(delta *pluginv1.StreamDelta) llm.StreamDelta {
+func StreamDeltaFromProto(delta *pluginv1.StreamDelta) (llm.StreamDelta, error) {
 	if delta == nil {
-		return nil
+		return nil, nil
 	}
-	role := RoleFromProto(delta.GetRole())
+	role, err := RoleFromProto(delta.GetRole())
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
 	toolCalls := make([]llm.ToolCallDelta, 0, len(delta.GetToolCalls()))
 	for _, tc := range delta.GetToolCalls() {
 		toolCalls = append(toolCalls, llm.NewToolCallDelta(int(tc.GetIndex()), tc.GetId(), tc.GetName(), tc.GetParametersDelta()))
@@ -63,13 +66,13 @@ func StreamDeltaFromProto(delta *pluginv1.StreamDelta) llm.StreamDelta {
 		// reasoning on it, as the two live on the same struct.
 		result := llm.NewAudioStreamDelta(role, delta.GetContent(), delta.GetAudioData(), delta.GetTranscript(), toolCalls...)
 		llm.SetStreamDeltaReasoning(result, delta.GetReasoning(), reasoningDetailsFromProto(delta.GetReasoningDetails()))
-		return result
+		return result, nil
 	case hasAudio:
-		return llm.NewAudioStreamDelta(role, delta.GetContent(), delta.GetAudioData(), delta.GetTranscript(), toolCalls...)
+		return llm.NewAudioStreamDelta(role, delta.GetContent(), delta.GetAudioData(), delta.GetTranscript(), toolCalls...), nil
 	case hasReasoning:
-		return llm.NewReasoningStreamDelta(role, delta.GetContent(), delta.GetReasoning(), reasoningDetailsFromProto(delta.GetReasoningDetails()), toolCalls...)
+		return llm.NewReasoningStreamDelta(role, delta.GetContent(), delta.GetReasoning(), reasoningDetailsFromProto(delta.GetReasoningDetails()), toolCalls...), nil
 	default:
-		return llm.NewStreamDelta(role, delta.GetContent(), toolCalls...)
+		return llm.NewStreamDelta(role, delta.GetContent(), toolCalls...), nil
 	}
 }
 
@@ -111,7 +114,10 @@ func StreamChunkFromProto(chunk *pluginv1.StreamChunk) (llm.StreamChunk, error) 
 		return llm.NewCompleteStreamChunk(usage), nil
 
 	case pluginv1.StreamChunkType_STREAM_CHUNK_TYPE_DELTA, pluginv1.StreamChunkType_STREAM_CHUNK_TYPE_USAGE:
-		delta := StreamDeltaFromProto(chunk.GetDelta())
+		delta, err := StreamDeltaFromProto(chunk.GetDelta())
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
 		if delta == nil {
 			delta = llm.NewStreamDelta(llm.RoleAssistant, "")
 		}

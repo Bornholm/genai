@@ -43,8 +43,9 @@ func ErrorToProto(err error) *pluginv1.Error {
 			result.Kind = pluginv1.Error_KIND_HTTP
 		}
 	case stderrors.Is(err, llm.ErrRateLimit):
+		// No HTTP error underneath: StatusCode stays 0 so that the host
+		// does not fabricate one.
 		result.Kind = pluginv1.Error_KIND_RATE_LIMIT
-		result.StatusCode = 429
 	case stderrors.Is(err, llm.ErrNoMessage):
 		result.Kind = pluginv1.Error_KIND_NO_MESSAGE
 	case stderrors.Is(err, llm.ErrUnavailable):
@@ -70,11 +71,10 @@ func ErrorFromProto(e *pluginv1.Error) error {
 	}
 	switch e.GetKind() {
 	case pluginv1.Error_KIND_RATE_LIMIT:
-		status := int(e.GetStatusCode())
-		if status == 0 {
-			status = 429
+		if e.GetStatusCode() == 0 {
+			return withMessage(llm.ErrRateLimit, e.GetMessage())
 		}
-		return withMessage(llm.RateLimitError(status, e.GetBody()), e.GetMessage())
+		return withMessage(llm.RateLimitError(int(e.GetStatusCode()), e.GetBody()), e.GetMessage())
 	case pluginv1.Error_KIND_HTTP:
 		return withMessage(llm.NewHTTPError(int(e.GetStatusCode()), e.GetBody()), e.GetMessage())
 	case pluginv1.Error_KIND_NO_MESSAGE:

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bornholm/genai/llm"
+	pluginv1 "github.com/bornholm/genai/llm/provider/plugin/proto/genai/plugin/v1"
 	pkgerrors "github.com/pkg/errors"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -354,7 +355,10 @@ func TestMessageTooLargeWording(t *testing.T) {
 func TestStreamDeltaAudioAndReasoning(t *testing.T) {
 	original := llm.NewAudioStreamDelta(llm.RoleAssistant, "", "AAAA", "hello")
 	llm.SetStreamDeltaReasoning(original, "thinking", nil)
-	decoded := StreamDeltaFromProto(StreamDeltaToProto(original))
+	decoded, err := StreamDeltaFromProto(StreamDeltaToProto(original))
+	if err != nil {
+		t.Fatal(err)
+	}
 	rd, ok := decoded.(llm.ReasoningStreamDelta)
 	if !ok || rd.Reasoning() != "thinking" {
 		t.Errorf("reasoning lost on an audio delta: %#v", decoded)
@@ -362,5 +366,31 @@ func TestStreamDeltaAudioAndReasoning(t *testing.T) {
 	type audioDelta interface{ AudioData() string }
 	if ad, ok := decoded.(audioDelta); !ok || ad.AudioData() != "AAAA" {
 		t.Errorf("audio lost on a reasoning delta: %#v", decoded)
+	}
+}
+
+func TestUnknownEnumsAreErrors(t *testing.T) {
+	if _, err := MessageFromProto(&pluginv1.Message{Role: pluginv1.Role_ROLE_UNSPECIFIED, Content: "x"}); err == nil {
+		t.Error("expected an error for an unspecified role")
+	}
+	if _, err := StreamDeltaFromProto(&pluginv1.StreamDelta{Role: pluginv1.Role(42)}); err == nil {
+		t.Error("expected an error for an unknown role")
+	}
+	if _, err := ChatCompletionOptionsFromProto(&pluginv1.ChatCompletionOptions{ToolChoice: "maybe"}); err == nil {
+		t.Error("expected an error for an unknown tool choice")
+	}
+	if _, err := ChatCompletionOptionsFromProto(&pluginv1.ChatCompletionOptions{ResponseFormat: "xml"}); err == nil {
+		t.Error("expected an error for an unknown response format")
+	}
+}
+
+func TestRateLimitWithoutHTTPOrigin(t *testing.T) {
+	decoded := ErrorFromProto(ErrorToProto(pkgerrors.Wrap(llm.ErrRateLimit, "quota")))
+	var httpErr *llm.HTTPError
+	if errors.As(decoded, &httpErr) {
+		t.Errorf("an HTTP error was fabricated: %v", decoded)
+	}
+	if !errors.Is(decoded, llm.ErrRateLimit) || !llm.IsRetryable(decoded) {
+		t.Errorf("rate limit identity lost: %v", decoded)
 	}
 }

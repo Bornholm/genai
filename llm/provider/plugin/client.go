@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
 	"sync"
 	"time"
@@ -83,12 +84,12 @@ func (s *session) ensure(ctx context.Context) (*Process, string, uint64, error) 
 
 	proc, err := acquire(ctx, s.path)
 	if err != nil {
-		// A start abandoned by the caller is a cancellation, not an
-		// unavailable plugin.
+		// A start abandoned by the caller is a cancellation; the start
+		// error stays reachable underneath for diagnosis.
 		if ctx.Err() != nil {
-			return nil, "", 0, errors.Wrap(ctx.Err(), err.Error())
+			return nil, "", 0, errors.WithStack(stderrors.Join(ctx.Err(), err))
 		}
-		return nil, "", 0, errors.Wrap(llm.ErrUnavailable, err.Error())
+		return nil, "", 0, errors.WithStack(stderrors.Join(llm.ErrUnavailable, err))
 	}
 	if !proc.supports(s.capability) {
 		return nil, "", 0, errors.Errorf("plugin %q does not support %s", proc.info.GetName(), s.capability.String())
@@ -136,7 +137,13 @@ func (s *session) close(ctx context.Context) error {
 	if proc == nil || clientID == "" {
 		return nil
 	}
-	return proc.release(ctx, clientID)
+	err := proc.release(ctx, clientID)
+	if errors.Is(err, codec.ErrUnknownClient) {
+		// The plugin restarted or already forgot the client: nothing left
+		// to release.
+		return nil
+	}
+	return err
 }
 
 func (s *session) process() *Process {
@@ -245,15 +252,21 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		opened, err := proc.clients.ChatCompletion.ChatCompletionStream(streamCtx, req)
+		// Each attempt gets its own context: one abandoned on a
+		// reconfiguration must be cancelled at once, not when the stream
+		// the caller finally reads ends.
+		attemptCtx, cancelAttempt := context.WithCancel(streamCtx)
+		opened, err := proc.clients.ChatCompletion.ChatCompletionStream(attemptCtx, req)
 		if err != nil {
+			cancelAttempt()
 			return codec.ErrorFromStatus(err)
 		}
-		first, err := recvFirst(opened)
+		first, err := recvFirst(ctx, opened)
 		if err != nil {
+			cancelAttempt()
 			return err
 		}
-		stream = &prefetchedStream{ChatCompletion_ChatCompletionStreamClient: opened, first: first}
+		stream = &prefetchedStream{ChatCompletion_ChatCompletionStreamClient: opened, first: first, cancel: cancelAttempt}
 		return nil
 	})
 	if err != nil {
@@ -266,6 +279,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	go func() {
 		defer close(chunks)
 		defer cancel()
+		defer stream.(*prefetchedStream).cancel()
 
 		for {
 			msg, err := stream.Recv()
@@ -303,7 +317,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 // FirstChunkTimeout. Recv itself cannot take a context, so the wait runs
 // aside and the stream is left to its context on timeout; the caller
 // cancels it.
-func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*pluginv1.StreamChunk, error) {
+func recvFirst(ctx context.Context, stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*pluginv1.StreamChunk, error) {
 	type result struct {
 		chunk *pluginv1.StreamChunk
 		err   error
@@ -321,6 +335,8 @@ func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*plug
 			return nil, codec.ErrorFromStatus(r.err)
 		}
 		return r.chunk, nil
+	case <-ctx.Done():
+		return nil, errors.WithStack(ctx.Err())
 	case <-timer.C:
 		return nil, errors.Wrap(llm.ErrUnavailable, "plugin did not send a first chunk in time")
 	}
@@ -330,7 +346,8 @@ func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*plug
 // stream, then reads from the underlying stream.
 type prefetchedStream struct {
 	pluginv1.ChatCompletion_ChatCompletionStreamClient
-	first *pluginv1.StreamChunk
+	first  *pluginv1.StreamChunk
+	cancel context.CancelFunc
 }
 
 func (s *prefetchedStream) Recv() (*pluginv1.StreamChunk, error) {

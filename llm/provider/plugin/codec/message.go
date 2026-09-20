@@ -31,9 +31,15 @@ func RoleToProto(role llm.Role) pluginv1.Role {
 	return roleToProto[role]
 }
 
-// RoleFromProto converts a role; ROLE_UNSPECIFIED maps to the empty role.
-func RoleFromProto(role pluginv1.Role) llm.Role {
-	return roleFromProto[role]
+// RoleFromProto converts a role. An unspecified or unknown role is an
+// error: a plugin speaking another version of the protocol should fail at
+// the edge, not produce a message in-process providers reject later.
+func RoleFromProto(role pluginv1.Role) (llm.Role, error) {
+	result, ok := roleFromProto[role]
+	if !ok {
+		return "", errors.Errorf("unknown role %q", role.String())
+	}
+	return result, nil
 }
 
 var attachmentTypeToProto = map[llm.AttachmentType]pluginv1.AttachmentType{
@@ -257,7 +263,10 @@ func MessageToProto(message llm.Message) (*pluginv1.Message, error) {
 // attachments in llm (their Attachments() is nil), so the wire form never
 // has any for them; every other combination is preserved.
 func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
-	role := RoleFromProto(message.GetRole())
+	role, err := RoleFromProto(message.GetRole())
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
 	attachments, err := attachmentsFromProto(message.GetAttachments())
 	if err != nil {
 		return nil, errors.WithStack(err)
