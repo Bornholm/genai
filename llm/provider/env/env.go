@@ -15,7 +15,8 @@ import (
 //  1. Identification du provider via {prefix}CHAT_COMPLETION_PROVIDER (ou EMBEDDINGS_PROVIDER)
 //  2. Peuplement des options spécifiques au provider via {prefix}{TYPE}_{PROVIDER_UPPER}_*
 //
-// Si le provider n'est pas enregistré, Specific reste nil et l'erreur sera levée à Create().
+// Si le provider n'est pas enregistré et qu'aucun fallback (voir provider.RegisterFallback)
+// ne le revendique, Specific reste nil et l'erreur sera levée à Create().
 // Les options spécifiques sont initialisées avec les valeurs par défaut du provider (newOptions())
 // avant d'être écrasées par les variables d'environnement.
 func With(variableNamePrefix string, envFiles ...string) provider.OptionFunc {
@@ -75,9 +76,12 @@ func resolveOptions(
 		return nil, nil
 	}
 
-	// Passe 2 : instancier et peupler les options spécifiques au provider
-	// Si le provider n'est pas enregistré, specificOpts == nil →
-	// les variables d'env spécifiques sont ignorées silencieusement.
+	// Passe 2 : instancier et peupler les options spécifiques au provider.
+	// Si le provider n'est ni enregistré ni revendiqué par un fallback,
+	// specificOpts == nil → les variables d'env spécifiques sont ignorées
+	// silencieusement. Un fallback (les plugins) répond pour tout nom
+	// valide : les variables du préfixe lui sont alors transmises telles
+	// quelles, et l'échec survient à Create().
 	specificOpts := newProviderOptions(clientOpts.Provider)
 	if specificOpts != nil {
 		// Les tirets dans le nom du provider sont remplacés par des underscores pour produire
@@ -86,10 +90,30 @@ func resolveOptions(
 		if err := env.ParseWithOptions(specificOpts, env.Options{Prefix: providerPrefix}); err != nil {
 			return nil, errors.Wrapf(err, "could not parse options for provider '%s'", clientOpts.Provider)
 		}
+		if consumer, ok := specificOpts.(provider.RawEnvConsumer); ok {
+			consumer.SetRawEnv(rawEnv(providerPrefix))
+		}
 	}
 
 	return &provider.ResolvedClientOptions{
 		Provider: clientOpts.Provider,
 		Specific: specificOpts,
 	}, nil
+}
+
+// rawEnv collects every environment variable starting with prefix, keyed
+// without it.
+func rawEnv(prefix string) map[string]string {
+	vars := map[string]string{}
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, prefix) {
+			continue
+		}
+		key, value, found := strings.Cut(kv[len(prefix):], "=")
+		if !found || key == "" {
+			continue
+		}
+		vars[key] = value
+	}
+	return vars
 }

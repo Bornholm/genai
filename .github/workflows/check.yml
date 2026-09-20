@@ -20,10 +20,15 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.24"
+          go-version-file: go.mod
 
       - name: Build
-        run: go build -v ./...
+        run: go build -v ./... ./plugin/sdk/... ./plugin/testplugins/...
+
+      # The sdk module is published on its own: check it stands without the
+      # workspace, which is how a plugin author consumes it.
+      - name: Build the sdk module standalone
+        run: cd plugin/sdk && GOWORK=off go build ./... && GOWORK=off go test ./...
 
   test:
     strategy:
@@ -38,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.24"
+          go-version-file: go.mod
 
       - name: Test
-        run: go test ./...
+        run: go test ./... ./plugin/sdk/...

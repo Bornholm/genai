@@ -20,6 +20,9 @@ type LLMConfig struct {
 	EnvPrefix                string `yaml:"envPrefix"`
 	TokenLimitChatCompletion int    `yaml:"tokenLimitChatCompletion"`
 	TokenLimitEmbeddings     int    `yaml:"tokenLimitEmbeddings"`
+	// PluginDir is the only directory searched for provider plugins
+	// (genai-provider-<name>); the PATH is never consulted.
+	PluginDir string `yaml:"pluginDir"`
 }
 
 // AgentConfig contient les paramètres partagés entre les commandes do et a2a.
@@ -89,6 +92,7 @@ func interpolateConfig(cfg *Config) {
 	if cfg.LLM != nil {
 		cfg.LLM.EnvFile = Interpolate(cfg.LLM.EnvFile)
 		cfg.LLM.EnvPrefix = Interpolate(cfg.LLM.EnvPrefix)
+		cfg.LLM.PluginDir = Interpolate(cfg.LLM.PluginDir)
 	}
 
 	if cfg.Agent != nil {

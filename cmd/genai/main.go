@@ -8,6 +8,7 @@ import (
 
 	// Import all provider implementations
 	_ "github.com/bornholm/genai/llm/provider/all"
+	_ "github.com/bornholm/genai/llm/provider/all/plugin"
 )
 
 var (

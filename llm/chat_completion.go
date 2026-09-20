@@ -385,6 +385,28 @@ func NewMultimodalMessage(role Role, content string, attachments ...Attachment) 
 	}
 }
 
+// cacheControlSetter is implemented by every message built on BaseMessage.
+type cacheControlSetter interface {
+	setCacheControl(cacheControl *CacheControl)
+}
+
+func (m *BaseMessage) setCacheControl(cacheControl *CacheControl) {
+	m.cacheControl = cacheControl
+}
+
+// SetCacheControl attaches a cache control hint to a message built on
+// BaseMessage, whatever its kind (tool result, tool calls, reasoning,
+// multimodal). It reports false for a message of another implementation,
+// which keeps its own cache control if it has one.
+func SetCacheControl(message Message, cacheControl *CacheControl) bool {
+	setter, ok := message.(cacheControlSetter)
+	if !ok {
+		return false
+	}
+	setter.setCacheControl(cacheControl)
+	return true
+}
+
 // NewMessageWithAttachments creates a new message with attachments (alias for NewMultimodalMessage)
 func NewMessageWithAttachments(role Role, content string, attachments ...Attachment) *MultimodalMessage {
 	return NewMultimodalMessage(role, content, attachments...)
@@ -685,6 +707,26 @@ func NewChatCompletionUsageWithCost(promptTokens, completionTokens, totalTokens,
 		cost:             &cost,
 		costCurrency:     currency,
 	}
+}
+
+// NewChatCompletionUsageFull creates a usage carrying every counter a
+// provider can report: cache reads, cache writes and cost. It is what a
+// component rebuilding a usage from a serialized form needs, since the other
+// constructors each cover one combination.
+func NewChatCompletionUsageFull(promptTokens, completionTokens, totalTokens, cachedTokens, cacheCreationTokens int64, cost *float64, currency string) *BaseChatCompletionUsage {
+	usage := &BaseChatCompletionUsage{
+		promptTokens:        promptTokens,
+		completionTokens:    completionTokens,
+		totalTokens:         totalTokens,
+		cachedTokens:        cachedTokens,
+		cacheCreationTokens: cacheCreationTokens,
+	}
+	if cost != nil {
+		c := *cost
+		usage.cost = &c
+		usage.costCurrency = currency
+	}
+	return usage
 }
 
 var _ CostReportingUsage = &BaseChatCompletionUsage{}

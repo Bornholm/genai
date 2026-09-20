@@ -2,6 +2,7 @@ package circuitbreaker
 
 import (
 	"context"
+	"io"
 	"sync"
 	"time"
 
@@ -150,3 +151,14 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 }
 
 var _ llm.Client = &Client{}
+
+// Close releases the wrapped client when it implements io.Closer, so that a
+// plugin client stays releasable behind this decorator. The decorator owns
+// the client it wraps: closing it closes that client for every other holder
+// too, and an implementation of Close must tolerate being called twice.
+func (c *Client) Close() error {
+	if closer, ok := c.client.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}

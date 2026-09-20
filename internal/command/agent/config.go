@@ -7,6 +7,7 @@ import (
 
 	"github.com/bornholm/genai/internal/command/config"
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/provider/plugin"
 	"github.com/joho/godotenv"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
@@ -135,6 +136,13 @@ func loadBaseConfig(r *cfgResolver) baseConfig {
 		}
 		return ""
 	})
+	// The plugin directory is only known globally (--plugin-dir); the YAML
+	// config may still set it, and must do so before the provider is resolved.
+	// This is process-wide state, acceptable here: internal/command is the
+	// CLI binary, not a library.
+	if r.yamlCfg != nil && r.yamlCfg.LLM != nil && r.yamlCfg.LLM.PluginDir != "" && !r.cliCtx.IsSet("plugin-dir") {
+		plugin.SetSearchDir(r.yamlCfg.LLM.PluginDir)
+	}
 	cfg.chatCompletionLimit = r.int("token-limit-chat-completion", func(c *config.Config) int {
 		if c.LLM != nil {
 			return c.LLM.TokenLimitChatCompletion

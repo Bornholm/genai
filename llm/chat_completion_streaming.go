@@ -332,6 +332,13 @@ func NewAudioStreamDelta(role Role, content, audioData, transcript string, toolC
 	}
 }
 
+// SetStreamDeltaReasoning sets the reasoning of a delta built by another
+// constructor, for a delta carrying both audio and reasoning.
+func SetStreamDeltaReasoning(delta *BaseStreamDelta, reasoning string, details []ReasoningDetail) {
+	delta.reasoning = reasoning
+	delta.reasoningDetails = details
+}
+
 // NewToolCallDelta creates a new tool call delta
 func NewToolCallDelta(index int, id, name, parametersDelta string) *BaseToolCallDelta {
 	return &BaseToolCallDelta{
@@ -427,14 +434,7 @@ func (t *StreamingUsageTracker) Reported() bool {
 
 // Usage returns the current usage as a ChatCompletionUsage
 func (t *StreamingUsageTracker) Usage() ChatCompletionUsage {
-	var usage *BaseChatCompletionUsage
-	if t.cost != nil {
-		usage = NewChatCompletionUsageWithCost(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, *t.cost, t.costCurrency)
-	} else {
-		usage = NewChatCompletionUsageWithCache(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens)
-	}
-	usage.cacheCreationTokens = t.cacheCreationTokens
-	return usage
+	return NewChatCompletionUsageFull(t.promptTokens, t.completionTokens, t.totalTokens, t.cachedTokens, t.cacheCreationTokens, t.cost, t.costCurrency)
 }
 
 // NewStreamingUsageTracker creates a new streaming usage tracker
