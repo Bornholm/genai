@@ -5,7 +5,8 @@ before:
     - go mod tidy
 
 builds:
-  - targets: [linux_amd64_v1]
+  - id: genai
+    targets: [linux_amd64_v1]
     mod_timestamp: "{{ .CommitTimestamp }}"
     dir: ./cmd/genai
     env:
@@ -15,6 +16,26 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X main.version={{.Version}}
+  - id: genai-provider-yzma
+    binary: genai-provider-yzma
+    targets: [linux_amd64_v1]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    dir: ./plugins/yzma
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+# Without this, goreleaser puts every build in one archive: the plugin would
+# double the size of the archive of anyone who only wants the CLI.
+archives:
+  - id: genai
+    ids: [genai]
+  - id: genai-provider-yzma
+    ids: [genai-provider-yzma]
+    name_template: "genai-provider-yzma_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
 checksum:
   name_template: "checksums.txt"
 snapshot:

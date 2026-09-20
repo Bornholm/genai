@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/bornholm/genai/llm/conformance"
-	"github.com/bornholm/genai/llm/provider/yzma"
+	yzma "github.com/bornholm/genai/plugins/yzma/provider"
 )
 
 func TestConformance(t *testing.T) {
