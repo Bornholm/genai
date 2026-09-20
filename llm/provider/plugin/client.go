@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider/plugin/codec"
@@ -90,7 +91,9 @@ func (s *session) ensure(ctx context.Context) (*Process, string, uint64, error) 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		_ = proc.release(ctx, clientID)
+		// Closed while configuring, typically during a shutdown whose ctx
+		// is already cancelled: release with a fresh one, release is bounded.
+		_ = proc.release(context.Background(), clientID)
 		return nil, "", 0, errors.Wrap(llm.ErrUnavailable, "plugin client is closed")
 	}
 	s.proc, s.clientID = proc, clientID
@@ -213,6 +216,11 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 //
 // Cancelling ctx cancels the gRPC stream, which cancels the server context on
 // the plugin side and, through it, the provider's own upstream call.
+//
+// Unlike in-process providers, the call returns only once the first chunk
+// has arrived: a plugin that forgot the client reports it on that first
+// chunk, and the session reconfigures on it. The wait is bounded by
+// StartTimeout, after which the call fails.
 func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
 	// The gRPC stream is only released once its context is cancelled or Recv
 	// returned an error. A terminal chunk does neither, so the stream gets a
@@ -225,16 +233,15 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		stream, err = proc.clients.ChatCompletion.ChatCompletionStream(streamCtx, req)
+		opened, err := proc.clients.ChatCompletion.ChatCompletionStream(streamCtx, req)
 		if err != nil {
 			return codec.ErrorFromStatus(err)
 		}
-		// An unknown client surfaces on the first Recv, not on the open.
-		first, err := stream.Recv()
+		first, err := recvFirst(opened)
 		if err != nil {
-			return codec.ErrorFromStatus(err)
+			return err
 		}
-		stream = &prefetchedStream{ChatCompletion_ChatCompletionStreamClient: stream, first: first}
+		stream = &prefetchedStream{ChatCompletion_ChatCompletionStreamClient: opened, first: first}
 		return nil
 	})
 	if err != nil {
@@ -278,6 +285,30 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	}()
 
 	return chunks, nil
+}
+
+// recvFirst waits for the first chunk of a freshly opened stream, at most
+// StartTimeout. Recv itself cannot take a context, so the wait runs aside
+// and the stream is left to its context on timeout; the caller cancels it.
+func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*pluginv1.StreamChunk, error) {
+	type result struct {
+		chunk *pluginv1.StreamChunk
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		chunk, err := stream.Recv()
+		done <- result{chunk, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return nil, codec.ErrorFromStatus(r.err)
+		}
+		return r.chunk, nil
+	case <-time.After(StartTimeout):
+		return nil, errors.Wrap(llm.ErrUnavailable, "plugin did not send a first chunk in time")
+	}
 }
 
 // prefetchedStream hands back the first message read while opening the

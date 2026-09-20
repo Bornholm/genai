@@ -55,10 +55,18 @@ func StreamDeltaFromProto(delta *pluginv1.StreamDelta) llm.StreamDelta {
 	for _, tc := range delta.GetToolCalls() {
 		toolCalls = append(toolCalls, llm.NewToolCallDelta(int(tc.GetIndex()), tc.GetId(), tc.GetName(), tc.GetParametersDelta()))
 	}
+	hasAudio := delta.GetAudioData() != "" || delta.GetTranscript() != ""
+	hasReasoning := delta.GetReasoning() != "" || len(delta.GetReasoningDetails()) > 0
 	switch {
-	case delta.GetAudioData() != "" || delta.GetTranscript() != "":
+	case hasAudio && hasReasoning:
+		// No llm constructor takes both; build the audio delta and set the
+		// reasoning on it, as the two live on the same struct.
+		result := llm.NewAudioStreamDelta(role, delta.GetContent(), delta.GetAudioData(), delta.GetTranscript(), toolCalls...)
+		llm.SetStreamDeltaReasoning(result, delta.GetReasoning(), reasoningDetailsFromProto(delta.GetReasoningDetails()))
+		return result
+	case hasAudio:
 		return llm.NewAudioStreamDelta(role, delta.GetContent(), delta.GetAudioData(), delta.GetTranscript(), toolCalls...)
-	case delta.GetReasoning() != "" || len(delta.GetReasoningDetails()) > 0:
+	case hasReasoning:
 		return llm.NewReasoningStreamDelta(role, delta.GetContent(), delta.GetReasoning(), reasoningDetailsFromProto(delta.GetReasoningDetails()), toolCalls...)
 	default:
 		return llm.NewStreamDelta(role, delta.GetContent(), toolCalls...)

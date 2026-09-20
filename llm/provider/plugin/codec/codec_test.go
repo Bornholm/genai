@@ -328,3 +328,29 @@ func TestErrorRoundTrip(t *testing.T) {
 		t.Errorf("an oversized message must not look like a retryable rate limit, got %v", tooLarge)
 	}
 }
+
+func TestMessageTooLargeWording(t *testing.T) {
+	for _, message := range []string{
+		"grpc: received message larger than max (70000000 vs. 67108864)",
+		"grpc: trying to send message larger than max (70000000 vs. 67108864)",
+	} {
+		err := ErrorFromStatus(status.Error(codes.ResourceExhausted, message))
+		if !errors.Is(err, ErrMessageTooLarge) || llm.IsRetryable(err) {
+			t.Errorf("%q should map to ErrMessageTooLarge, got %v", message, err)
+		}
+	}
+}
+
+func TestStreamDeltaAudioAndReasoning(t *testing.T) {
+	original := llm.NewAudioStreamDelta(llm.RoleAssistant, "", "AAAA", "hello")
+	llm.SetStreamDeltaReasoning(original, "thinking", nil)
+	decoded := StreamDeltaFromProto(StreamDeltaToProto(original))
+	rd, ok := decoded.(llm.ReasoningStreamDelta)
+	if !ok || rd.Reasoning() != "thinking" {
+		t.Errorf("reasoning lost on an audio delta: %#v", decoded)
+	}
+	type audioDelta interface{ AudioData() string }
+	if ad, ok := decoded.(audioDelta); !ok || ad.AudioData() != "AAAA" {
+		t.Errorf("audio lost on a reasoning delta: %#v", decoded)
+	}
+}

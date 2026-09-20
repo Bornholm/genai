@@ -4,6 +4,7 @@
 //	FAIL_WITH=rate_limit   every call fails with a 429
 //	FAIL_WITH=validation   Configure fails with a validation error
 //	HANG=true              streams block until the host cancels
+//	NO_STREAM=true         the client does not implement streaming
 package main
 
 import (
@@ -20,6 +21,7 @@ type options struct {
 	Model    string `env:"MODEL"`
 	FailWith string `env:"FAIL_WITH"`
 	Hang     bool   `env:"HANG"`
+	NoStream bool   `env:"NO_STREAM"`
 }
 
 func (o *options) Validate() error {
@@ -37,6 +39,9 @@ func main() {
 			var o options
 			if err := opts.Decode(&o); err != nil {
 				return nil, err
+			}
+			if o.NoStream {
+				return &completionOnlyClient{chatClient: &chatClient{opts: o}}, nil
 			}
 			return &chatClient{opts: o}, nil
 		},
@@ -135,6 +140,16 @@ func (c *chatClient) ChatCompletionStream(ctx context.Context, funcs ...llm.Chat
 	}()
 
 	return chunks, nil
+}
+
+// completionOnlyClient hides ChatCompletionStream, so that the SDK answers
+// streaming requests from ChatCompletion.
+type completionOnlyClient struct {
+	chatClient *chatClient
+}
+
+func (c *completionOnlyClient) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	return c.chatClient.ChatCompletion(ctx, funcs...)
 }
 
 type embeddingsClient struct {

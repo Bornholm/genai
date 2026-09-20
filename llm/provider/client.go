@@ -109,16 +109,15 @@ func NewClientWithImageGeneration(chatCompletion llm.ChatCompletionClient, embed
 // Close releases the underlying clients that implement io.Closer, such as
 // plugin clients holding a configured instance in a plugin process. Clients
 // without a Close are left alone. Every closer is called even when one
-// fails; the first error is returned.
+// fails; the first error is returned. A client used for several capabilities
+// gets closed once per capability, so its Close must tolerate repeats.
 func (c *Client) Close() error {
 	var first error
-	seen := map[io.Closer]bool{}
 	for _, sub := range []any{c.chatCompletion, c.embeddings, c.transcription, c.imageGeneration} {
 		closer, ok := sub.(io.Closer)
-		if !ok || seen[closer] {
+		if !ok {
 			continue
 		}
-		seen[closer] = true
 		if err := closer.Close(); err != nil && first == nil {
 			first = errors.WithStack(err)
 		}

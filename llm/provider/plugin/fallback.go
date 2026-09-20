@@ -20,13 +20,17 @@
 //	GENAI_CHAT_COMPLETION_PROVIDER=yzma
 //	GENAI_CHAT_COMPLETION_YZMA_MODEL_PATH=/models/qwen.gguf
 //
-// COMMAND overrides the resolved binary path for one capability:
+// COMMAND overrides the resolved binary path for one capability, and is
+// enough on its own to enable the fallback for that provider:
 //
 //	GENAI_CHAT_COMPLETION_YZMA_COMMAND=/opt/genai/genai-provider-yzma
 package plugin
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
@@ -34,7 +38,23 @@ import (
 )
 
 // CommandOption is the option key overriding the resolved binary path.
+// Giving it, through the environment (GENAI_CHAT_COMPLETION_<NAME>_COMMAND)
+// or programmatically, enables the fallback for that provider even without
+// a plugin directory.
 const CommandOption = "COMMAND"
+
+// commandInEnv reports whether some environment variable names a COMMAND for
+// the provider, whatever its prefix: the registry does not tell the fallback
+// which prefix is in use, and the options are not parsed yet at lookup.
+func commandInEnv(capability provider.Capability, name provider.Name) bool {
+	suffix := "_" + strings.ToUpper(string(capability)) + "_" + strings.ReplaceAll(strings.ToUpper(string(name)), "-", "_") + "_" + CommandOption + "="
+	for _, kv := range os.Environ() {
+		if strings.Contains(kv, suffix) && !strings.HasSuffix(kv, "=") {
+			return true
+		}
+	}
+	return false
+}
 
 // Options is what the registry hands to a plugin provider. Every variable
 // under the provider prefix lands in Env; Command overrides the lookup.
@@ -90,8 +110,37 @@ func init() {
 	provider.RegisterFallback(fallback)
 }
 
+// enabled reports whether the fallback answers at all: once a plugin
+// directory is set, or when the options name a binary through COMMAND.
+func enabled(opts *Options) bool {
+	if SearchDir() != "" {
+		return true
+	}
+	return opts != nil && (opts.Command != "" || opts.Env[CommandOption] != "")
+}
+
+// pluginOptions checks the options the registry hands over. The fallback
+// answers for any unknown name, so a caller may well have configured that
+// name with another provider's option type.
+func pluginOptions(name provider.Name, opts any) (*Options, error) {
+	o, ok := opts.(*Options)
+	if !ok {
+		return nil, llm.NewValidationError("provider", fmt.Sprintf("provider %q is served by a plugin and takes *plugin.Options, not %T", name, opts))
+	}
+	if !enabled(o) {
+		return nil, errors.Wrapf(ErrPluginNotFound, "provider %q is unknown and no plugin directory is set", name)
+	}
+	return o, nil
+}
+
 func fallback(capability provider.Capability, name provider.Name) (*provider.FallbackEntry, bool) {
-	if SearchDir() == "" || !IsValidName(name) {
+	if !IsValidName(name) {
+		return nil, false
+	}
+	// With no directory set the fallback still answers, so that a COMMAND
+	// given programmatically or through the environment can enable it; the
+	// check happens in pluginOptions once the options are known.
+	if SearchDir() == "" && !commandInEnv(capability, name) {
 		return nil, false
 	}
 
@@ -104,7 +153,10 @@ func fallback(capability provider.Capability, name provider.Name) (*provider.Fal
 		return &provider.FallbackEntry{
 			NewOptions: newOptions,
 			CreateClient: func(ctx context.Context, opts any) (any, error) {
-				o := opts.(*Options)
+				o, err := pluginOptions(name, opts)
+				if err != nil {
+					return nil, errors.WithStack(err)
+				}
 				path, err := o.path()
 				if err != nil {
 					return nil, errors.WithStack(err)
@@ -117,7 +169,10 @@ func fallback(capability provider.Capability, name provider.Name) (*provider.Fal
 		return &provider.FallbackEntry{
 			NewOptions: newOptions,
 			CreateClient: func(ctx context.Context, opts any) (any, error) {
-				o := opts.(*Options)
+				o, err := pluginOptions(name, opts)
+				if err != nil {
+					return nil, errors.WithStack(err)
+				}
 				path, err := o.path()
 				if err != nil {
 					return nil, errors.WithStack(err)

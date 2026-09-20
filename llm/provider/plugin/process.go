@@ -200,7 +200,10 @@ func start(ctx context.Context, path string) (*Process, error) {
 }
 
 // CleanupClients kills every plugin process started by this package. Call it
-// when the host exits.
+// when the host exits: releasing clients does not stop their process, which
+// stays warm for the next client of the same binary. It goes through
+// go-plugin's own cleanup, which also kills plugin processes other
+// libraries of the host started with go-plugin.
 func CleanupClients() {
 	goplugin.CleanupClients()
 	poolMu.Lock()

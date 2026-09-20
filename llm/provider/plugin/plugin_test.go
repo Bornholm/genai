@@ -441,3 +441,83 @@ func TestRegistryClientClose(t *testing.T) {
 		t.Errorf("expected ErrUnavailable after Close, got %v", err)
 	}
 }
+
+type notPluginOptions struct{ Model string }
+
+func TestWrongOptionsTypeIsAnError(t *testing.T) {
+	_, err := provider.Create(context.Background(),
+		provider.WithChatCompletion(provider.Name("test"), notPluginOptions{Model: "x"}),
+	)
+	var validationErr llm.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Errorf("expected a validation error for foreign options, got %v", err)
+	}
+}
+
+func TestCommandAloneEnablesFallback(t *testing.T) {
+	dir := SearchDir()
+	SetSearchDir("")
+	t.Cleanup(func() { SetSearchDir(dir) })
+	t.Setenv("CMDTEST_CHAT_COMPLETION_PROVIDER", "test")
+	t.Setenv("CMDTEST_CHAT_COMPLETION_TEST_COMMAND", testPluginPath)
+	t.Setenv("CMDTEST_CHAT_COMPLETION_TEST_MODEL", "cmd")
+
+	client, err := provider.Create(context.Background(), env.With("CMDTEST_"))
+	if err != nil {
+		t.Fatalf("could not create client: %+v", err)
+	}
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	if res.Message().Content() != "echo(cmd): hi" {
+		t.Errorf("unexpected content %q", res.Message().Content())
+	}
+}
+
+func TestStreamFromCompletionOnlyClient(t *testing.T) {
+	client := newTestChatClient(t, map[string]string{"MODEL": "plain", "NO_STREAM": "true"})
+
+	tool := llm.NewFuncTool("get_weather", "weather", nil, nil)
+	chunks, err := client.ChatCompletionStream(context.Background(),
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "hello")),
+		llm.WithTools(tool),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+
+	var (
+		deltas    int
+		content   string
+		reasoning string
+		params    string
+		complete  bool
+	)
+	for chunk := range chunks {
+		switch chunk.Type() {
+		case llm.StreamChunkTypeError:
+			t.Fatalf("unexpected error chunk: %+v", chunk.Error())
+		case llm.StreamChunkTypeComplete:
+			complete = true
+			if chunk.Usage().TotalTokens() != 8 {
+				t.Errorf("usage lost: %#v", chunk.Usage())
+			}
+		case llm.StreamChunkTypeDelta:
+			deltas++
+			content += chunk.Delta().Content()
+			if rd, ok := chunk.Delta().(llm.ReasoningStreamDelta); ok {
+				reasoning += rd.Reasoning()
+			}
+			for _, tc := range chunk.Delta().ToolCalls() {
+				params += tc.ParametersDelta()
+			}
+		}
+	}
+	if deltas != 1 || !complete {
+		t.Errorf("expected one delta then a complete chunk, got %d deltas, complete=%v", deltas, complete)
+	}
+	if content != "echo(plain): hello" || reasoning != "thinking" || params != `{"city":"Paris"}` {
+		t.Errorf("unexpected reconstruction: %q %q %q", content, reasoning, params)
+	}
+}

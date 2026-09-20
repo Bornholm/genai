@@ -91,6 +91,7 @@ func interpolateConfig(cfg *Config) {
 	if cfg.LLM != nil {
 		cfg.LLM.EnvFile = Interpolate(cfg.LLM.EnvFile)
 		cfg.LLM.EnvPrefix = Interpolate(cfg.LLM.EnvPrefix)
+		cfg.LLM.PluginDir = Interpolate(cfg.LLM.PluginDir)
 	}
 
 	if cfg.Agent != nil {

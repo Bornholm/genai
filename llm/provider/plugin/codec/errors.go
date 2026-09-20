@@ -181,7 +181,10 @@ func ErrorFromStatus(err error) error {
 }
 
 // isMessageTooLarge recognizes the messages grpc-go produces when a message
-// exceeds MaxCallRecvMsgSize or MaxCallSendMsgSize.
+// exceeds MaxCallRecvMsgSize ("received message larger than max") or
+// MaxCallSendMsgSize ("sending message larger than max"). The wording is
+// not an API of grpc-go: TestMessageTooLargeWording pins the current one,
+// so a grpc-go bump that rewords it fails there rather than in production.
 func isMessageTooLarge(message string) bool {
 	return strings.Contains(message, "message larger than max")
 }

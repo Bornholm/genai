@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	"github.com/bornholm/genai/llm"
@@ -214,20 +215,38 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 		return nil, errors.WithStack(err)
 	}
 
+	// A client created before a later capability fails would leak what it
+	// holds (a plugin client keeps a configured instance, possibly a loaded
+	// model, in its process): close the ones already built on the way out.
+	var created []any
+	defer func() {
+		if err == nil {
+			return
+		}
+		for _, client := range created {
+			if closer, ok := client.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+	}()
+
 	chatCompletion, err := createClientFromResolved[llm.ChatCompletionClient](ctx, r, CapabilityChatCompletion, opts.ChatCompletion)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
+	created = append(created, chatCompletion)
 
 	embeddings, err := createClientFromResolved[llm.EmbeddingsClient](ctx, r, CapabilityEmbeddings, opts.Embeddings)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
+	created = append(created, embeddings)
 
 	transcription, err := createClientFromResolved[llm.TranscriptionClient](ctx, r, CapabilityTranscription, opts.Transcription)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
 		return nil, errors.WithStack(err)
 	}
+	created = append(created, transcription)
 
 	imageGeneration, err := createClientFromResolved[llm.ImageGenerationClient](ctx, r, CapabilityImageGeneration, opts.ImageGeneration)
 	if err != nil && !errors.Is(err, ErrNotConfigured) {
@@ -235,9 +254,11 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 	}
 
 	if chatCompletion == nil && embeddings == nil && transcription == nil && imageGeneration == nil {
-		return nil, errors.WithStack(ErrNotConfigured)
+		err = errors.WithStack(ErrNotConfigured)
+		return nil, err
 	}
 
+	err = nil
 	return NewClientWithImageGeneration(chatCompletion, embeddings, transcription, imageGeneration), nil
 }
 

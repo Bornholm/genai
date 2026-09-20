@@ -332,6 +332,13 @@ func NewAudioStreamDelta(role Role, content, audioData, transcript string, toolC
 	}
 }
 
+// SetStreamDeltaReasoning sets the reasoning of a delta built by another
+// constructor, for a delta carrying both audio and reasoning.
+func SetStreamDeltaReasoning(delta *BaseStreamDelta, reasoning string, details []ReasoningDetail) {
+	delta.reasoning = reasoning
+	delta.reasoningDetails = details
+}
+
 // NewToolCallDelta creates a new tool call delta
 func NewToolCallDelta(index int, id, name, parametersDelta string) *BaseToolCallDelta {
 	return &BaseToolCallDelta{
