@@ -38,6 +38,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// A factory may return the same instance for both capabilities, so that a
+// provider loads its model once. The host then releases each capability
+// separately: such a shared client must tolerate Close being called once
+// per capability, and must not become unusable for the capability that is
+// still configured. A client that cannot do that should hand out one
+// instance per capability.
+//
 // ChatCompletionFactory builds a chat completion client from its options. The
 // returned client may also implement llm.ChatCompletionStreamingClient; when
 // it does not, streaming requests are answered from ChatCompletion, as one

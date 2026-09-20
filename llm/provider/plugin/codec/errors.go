@@ -74,7 +74,10 @@ func ErrorFromProto(e *pluginv1.Error) error {
 		if e.GetStatusCode() == 0 {
 			return withMessage(llm.ErrRateLimit, e.GetMessage())
 		}
-		return withMessage(llm.RateLimitError(int(e.GetStatusCode()), e.GetBody()), e.GetMessage())
+		// llm.RateLimitError only joins the sentinel for a 429; join it
+		// whatever the status, so that errors.Is gives the host the answer
+		// the plugin gave (some providers report overload as 503 or 529).
+		return withMessage(stderrors.Join(llm.ErrRateLimit, llm.NewHTTPError(int(e.GetStatusCode()), e.GetBody())), e.GetMessage())
 	case pluginv1.Error_KIND_HTTP:
 		return withMessage(llm.NewHTTPError(int(e.GetStatusCode()), e.GetBody()), e.GetMessage())
 	case pluginv1.Error_KIND_NO_MESSAGE:

@@ -17,6 +17,10 @@ import (
 var ErrPluginNotFound = errors.Wrap(provider.ErrClientNotFound, "plugin not found")
 
 // SearchDirEnv names the environment variable holding the plugin directory.
+// It is read once, when the package loads: a value placed in a .env file
+// arrives too late and is ignored, deliberately, since a configuration file
+// should not be able to turn on running binaries. Use the flag, the process
+// environment, or the YAML config.
 const SearchDirEnv = "GENAI_PLUGIN_DIR"
 
 var (

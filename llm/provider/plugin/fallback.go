@@ -67,7 +67,9 @@ func (o *Options) SetRawEnv(vars map[string]string) {
 }
 
 // Validate implements provider.Validator. The name is checked against the
-// provider's when the client is created; here an empty one is fine.
+// provider's when the client is created; here an empty one is fine. The
+// name check below is defensive: the registry never builds options for a
+// name IsValidName rejects.
 func (o *Options) Validate() error {
 	if o.Name != "" && !IsValidName(o.Name) {
 		return llm.NewValidationError("provider", "invalid plugin provider name")
@@ -119,7 +121,10 @@ func enabled(opts *Options) bool {
 	if SearchDir() != "" {
 		return true
 	}
-	return opts != nil && opts.Command != "" && !opts.fromEnv
+	if opts == nil || opts.fromEnv {
+		return false
+	}
+	return opts.Command != "" || opts.Env[CommandOption] != ""
 }
 
 // pluginOptions checks the options the registry hands over. The fallback

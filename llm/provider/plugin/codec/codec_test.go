@@ -256,6 +256,7 @@ func TestErrorRoundTrip(t *testing.T) {
 		pkgerrors.WithStack(llm.ErrNoMessage),
 		pkgerrors.Wrap(llm.ErrUnavailable, "gone"),
 		llm.NewValidationError("model", "model is required"),
+		errors.Join(llm.ErrRateLimit, llm.NewHTTPError(503, "overloaded")),
 		pkgerrors.Wrap(context.Canceled, "upstream"),
 		pkgerrors.WithStack(context.DeadlineExceeded),
 		errors.New("plain"),
@@ -460,5 +461,17 @@ func TestUsageOnlyChunkCarriesItsUsage(t *testing.T) {
 func TestToolCallIDOnAnotherRoleIsAnError(t *testing.T) {
 	if _, err := MessageFromProto(&pluginv1.Message{Role: pluginv1.Role_ROLE_USER, Content: "hi", ToolCallId: "c1"}); err == nil {
 		t.Error("expected an error for a tool call id on a user message")
+	}
+}
+
+func TestRateLimitKeepsItsSentinelOnAnyStatus(t *testing.T) {
+	original := errors.Join(llm.ErrRateLimit, llm.NewHTTPError(529, "overloaded"))
+	decoded := ErrorFromProto(ErrorToProto(original))
+	if !errors.Is(decoded, llm.ErrRateLimit) {
+		t.Errorf("the rate limit sentinel did not survive a non-429 status: %v", decoded)
+	}
+	var httpErr *llm.HTTPError
+	if !errors.As(decoded, &httpErr) || httpErr.StatusCode != 529 {
+		t.Errorf("the http error did not survive: %v", decoded)
 	}
 }

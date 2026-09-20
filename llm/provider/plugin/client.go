@@ -138,9 +138,10 @@ func (s *session) close(ctx context.Context) error {
 		return nil
 	}
 	err := proc.release(ctx, clientID)
-	if errors.Is(err, codec.ErrUnknownClient) {
-		// The plugin restarted or already forgot the client: nothing left
-		// to release.
+	if errors.Is(err, llm.ErrUnavailable) {
+		// The plugin forgot the client, restarted, or died between the
+		// check and the call: nothing left to release either way.
+		// ErrUnknownClient wraps ErrUnavailable, so both land here.
 		return nil
 	}
 	return err
@@ -155,7 +156,9 @@ func (s *session) process() *Process {
 // call runs fn against the live client, reconfiguring once when the plugin
 // reports that it does not know the client. A process dying during the call
 // is not replayed: the call fails with llm.ErrUnavailable and the next one
-// reconfigures, so the caller decides whether to retry.
+// reconfigures. Note that retry.Client does not replay that error, since
+// llm.IsRetryable is false for it: a caller that wants the dead process to
+// cost nothing needs a retry policy of its own.
 func (s *session) call(ctx context.Context, fn func(proc *Process, clientID string) error) error {
 	for attempt := 0; ; attempt++ {
 		proc, clientID, generation, err := s.ensure(ctx)
@@ -246,6 +249,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	// context of its own, cancelled when the reader is done.
 	streamCtx, cancel := context.WithCancel(ctx)
 
+	// One budget for the whole call: a reconfiguration in the middle must
+	// not grant the retry a second full FirstChunkTimeout.
+	deadline := time.Now().Add(FirstChunkTimeout)
+
 	var stream pluginv1.ChatCompletion_ChatCompletionStreamClient
 	err := c.session.call(ctx, func(proc *Process, clientID string) error {
 		req, err := c.request(clientID, funcs)
@@ -261,7 +268,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			cancelAttempt()
 			return codec.ErrorFromStatus(err)
 		}
-		first, err := recvFirst(ctx, opened)
+		first, err := recvFirst(ctx, deadline, opened)
 		if err != nil {
 			cancelAttempt()
 			return err
@@ -313,11 +320,10 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	return chunks, nil
 }
 
-// recvFirst waits for the first chunk of a freshly opened stream, at most
-// FirstChunkTimeout. Recv itself cannot take a context, so the wait runs
-// aside and the stream is left to its context on timeout; the caller
-// cancels it.
-func recvFirst(ctx context.Context, stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*pluginv1.StreamChunk, error) {
+// recvFirst waits for the first chunk of a freshly opened stream, until
+// deadline. Recv itself cannot take a context, so the wait runs aside and
+// the stream is left to its context on timeout; the caller cancels it.
+func recvFirst(ctx context.Context, deadline time.Time, stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*pluginv1.StreamChunk, error) {
 	type result struct {
 		chunk *pluginv1.StreamChunk
 		err   error
@@ -327,7 +333,7 @@ func recvFirst(ctx context.Context, stream pluginv1.ChatCompletion_ChatCompletio
 		chunk, err := stream.Recv()
 		done <- result{chunk, err}
 	}()
-	timer := time.NewTimer(FirstChunkTimeout)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
 	case r := <-done:
