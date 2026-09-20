@@ -28,8 +28,8 @@ func TestConformance(t *testing.T) {
 	}
 
 	binary := filepath.Join(t.TempDir(), "genai-provider-openai-plugin")
-	build := exec.Command("go", "build", "-o", binary, "./internal/openaiplugin")
-	build.Dir = filepath.Join("..", "..", "..", "plugin", "sdk")
+	build := exec.Command("go", "build", "-o", binary, "./openaiplugin")
+	build.Dir = filepath.Join("..", "..", "..", "plugin", "testplugins")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatalf("could not build openai plugin: %v", err)

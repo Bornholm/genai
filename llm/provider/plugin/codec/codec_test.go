@@ -430,3 +430,35 @@ func TestAttachmentsOnReasoningMessagesAreErrors(t *testing.T) {
 		t.Error("expected an error for attachments on a tool calls message")
 	}
 }
+
+func TestStreamDeltaRoleIsOptional(t *testing.T) {
+	delta, err := StreamDeltaFromProto(&pluginv1.StreamDelta{Content: "hi"})
+	if err != nil {
+		t.Fatalf("a delta without a role must be accepted: %+v", err)
+	}
+	if delta.Role() != llm.RoleAssistant || delta.Content() != "hi" {
+		t.Errorf("unexpected delta %#v", delta)
+	}
+	if _, err := StreamDeltaFromProto(&pluginv1.StreamDelta{Role: pluginv1.Role(42)}); err == nil {
+		t.Error("an unknown role is still an error")
+	}
+}
+
+func TestUsageOnlyChunkCarriesItsUsage(t *testing.T) {
+	chunk, err := StreamChunkFromProto(&pluginv1.StreamChunk{
+		Type:  pluginv1.StreamChunkType_STREAM_CHUNK_TYPE_USAGE,
+		Usage: &pluginv1.Usage{TotalTokens: 7},
+	})
+	if err != nil {
+		t.Fatalf("a usage-only chunk must be accepted: %+v", err)
+	}
+	if chunk.Usage() == nil || chunk.Usage().TotalTokens() != 7 {
+		t.Errorf("usage lost: %#v", chunk.Usage())
+	}
+}
+
+func TestToolCallIDOnAnotherRoleIsAnError(t *testing.T) {
+	if _, err := MessageFromProto(&pluginv1.Message{Role: pluginv1.Role_ROLE_USER, Content: "hi", ToolCallId: "c1"}); err == nil {
+		t.Error("expected an error for a tool call id on a user message")
+	}
+}

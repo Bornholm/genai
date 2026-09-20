@@ -143,6 +143,11 @@ func pluginOptions(name provider.Name, opts any) (*Options, error) {
 	if o.Name == "" {
 		o.Name = name
 	}
+	// The registry only calls Validate when Specific implements Validator,
+	// which **Options does not: call it here so both forms behave alike.
+	if err := o.Validate(); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	if !enabled(o) {
 		return nil, errors.Wrapf(ErrPluginNotFound, "provider %q has no in-process registration and no plugin directory is set", name)
 	}

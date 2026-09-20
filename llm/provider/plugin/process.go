@@ -241,7 +241,9 @@ func start(ctx context.Context, path string) (*Process, error) {
 // it, plugin processes only die when go-plugin notices the host is gone,
 // which is not a clean shutdown. It goes through go-plugin's own cleanup,
 // which also kills plugin processes other libraries of the host started
-// with go-plugin.
+// with go-plugin. A session that outlives the call starts a fresh process on
+// its next use, which joins the pool like any other and needs its own
+// cleanup: call it last, or stop using the clients first.
 func CleanupClients() {
 	goplugin.CleanupClients()
 	poolMu.Lock()

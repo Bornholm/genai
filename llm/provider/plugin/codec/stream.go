@@ -50,7 +50,7 @@ func StreamDeltaFromProto(delta *pluginv1.StreamDelta) (llm.StreamDelta, error) 
 	if delta == nil {
 		return nil, nil
 	}
-	role, err := RoleFromProto(delta.GetRole())
+	role, err := StreamRoleFromProto(delta.GetRole())
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -119,7 +119,12 @@ func StreamChunkFromProto(chunk *pluginv1.StreamChunk) (llm.StreamChunk, error) 
 			return nil, errors.WithStack(err)
 		}
 		if delta == nil {
-			return nil, errors.New("delta chunk carries no delta")
+			if chunk.GetType() != pluginv1.StreamChunkType_STREAM_CHUNK_TYPE_USAGE {
+				return nil, errors.New("delta chunk carries no delta")
+			}
+			// A usage-only chunk, which llm has no constructor for: it
+			// becomes a delta carrying the usage, as the proto says.
+			delta = llm.NewStreamDelta(llm.RoleAssistant, "")
 		}
 		if usage != nil {
 			return llm.NewStreamChunkWithUsage(delta, usage), nil

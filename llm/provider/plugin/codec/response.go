@@ -81,6 +81,9 @@ func ChatCompletionResponseFromProto(res *pluginv1.ChatCompletionResponse) (llm.
 	}
 	usage := UsageFromProto(res.GetUsage())
 	if usage == nil {
+		// Chat responses always carry a usage: every in-process provider
+		// builds one, and callers read it without a nil check. Embeddings
+		// keep a nil usage, where callers do check.
 		usage = llm.NewChatCompletionUsage(0, 0, 0)
 	}
 	toolCalls := toolCallsFromProto(res.GetToolCalls())

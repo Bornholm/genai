@@ -27,8 +27,8 @@ func TestMain(m *testing.M) {
 	}
 	testPluginPath = filepath.Join(dir, protocol.BinaryPrefix+"test")
 
-	build := exec.Command("go", "build", "-o", testPluginPath, "./internal/testplugin")
-	build.Dir = filepath.Join("..", "..", "..", "plugin", "sdk")
+	build := exec.Command("go", "build", "-o", testPluginPath, "./testplugin")
+	build.Dir = filepath.Join("..", "..", "..", "plugin", "testplugins")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		panic("could not build test plugin: " + err.Error())

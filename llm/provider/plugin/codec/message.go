@@ -42,6 +42,17 @@ func RoleFromProto(role pluginv1.Role) (llm.Role, error) {
 	return result, nil
 }
 
+// StreamRoleFromProto is RoleFromProto for stream deltas, where the role is
+// optional: a provider that sends it on the first delta only, as the OpenAI
+// wire form does, must not have the rest of its stream rejected. An
+// unspecified role means assistant; an unknown one is still an error.
+func StreamRoleFromProto(role pluginv1.Role) (llm.Role, error) {
+	if role == pluginv1.Role_ROLE_UNSPECIFIED {
+		return llm.RoleAssistant, nil
+	}
+	return RoleFromProto(role)
+}
+
 var attachmentTypeToProto = map[llm.AttachmentType]pluginv1.AttachmentType{
 	llm.AttachmentTypeImage:    pluginv1.AttachmentType_ATTACHMENT_TYPE_IMAGE,
 	llm.AttachmentTypeAudio:    pluginv1.AttachmentType_ATTACHMENT_TYPE_AUDIO,
@@ -282,8 +293,12 @@ func MessageFromProto(message *pluginv1.Message) (llm.Message, error) {
 	}
 
 	var result llm.Message
+	if message.GetToolCallId() != "" && role != llm.RoleTool {
+		return nil, errors.Errorf("a tool call id on a %q message", role)
+	}
+
 	switch {
-	case role == llm.RoleTool || message.GetToolCallId() != "":
+	case role == llm.RoleTool:
 		result = llm.NewToolMessage(message.GetToolCallId(), llm.NewToolResult(message.GetContent(), attachments...))
 
 	case role == llm.RoleToolCalls || len(message.GetToolCalls()) > 0:
