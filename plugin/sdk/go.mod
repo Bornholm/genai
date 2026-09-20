@@ -2,8 +2,12 @@ module github.com/bornholm/genai/plugin/sdk
 
 go 1.25.5
 
+// The require below points at a commit of the root module rather than a
+// tag: the sdk needs llm/provider/plugin/codec, which no tag carries yet.
+// Bump it to the tag right after the root module is tagged, then tag
+// plugin/sdk itself.
 require (
-	github.com/bornholm/genai v0.42.0
+	github.com/bornholm/genai v0.42.1-0.20260920115138-8839905c2655
 	github.com/caarlos0/env/v11 v11.3.1
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0

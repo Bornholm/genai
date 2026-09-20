@@ -5,6 +5,10 @@ SHELL := /bin/bash
 build:
 	CGO_ENABLED=0 go build -o bin/genai ./cmd/genai
 
+# The sdk module is published on its own: this is what a plugin author gets.
+test-sdk-standalone:
+	cd plugin/sdk && GOWORK=off go build ./... && GOWORK=off go test ./...
+
 build-wasm:
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o bin/genai.wasm ./wasm
 
