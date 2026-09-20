@@ -122,15 +122,17 @@ func LogLevel() hclog.Level {
 var (
 	poolMu sync.Mutex
 	pool   = map[string]*Process{}
-	locks  = map[string]*sync.Mutex{}
+	// locks holds one slot per binary path: a channel rather than a mutex so
+	// that a caller waiting for another caller's start honours its context.
+	locks = map[string]chan struct{}{}
 )
 
-func pathLock(path string) *sync.Mutex {
+func pathLock(path string) chan struct{} {
 	poolMu.Lock()
 	defer poolMu.Unlock()
 	lock, ok := locks[path]
 	if !ok {
-		lock = &sync.Mutex{}
+		lock = make(chan struct{}, 1)
 		locks[path] = lock
 	}
 	return lock
@@ -146,8 +148,12 @@ func Start(ctx context.Context, path string) (*Process, error) {
 
 func acquire(ctx context.Context, path string) (*Process, error) {
 	lock := pathLock(path)
-	lock.Lock()
-	defer lock.Unlock()
+	select {
+	case lock <- struct{}{}:
+		defer func() { <-lock }()
+	case <-ctx.Done():
+		return nil, errors.WithStack(ctx.Err())
+	}
 
 	poolMu.Lock()
 	proc, ok := pool[path]
@@ -221,11 +227,13 @@ func start(ctx context.Context, path string) (*Process, error) {
 	return &Process{path: path, client: client, clients: clients, info: info}, nil
 }
 
-// CleanupClients kills every plugin process started by this package. Call it
-// when the host exits: releasing clients does not stop their process, which
-// stays warm for the next client of the same binary. It goes through
-// go-plugin's own cleanup, which also kills plugin processes other
-// libraries of the host started with go-plugin.
+// CleanupClients kills every plugin process started by this package. A host
+// must call it before exiting: releasing clients does not stop their
+// process, which stays warm for the next client of the same binary. Without
+// it, plugin processes only die when go-plugin notices the host is gone,
+// which is not a clean shutdown. It goes through go-plugin's own cleanup,
+// which also kills plugin processes other libraries of the host started
+// with go-plugin.
 func CleanupClients() {
 	goplugin.CleanupClients()
 	poolMu.Lock()

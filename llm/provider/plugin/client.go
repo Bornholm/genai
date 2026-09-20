@@ -313,13 +313,15 @@ func recvFirst(stream pluginv1.ChatCompletion_ChatCompletionStreamClient) (*plug
 		chunk, err := stream.Recv()
 		done <- result{chunk, err}
 	}()
+	timer := time.NewTimer(FirstChunkTimeout)
+	defer timer.Stop()
 	select {
 	case r := <-done:
 		if r.err != nil {
 			return nil, codec.ErrorFromStatus(r.err)
 		}
 		return r.chunk, nil
-	case <-time.After(FirstChunkTimeout):
+	case <-timer.C:
 		return nil, errors.Wrap(llm.ErrUnavailable, "plugin did not send a first chunk in time")
 	}
 }

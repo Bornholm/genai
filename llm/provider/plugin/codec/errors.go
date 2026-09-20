@@ -163,6 +163,10 @@ func ErrorFromStatus(err error) error {
 	case codes.Unavailable:
 		return errors.Wrap(llm.ErrUnavailable, st.Message())
 	case codes.NotFound:
+		// The host reconfigures once and replays the call on this. A plugin
+		// not built with the SDK that answers NotFound for its own reasons
+		// gets that replay; SDK plugins carry a typed detail and never
+		// reach this branch for a provider error.
 		return errors.Wrap(ErrUnknownClient, st.Message())
 	case codes.ResourceExhausted:
 		// grpc-go reports an oversized message with this same code; that is

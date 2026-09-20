@@ -78,7 +78,7 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		id := s.allocateID()
 		s.chat[id] = client
 		s.mu.Unlock()
-		return &pluginv1.ConfigureResponse{ClientId: id}, nil
+		return s.configured(ctx, id)
 
 	case pluginv1.Capability_CAPABILITY_EMBEDDINGS:
 		if s.cfg.Embeddings == nil {
@@ -95,7 +95,7 @@ func (s *server) Configure(ctx context.Context, req *pluginv1.ConfigureRequest) 
 		id := s.allocateID()
 		s.embeddings[id] = client
 		s.mu.Unlock()
-		return &pluginv1.ConfigureResponse{ClientId: id}, nil
+		return s.configured(ctx, id)
 
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown capability %q", req.GetCapability().String())
@@ -114,6 +114,19 @@ func abandoned(ctx context.Context, client any) error {
 		_ = closer.Close()
 	}
 	return codec.ErrorToStatus(ctx.Err())
+}
+
+// configured answers a Configure once the client is registered, unless the
+// host gave up in the meantime: the id would then never reach it, so the
+// client is released right away. A cancellation landing after this point
+// and before gRPC writes the response still leaks the client; that window
+// is the transport's.
+func (s *server) configured(ctx context.Context, id string) (*pluginv1.ConfigureResponse, error) {
+	if ctx.Err() != nil {
+		_, _ = s.Release(context.Background(), &pluginv1.ReleaseRequest{ClientId: id})
+		return nil, codec.ErrorToStatus(ctx.Err())
+	}
+	return &pluginv1.ConfigureResponse{ClientId: id}, nil
 }
 
 // allocateID must be called with mu held for writing.

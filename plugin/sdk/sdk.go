@@ -25,6 +25,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"runtime/debug"
 
@@ -62,7 +63,30 @@ type Config struct {
 	Logger hclog.Logger
 }
 
+// Go runs fn in a goroutine that produces a stream, and closes chunks once
+// fn returns; a panic in fn becomes a terminal error chunk instead of
+// killing the process shared by every configured client. The recovery
+// installed by Serve only covers the goroutine of the RPC handler, so a
+// provider producing its stream from a goroutine of its own, the usual
+// shape of a ChatCompletionStream, should start it with Go. fn must not
+// close chunks itself.
+func Go(ctx context.Context, chunks chan<- llm.StreamChunk, fn func()) {
+	go func() {
+		defer close(chunks)
+		defer func() {
+			if r := recover(); r != nil {
+				llm.SendTerminalChunk(ctx, chunks, llm.NewErrorStreamChunk(fmt.Errorf("provider panicked: %v", r)))
+			}
+		}()
+		fn()
+	}()
+}
+
 // Serve runs the plugin until the host disconnects. It never returns.
+//
+// A panic in a provider during an RPC is recovered and reported as an error
+// to the host, so that other clients configured on the process survive.
+// Goroutines the provider starts itself are not covered: use Go for them.
 func Serve(cfg Config) {
 	logger := cfg.Logger
 	if logger == nil {

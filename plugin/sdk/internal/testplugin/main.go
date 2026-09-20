@@ -107,8 +107,10 @@ func (c *chatClient) ChatCompletionStream(ctx context.Context, funcs ...llm.Chat
 	opts := llm.NewChatCompletionOptions(funcs...)
 	chunks := make(chan llm.StreamChunk, 10)
 
-	go func() {
-		defer close(chunks)
+	sdk.Go(ctx, chunks, func() {
+		if c.opts.Panic {
+			panic("provider bug in stream")
+		}
 
 		if err := c.fail(); err != nil {
 			llm.SendTerminalChunk(ctx, chunks, llm.NewErrorStreamChunk(err))
@@ -142,7 +144,7 @@ func (c *chatClient) ChatCompletionStream(ctx context.Context, funcs ...llm.Chat
 		}
 
 		llm.SendTerminalChunk(ctx, chunks, llm.NewCompleteStreamChunk(usage()))
-	}()
+	})
 
 	return chunks, nil
 }

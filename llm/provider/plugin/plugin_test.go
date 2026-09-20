@@ -35,10 +35,17 @@ func TestMain(m *testing.M) {
 	}
 
 	SetSearchDir(dir)
-	code := m.Run()
-	CleanupClients()
-	os.RemoveAll(dir)
+	code := run(m)
 	os.Exit(code)
+}
+
+// run keeps the cleanup in defers so that a panic in the campaign still
+// removes the temporary directory and the plugin processes.
+func run(m *testing.M) int {
+	defer CleanupClients()
+	defer os.RemoveAll(filepath.Dir(testPluginPath))
+	defer SetSearchDir("")
+	return m.Run()
 }
 
 func newTestChatClient(t *testing.T, options map[string]string) *ChatCompletionClient {
@@ -343,7 +350,7 @@ func TestRegistryFallbackFromEnv(t *testing.T) {
 
 func TestRegistryFallbackProgrammatic(t *testing.T) {
 	client, err := provider.Create(context.Background(),
-		provider.WithChatCompletion(provider.Name("test"), *NewOptions("test", map[string]string{"MODEL": "prog"})),
+		provider.WithChatCompletion(provider.Name("test"), NewOptions("test", map[string]string{"MODEL": "prog"})),
 	)
 	if err != nil {
 		t.Fatalf("could not create client: %+v", err)
@@ -363,7 +370,7 @@ func TestFallbackInactiveWithoutSearchDir(t *testing.T) {
 	t.Cleanup(func() { SetSearchDir(dir) })
 
 	_, err := provider.Create(context.Background(),
-		provider.WithChatCompletion(provider.Name("test"), *NewOptions("test", nil)),
+		provider.WithChatCompletion(provider.Name("test"), NewOptions("test", nil)),
 	)
 	if !errors.Is(err, provider.ErrClientNotFound) {
 		t.Errorf("expected ErrClientNotFound without a plugin directory, got %v", err)
@@ -412,7 +419,7 @@ func TestCloseReleasesClient(t *testing.T) {
 
 func TestUnknownPluginError(t *testing.T) {
 	_, err := provider.Create(context.Background(),
-		provider.WithChatCompletion(provider.Name("nope"), *NewOptions("nope", nil)),
+		provider.WithChatCompletion(provider.Name("nope"), NewOptions("nope", nil)),
 	)
 	if !errors.Is(err, ErrPluginNotFound) || !errors.Is(err, provider.ErrClientNotFound) {
 		t.Errorf("expected plugin not found wrapping ErrClientNotFound, got %v", err)
@@ -421,8 +428,8 @@ func TestUnknownPluginError(t *testing.T) {
 
 func TestRegistryClientClose(t *testing.T) {
 	client, err := provider.Create(context.Background(),
-		provider.WithChatCompletion(provider.Name("test"), *NewOptions("test", nil)),
-		provider.WithEmbeddings(provider.Name("test"), *NewOptions("test", nil)),
+		provider.WithChatCompletion(provider.Name("test"), NewOptions("test", nil)),
+		provider.WithEmbeddings(provider.Name("test"), NewOptions("test", nil)),
 	)
 	if err != nil {
 		t.Fatalf("could not create client: %+v", err)
@@ -566,5 +573,69 @@ func TestCancelledCallerDoesNotWaitForSetup(t *testing.T) {
 	_, err := client.ChatCompletion(ctx, llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected the caller's deadline to win, got %v", err)
+	}
+}
+
+func TestCommandAloneEnablesFallbackProgrammatically(t *testing.T) {
+	dir := SearchDir()
+	SetSearchDir("")
+	t.Cleanup(func() { SetSearchDir(dir) })
+
+	client, err := provider.Create(context.Background(),
+		provider.WithChatCompletion(provider.Name("test"), NewOptions("test", map[string]string{CommandOption: testPluginPath, "MODEL": "prog-cmd"})),
+	)
+	if err != nil {
+		t.Fatalf("could not create client: %+v", err)
+	}
+	res, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	if res.Message().Content() != "echo(prog-cmd): hi" {
+		t.Errorf("unexpected content %q", res.Message().Content())
+	}
+}
+
+func TestPointerOptionsAccepted(t *testing.T) {
+	opts := NewOptions("test", map[string]string{"MODEL": "ptr"})
+	client, err := provider.Create(context.Background(), provider.WithChatCompletion(provider.Name("test"), &opts))
+	if err != nil {
+		t.Fatalf("could not create client from a pointer: %+v", err)
+	}
+	if _, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi"))); err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+}
+
+func TestStreamGoroutinePanicIsAnErrorChunk(t *testing.T) {
+	client := newTestChatClient(t, map[string]string{"PANIC": "true"})
+	chunks, err := client.ChatCompletionStream(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if err != nil {
+		t.Fatalf("unexpected error: %+v", err)
+	}
+	var last llm.StreamChunk
+	for chunk := range chunks {
+		last = chunk
+	}
+	if last == nil || last.Type() != llm.StreamChunkTypeError || !strings.Contains(last.Error().Error(), "provider panicked") {
+		t.Errorf("expected a terminal error chunk reporting the panic, got %#v", last)
+	}
+	if client.Process().Exited() {
+		t.Error("the plugin process died on a goroutine panic")
+	}
+}
+
+func TestCancelledCallerDoesNotWaitForProcessStart(t *testing.T) {
+	lock := pathLock(testPluginPath)
+	lock <- struct{}{}
+	defer func() { <-lock }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	// A fresh session has to acquire the process, which is locked.
+	CleanupClients()
+	_, err := NewChatCompletionClient(ctx, testPluginPath, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected the caller's deadline to win over the process lock, got %v", err)
 	}
 }

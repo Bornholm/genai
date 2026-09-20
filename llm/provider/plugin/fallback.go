@@ -29,8 +29,6 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/bornholm/genai/llm/provider"
@@ -42,23 +40,6 @@ import (
 // or programmatically, enables the fallback for that provider even without
 // a plugin directory.
 const CommandOption = "COMMAND"
-
-// commandInEnv reports whether some environment variable names a COMMAND for
-// the provider, whatever its prefix: the registry does not tell the fallback
-// which prefix is in use, and the options are not parsed yet at lookup.
-func commandInEnv(capability provider.Capability, name provider.Name) bool {
-	unprefixed := strings.ToUpper(string(capability)) + "_" + strings.ReplaceAll(strings.ToUpper(string(name)), "-", "_") + "_" + CommandOption
-	for _, kv := range os.Environ() {
-		key, value, found := strings.Cut(kv, "=")
-		if !found || value == "" {
-			continue
-		}
-		if key == unprefixed || strings.HasSuffix(key, "_"+unprefixed) {
-			return true
-		}
-	}
-	return false
-}
 
 // Options is what the registry hands to a plugin provider. Every variable
 // under the provider prefix lands in Env; Command overrides the lookup.
@@ -105,9 +86,11 @@ func (o *Options) forwarded() map[string]string {
 }
 
 // NewOptions returns options for the named plugin provider, for programmatic
-// configuration through provider.WithChatCompletion and friends.
-func NewOptions(name provider.Name, env map[string]string) *Options {
-	return &Options{Name: name, Env: env}
+// configuration:
+//
+//	provider.WithChatCompletion("acme", plugin.NewOptions("acme", map[string]string{"API_KEY": key}))
+func NewOptions(name provider.Name, env map[string]string) Options {
+	return Options{Name: name, Env: env}
 }
 
 func init() {
@@ -127,9 +110,16 @@ func enabled(opts *Options) bool {
 // answers for any unknown name, so a caller may well have configured that
 // name with another provider's option type.
 func pluginOptions(name provider.Name, opts any) (*Options, error) {
-	o, ok := opts.(*Options)
-	if !ok {
-		return nil, llm.NewValidationError("provider", fmt.Sprintf("provider %q is served by a plugin and takes *plugin.Options, not %T", name, opts))
+	var o *Options
+	switch v := opts.(type) {
+	case *Options:
+		o = v
+	case **Options:
+		// provider.WithChatCompletion takes the address of what it is given.
+		o = *v
+	}
+	if o == nil {
+		return nil, llm.NewValidationError("provider", fmt.Sprintf("provider %q is served by a plugin and takes plugin.Options, not %T", name, opts))
 	}
 	if !enabled(o) {
 		return nil, errors.Wrapf(ErrPluginNotFound, "provider %q is unknown and no plugin directory is set", name)
@@ -141,12 +131,10 @@ func fallback(capability provider.Capability, name provider.Name) (*provider.Fal
 	if !IsValidName(name) {
 		return nil, false
 	}
-	// With no directory set the fallback still answers, so that a COMMAND
-	// given programmatically or through the environment can enable it; the
-	// check happens in pluginOptions once the options are known.
-	if SearchDir() == "" && !commandInEnv(capability, name) {
-		return nil, false
-	}
+	// The fallback answers for every valid name: whether it is enabled (a
+	// plugin directory, or a COMMAND in the options) is only known once the
+	// options are, in pluginOptions. An unknown name without either still
+	// fails with ErrClientNotFound, which ErrPluginNotFound wraps.
 
 	newOptions := func() any {
 		return &Options{Name: name}
