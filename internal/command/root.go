@@ -80,7 +80,7 @@ func Main(name string, version string, usage string, commands ...*cli.Command) {
 			&cli.StringFlag{
 				Name:    "plugin-dir",
 				EnvVars: []string{plugin.SearchDirEnv},
-				Usage:   "Directory searched for provider plugins (genai-provider-<name>) before the PATH. Setting it enables plugins: an unknown provider name then runs a binary, trusted like genai itself",
+				Usage:   "Directory holding provider plugins (genai-provider-<name>). Setting it enables plugins: an unknown provider name then runs a binary from there, trusted like genai itself",
 			},
 		},
 	}

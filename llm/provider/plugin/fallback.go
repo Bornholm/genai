@@ -2,17 +2,23 @@
 // hashicorp/go-plugin (gRPC). Importing it registers a fallback in the
 // provider registry: a provider name with no in-process registration is
 // looked up as a genai-provider-<name> binary in the plugin directory
-// (GENAI_PLUGIN_DIR or SetSearchDir) and then in the PATH.
+// (GENAI_PLUGIN_DIR or SetSearchDir). The PATH is not searched.
 //
 // The fallback is inactive until a plugin directory is set. Setting it is
-// the opt-in: from then on an unknown provider name runs a binary, which
-// inherits the whole environment of the host (go-plugin passes it on, and a
-// native provider needs PATH, HOME and its library paths) and receives the
-// variables under the provider prefix as its options, API keys included. The
-// directory and the PATH are trusted as much as the host binary itself; the
-// handshake only guards against running the wrong kind of program.
+// the opt-in: from then on an unknown provider name runs a binary from that
+// directory, which inherits the whole environment of the host (go-plugin
+// passes it on, and a native provider needs PATH, HOME and its library
+// paths) and receives the variables under the provider prefix as its
+// options, API keys included. The directory is trusted as much as the host
+// binary itself; the handshake only guards against running the wrong kind
+// of program.
 //
 // Discovery relies on POSIX execute bits; Windows is not a target.
+//
+// Two behaviours differ from in-process providers. ChatCompletionStream
+// returns only once the first chunk arrived (see FirstChunkTimeout). And a
+// plugin that fails to start costs every call up to StartTimeout: nothing
+// remembers a failed start, the caller's retry policy decides.
 //
 // Every environment variable under the provider prefix is forwarded verbatim
 // to the plugin, which validates them with its own option struct:
@@ -120,6 +126,9 @@ func pluginOptions(name provider.Name, opts any) (*Options, error) {
 	}
 	if o == nil {
 		return nil, llm.NewValidationError("provider", fmt.Sprintf("provider %q is served by a plugin and takes plugin.Options, not %T", name, opts))
+	}
+	if o.Name != "" && o.Name != name {
+		return nil, llm.NewValidationError("provider", fmt.Sprintf("options for plugin %q were given to provider %q", o.Name, name))
 	}
 	if !enabled(o) {
 		return nil, errors.Wrapf(ErrPluginNotFound, "provider %q is unknown and no plugin directory is set", name)

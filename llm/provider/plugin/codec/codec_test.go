@@ -394,3 +394,29 @@ func TestRateLimitWithoutHTTPOrigin(t *testing.T) {
 		t.Errorf("rate limit identity lost: %v", decoded)
 	}
 }
+
+func TestEmbeddingsUsageStaysNil(t *testing.T) {
+	decoded := EmbeddingsResponseFromProto(&pluginv1.EmbeddingsResponse{Embeddings: []*pluginv1.Embedding{{Values: []float64{1}}}})
+	if decoded.Usage() != nil {
+		t.Errorf("usage was fabricated: %#v", decoded.Usage())
+	}
+	withUsage := EmbeddingsResponseFromProto(EmbeddingsResponseToProto(&EmbeddingsResponse{usage: llm.NewEmbeddingsUsage(2, 2)}))
+	if withUsage.Usage() == nil || withUsage.Usage().PromptTokens() != 2 {
+		t.Errorf("usage lost: %#v", withUsage.Usage())
+	}
+}
+
+func TestValidationErrorWrappedWithSentinel(t *testing.T) {
+	original := pkgerrors.Wrap(errors.Join(llm.ErrUnavailable, llm.NewValidationError("model", "bad")), "acme")
+	decoded := ErrorFromProto(ErrorToProto(original))
+	var ve llm.ValidationError
+	if !errors.As(decoded, &ve) || ve.Field != "model" {
+		t.Errorf("validation error lost behind a sentinel: %v", decoded)
+	}
+}
+
+func TestDeltaChunkWithoutDeltaIsAnError(t *testing.T) {
+	if _, err := StreamChunkFromProto(&pluginv1.StreamChunk{Type: pluginv1.StreamChunkType_STREAM_CHUNK_TYPE_DELTA}); err == nil {
+		t.Error("expected an error for a delta chunk without delta")
+	}
+}

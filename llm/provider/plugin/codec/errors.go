@@ -34,6 +34,12 @@ func ErrorToProto(err error) *pluginv1.Error {
 	var httpErr *llm.HTTPError
 	var validationErr llm.ValidationError
 	switch {
+	case stderrors.As(err, &validationErr):
+		// First: a validation error wrapped with a sentinel must keep its
+		// field and message.
+		result.Kind = pluginv1.Error_KIND_VALIDATION
+		result.Field = validationErr.Field
+		result.Body = validationErr.Message
 	case stderrors.As(err, &httpErr):
 		result.StatusCode = int32(httpErr.StatusCode)
 		result.Body = httpErr.Body
@@ -50,12 +56,6 @@ func ErrorToProto(err error) *pluginv1.Error {
 		result.Kind = pluginv1.Error_KIND_NO_MESSAGE
 	case stderrors.Is(err, llm.ErrUnavailable):
 		result.Kind = pluginv1.Error_KIND_UNAVAILABLE
-	case stderrors.As(err, &validationErr):
-		// Message keeps the full text; the bare field message travels in
-		// Body so that the host rebuilds the same ValidationError.
-		result.Kind = pluginv1.Error_KIND_VALIDATION
-		result.Field = validationErr.Field
-		result.Body = validationErr.Message
 	case stderrors.Is(err, context.Canceled):
 		result.Kind = pluginv1.Error_KIND_CANCELED
 	case stderrors.Is(err, context.DeadlineExceeded):

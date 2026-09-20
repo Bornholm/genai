@@ -119,7 +119,7 @@ func StreamChunkFromProto(chunk *pluginv1.StreamChunk) (llm.StreamChunk, error) 
 			return nil, errors.WithStack(err)
 		}
 		if delta == nil {
-			delta = llm.NewStreamDelta(llm.RoleAssistant, "")
+			return nil, errors.New("delta chunk carries no delta")
 		}
 		if usage != nil {
 			return llm.NewStreamChunkWithUsage(delta, usage), nil

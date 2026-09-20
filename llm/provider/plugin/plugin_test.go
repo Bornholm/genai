@@ -69,6 +69,16 @@ func TestResolve(t *testing.T) {
 	if _, err := Resolve("does-not-exist"); err == nil || !strings.Contains(err.Error(), "plugin not found") {
 		t.Errorf("expected plugin not found error, got %v", err)
 	}
+
+	// The PATH is never searched: a binary there is only reachable by COMMAND.
+	pathDir := t.TempDir()
+	if err := os.Symlink(testPluginPath, filepath.Join(pathDir, protocol.BinaryPrefix+"onpath")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", pathDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := Resolve("onpath"); !errors.Is(err, ErrPluginNotFound) {
+		t.Errorf("expected the PATH to be ignored, got %v", err)
+	}
 	if _, err := Resolve("Bad Name"); err == nil {
 		t.Error("expected an error for an invalid name")
 	}
@@ -661,5 +671,15 @@ func TestCloseAfterPluginDeathIsNotAnError(t *testing.T) {
 	}
 	if err := client.Close(); err != nil {
 		t.Errorf("closing a client whose process died should be a no-op, got %v", err)
+	}
+}
+
+func TestOptionsNameMustMatchProvider(t *testing.T) {
+	_, err := provider.Create(context.Background(),
+		provider.WithChatCompletion(provider.Name("test"), NewOptions("other", nil)),
+	)
+	var validationErr llm.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Errorf("expected a validation error for a mismatched name, got %v", err)
 	}
 }

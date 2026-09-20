@@ -126,8 +126,9 @@ func EmbeddingsResponseFromProto(res *pluginv1.EmbeddingsResponse) *EmbeddingsRe
 	for _, e := range res.GetEmbeddings() {
 		embeddings = append(embeddings, e.GetValues())
 	}
-	return &EmbeddingsResponse{
-		embeddings: embeddings,
-		usage:      llm.NewEmbeddingsUsage(res.GetUsage().GetPromptTokens(), res.GetUsage().GetTotalTokens()),
+	result := &EmbeddingsResponse{embeddings: embeddings}
+	if usage := res.GetUsage(); usage != nil {
+		result.usage = llm.NewEmbeddingsUsage(usage.GetPromptTokens(), usage.GetTotalTokens())
 	}
+	return result
 }

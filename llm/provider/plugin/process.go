@@ -63,7 +63,7 @@ func (p *Process) release(ctx context.Context, clientID string) error {
 	if p.Exited() {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, StartTimeout)
+	ctx, cancel := context.WithTimeout(ctx, ReleaseTimeout)
 	defer cancel()
 	_, err := p.clients.Provider.Release(ctx, &pluginv1.ReleaseRequest{ClientId: clientID})
 	if err != nil {
@@ -81,10 +81,14 @@ func (p *Process) supports(capability pluginv1.Capability) bool {
 	return false
 }
 
-// StartTimeout bounds the start of a plugin process (handshake and Describe)
-// and the Release of a client: a binary that never answers fails instead of
-// hanging the host.
+// StartTimeout bounds the start of a plugin process (handshake and
+// Describe): a binary that never answers fails instead of hanging the host.
 var StartTimeout = 30 * time.Second
+
+// ReleaseTimeout bounds the Release of a client, on the shutdown path: a
+// plugin that no longer answers is not worth waiting for, CleanupClients
+// kills it anyway.
+var ReleaseTimeout = 5 * time.Second
 
 // ConfigureTimeout bounds each Configure call. It is separate from
 // StartTimeout because configuring is where a native provider loads its

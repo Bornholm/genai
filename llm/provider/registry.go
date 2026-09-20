@@ -185,25 +185,29 @@ func RegisterImageGeneration[T any](
 }
 
 // NewImageGenerationProviderOptions retourne une instance d'options (avec les defaults)
-// pour le provider de génération d'images donné, ou nil si le provider n'est pas enregistré.
+// pour le provider de génération d'images donné, ou nil si ni une inscription ni un
+// fallback (voir RegisterFallback) ne le connaît.
 func NewImageGenerationProviderOptions(name Name) any {
 	return defaultRegistry.newOptions(CapabilityImageGeneration, name)
 }
 
 // NewChatCompletionProviderOptions retourne une instance d'options (avec les defaults)
-// pour le provider de chat completion donné, ou nil si le provider n'est pas enregistré.
+// pour le provider de chat completion donné, ou nil si ni une inscription ni un
+// fallback (voir RegisterFallback) ne le connaît.
 func NewChatCompletionProviderOptions(name Name) any {
 	return defaultRegistry.newOptions(CapabilityChatCompletion, name)
 }
 
 // NewEmbeddingsProviderOptions retourne une instance d'options (avec les defaults)
-// pour le provider d'embeddings donné, ou nil si le provider n'est pas enregistré.
+// pour le provider d'embeddings donné, ou nil si ni une inscription ni un
+// fallback (voir RegisterFallback) ne le connaît.
 func NewEmbeddingsProviderOptions(name Name) any {
 	return defaultRegistry.newOptions(CapabilityEmbeddings, name)
 }
 
 // NewTranscriptionProviderOptions retourne une instance d'options (avec les defaults)
-// pour le provider de transcription donné, ou nil si le provider n'est pas enregistré.
+// pour le provider de transcription donné, ou nil si ni une inscription ni un
+// fallback (voir RegisterFallback) ne le connaît.
 func NewTranscriptionProviderOptions(name Name) any {
 	return defaultRegistry.newOptions(CapabilityTranscription, name)
 }
