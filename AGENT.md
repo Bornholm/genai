@@ -39,7 +39,7 @@ The `llm.Client` interface composes four sub-interfaces: `ChatCompletionClient`,
 
 Providers register themselves via `init()` functions using `provider.RegisterChatCompletion(name, factory)`, `provider.RegisterEmbeddings(name, factory)` and `provider.RegisterTranscription(name, factory)`. The global registry creates clients via `provider.Create(ctx, opts...)`.
 
-Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at once. Supported providers: `openai`, `anthropic` (native Messages API through the official SDK), `openrouter`, `ollama`, `mistral`. Transcription is supported by `openai`, `mistral` (Voxtral, reuses the openai client) and `openrouter`.
+Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at once, plus the plugin fallback. Supported providers: `openai`, `anthropic` (native Messages API through the official SDK), `openrouter`, `ollama`, `mistral`. Transcription is supported by `openai`, `mistral` (Voxtral, reuses the openai client) and `openrouter`.
 
 Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and optionally `APIKey`. Environment variable prefixes: `CHAT_COMPLETION_PROVIDER`, `CHAT_COMPLETION_BASE_URL`, `EMBEDDINGS_*`, `TRANSCRIPTION_*`, etc.
 
@@ -87,6 +87,18 @@ Parallel to the LLM layer: `extract.Client` interface with provider registry and
 ### CLI (`cmd/genai/`, `internal/command/`)
 
 Built with `urfave/cli/v2`. Top-level commands: `llm` (chat, embeddings), `agent` (do, a2a). The `agent do` command is the primary way to run an agent from the CLI with full MCP tool integration and A2A discovery.
+
+### Provider Plugins (`llm/provider/plugin/`, `plugin/sdk/`, `plugins/`)
+
+Providers can also be external binaries served over hashicorp/go-plugin (gRPC). Importing `llm/provider/plugin`, which `llm/provider/all/plugin` does and the CLI imports, registers a registry fallback: an unknown provider name is resolved to a `genai-provider-<name>` binary in `GENAI_PLUGIN_DIR` / `--plugin-dir`, and only there. The PATH is never searched, and `provider/all` alone stays free of go-plugin and gRPC. Every environment variable under the provider prefix (`GENAI_CHAT_COMPLETION_<NAME>_*`) is forwarded to the plugin.
+
+- `llm/provider/plugin/proto/` — the `.proto` and generated code (`make proto`, generated files are committed)
+- `llm/provider/plugin/codec/` — conversions between `llm` types and the wire form, shared by host and plugins; typed errors survive the round trip so `retry` keeps working
+- `plugin/sdk/` — **separate Go module** (`github.com/bornholm/genai/plugin/sdk`) used to write plugins: `sdk.Serve(sdk.Config{...})` with factories returning ordinary `llm` clients
+- `plugin/testplugins/` — separate module holding the plugin binaries the tests build, so the SDK does not carry their dependencies
+- `plugins/yzma/` — separate module holding the yzma provider (llama.cpp bindings) and its plugin binary; `make build-plugins`
+
+The repository is a Go workspace (`go.work`) with four modules. In workspace mode `go test ./...` from the root covers the root module only, so the Makefile and the CI list the others explicitly: `go test ./... ./plugin/sdk/... ./plugins/yzma/...`. `make test-sdk-standalone` checks that `plugin/sdk` still builds outside the workspace, which is how a plugin author consumes it.
 
 ### Adding a New Provider
 

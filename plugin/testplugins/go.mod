@@ -6,7 +6,7 @@ module github.com/bornholm/genai/plugin/testplugins
 go 1.25.5
 
 require (
-	github.com/bornholm/genai v0.42.0
+	github.com/bornholm/genai v0.43.0
 	github.com/bornholm/genai/plugin/sdk v0.0.0
 	github.com/pkg/errors v0.9.1
 )

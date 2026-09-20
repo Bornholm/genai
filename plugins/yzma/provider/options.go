@@ -1,6 +1,6 @@
 package yzma
 
-import "github.com/pkg/errors"
+import "github.com/bornholm/genai/llm"
 
 // ChatCompletionOptions contient les options de configuration du provider yzma pour le chat.
 type ChatCompletionOptions struct {
@@ -23,7 +23,8 @@ type ChatCompletionOptions struct {
 	Verbose         bool    `env:"VERBOSE"`
 }
 
-func defaultChatCompletionOptions() *ChatCompletionOptions {
+// DefaultChatCompletionOptions returns the options a chat client starts from.
+func DefaultChatCompletionOptions() *ChatCompletionOptions {
 	return &ChatCompletionOptions{
 		ContextSize:     40960,
 		BatchSize:       512,
@@ -41,7 +42,7 @@ func defaultChatCompletionOptions() *ChatCompletionOptions {
 // Validate vérifie que les options minimales sont présentes.
 func (o *ChatCompletionOptions) Validate() error {
 	if o.ModelPath == "" && o.ModelURL == "" {
-		return errors.New("field \"ModelPath\": model path or model URL is required")
+		return llm.NewValidationError("model_path", "model path or model URL is required")
 	}
 	return nil
 }
@@ -60,7 +61,8 @@ type EmbeddingsOptions struct {
 	Verbose     bool   `env:"VERBOSE"`
 }
 
-func defaultEmbeddingsOptions() *EmbeddingsOptions {
+// DefaultEmbeddingsOptions returns the options an embeddings client starts from.
+func DefaultEmbeddingsOptions() *EmbeddingsOptions {
 	return &EmbeddingsOptions{
 		ContextSize: 40960,
 		BatchSize:   512,
@@ -71,7 +73,7 @@ func defaultEmbeddingsOptions() *EmbeddingsOptions {
 // Validate vérifie que les options minimales sont présentes.
 func (o *EmbeddingsOptions) Validate() error {
 	if o.ModelPath == "" && o.ModelURL == "" {
-		return errors.New("field \"ModelPath\": model path or model URL is required")
+		return llm.NewValidationError("model_path", "model path or model URL is required")
 	}
 	return nil
 }
