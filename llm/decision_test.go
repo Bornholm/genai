@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestQuestions_Validate(t *testing.T) {
 func TestChoiceQuestion_OptionLimit(t *testing.T) {
 	criteria := map[string]any{}
 	for i := 0; i <= llm.MaxChoiceOptions; i++ {
-		criteria[string(rune('a'+i%26))+strings.Repeat("x", i)] = nil
+		criteria[fmt.Sprintf("opt_%03d", i)] = nil
 	}
 
 	err := llm.ChoiceQuestion{Instructions: "Pick one", Criteria: criteria}.Validate()

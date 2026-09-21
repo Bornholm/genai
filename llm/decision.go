@@ -59,10 +59,15 @@ const (
 )
 
 // MaxChoiceOptions is the largest number of options a [ChoiceQuestion] may
-// define.
+// define, per the TypeSafe API reference (docs.typesafe.ai), read 2026-09.
 const MaxChoiceOptions = 255
 
-// Score rubrics hold between MinScoreLevels and MaxScoreLevels levels.
+// Score rubrics hold between MinScoreLevels and MaxScoreLevels levels, per
+// the TypeSafe API reference (docs.typesafe.ai), read 2026-09.
+//
+// These bounds are enforced locally so a question the service would refuse
+// never reaches it. They therefore have to follow the upstream limits: left
+// behind, they refuse calls the service would accept.
 const (
 	MinScoreLevels = 2
 	MaxScoreLevels = 10
