@@ -156,8 +156,11 @@ func (c *DecisionClient) Decision(ctx context.Context, state any, questions llm.
 	}
 
 	// 429 and 529 (overloaded) both ask for a backoff: RateLimitError tags
-	// the first, and llm.IsRetryable already covers the 5xx range, so the
-	// retry wrapper handles both without knowing this endpoint.
+	// the first, and llm.IsRetryable already covers the 5xx range, so any
+	// retry keyed on llm.IsRetryable handles both without knowing this
+	// endpoint. Note that llm/retry does not forward DecisionClient, no
+	// more than it forwards ImageGenerationClient: wrapping a client there
+	// strips the capability, so the backoff is the caller's to apply.
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, errors.WithStack(llm.RateLimitError(resp.StatusCode, errorMessage(raw)))
 	}

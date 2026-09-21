@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/pkg/errors"
 )
@@ -38,14 +39,39 @@ func (q Questions) Validate() error {
 		if id == "" {
 			return NewValidationError("questions", "question ids cannot be empty")
 		}
-		if question == nil {
-			return NewValidationError("questions."+id, "question cannot be nil")
+		if err := checkQuestionValue(id, question); err != nil {
+			return err
 		}
 		if err := question.Validate(); err != nil {
 			return errors.Wrapf(err, "invalid question '%s'", id)
 		}
 	}
 	return nil
+}
+
+// checkQuestionValue rejects what the question types declare but providers
+// cannot encode.
+//
+// The three question types carry value receivers, so their pointer forms
+// satisfy [Question] too and &NoulQuestion{...} compiles — but a provider
+// switches on the value types and would reject it late, with a message
+// naming neither the problem nor the fix. Worse, a typed nil pointer is not
+// a nil interface: it slips past a plain nil check and panics inside the
+// value receiver. Both are caught here, where the id is still known.
+func checkQuestionValue(id string, question Question) error {
+	if question == nil {
+		return NewValidationError("questions."+id, "question cannot be nil")
+	}
+
+	value := reflect.ValueOf(question)
+	if value.Kind() != reflect.Ptr {
+		return nil
+	}
+	if value.IsNil() {
+		return NewValidationError("questions."+id, "question cannot be nil")
+	}
+
+	return NewValidationError("questions."+id, fmt.Sprintf("question must be passed by value, not as a %T", question))
 }
 
 // QuestionType discriminates the three kinds of question, and the answer
@@ -285,7 +311,10 @@ func AnswerOf[T Answer](response DecisionResponse, id string) (T, error) {
 
 	typed, ok := answer.(T)
 	if !ok {
-		return zero, NewValidationError(id, fmt.Sprintf("answer is a %s, not a %T", answer.AnswerType(), zero))
+		// %T on zero would print "<nil>": T is an interface here, so its
+		// zero value carries no type. reflect names it instead.
+		expected := reflect.TypeOf((*T)(nil)).Elem()
+		return zero, NewValidationError(id, fmt.Sprintf("answer is a %s, not a %s", answer.AnswerType(), expected))
 	}
 
 	return typed, nil

@@ -108,8 +108,44 @@ func TestAnswerOf(t *testing.T) {
 	}
 
 	// Asking for the wrong kind must fail loudly rather than hand back a
-	// zero value that reads as "no" or "0".
-	if _, err := llm.AnswerOf[llm.NoulAnswer](response, "dept"); err == nil {
-		t.Error("AnswerOf(dept) as a noul = nil, want an error")
+	// zero value that reads as "no" or "0" — and the message has to name
+	// the type that was expected, not just the one that came back.
+	_, err = llm.AnswerOf[llm.NoulAnswer](response, "dept")
+	if err == nil {
+		t.Fatal("AnswerOf(dept) as a noul = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "llm.NoulAnswer") {
+		t.Errorf("AnswerOf(dept) = %v, want the expected type named", err)
+	}
+}
+
+// The question types have value receivers, so their pointer forms satisfy
+// llm.Question and compile — but no provider encodes them. They must be
+// rejected here, where the id is still known, rather than late and
+// unhelpfully.
+func TestQuestions_RejectsPointerForms(t *testing.T) {
+	err := llm.Questions{"q": &llm.NoulQuestion{Instructions: "Urgent?"}}.Validate()
+	if err == nil {
+		t.Fatal("Validate() with a pointer question = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "by value") {
+		t.Errorf("Validate() = %v, want an error pointing at the value form", err)
+	}
+	if !strings.Contains(err.Error(), "q") {
+		t.Errorf("Validate() = %v, want the question id named", err)
+	}
+}
+
+// A typed nil pointer is not a nil interface: it slips past a plain nil
+// check and panics inside the value receiver.
+func TestQuestions_RejectsTypedNil(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Validate() panicked on a typed nil: %v", r)
+		}
+	}()
+
+	if err := (llm.Questions{"q": (*llm.NoulQuestion)(nil)}).Validate(); err == nil {
+		t.Error("Validate() with a typed nil = nil, want an error")
 	}
 }

@@ -46,6 +46,15 @@ func init() {
 			return nil, nil
 		},
 	)
+	provider.RegisterImageGeneration(
+		"envtest",
+		func() *envTestOptions {
+			return &envTestOptions{BaseURL: "http://default-img.example.com"}
+		},
+		func(ctx context.Context, opts *envTestOptions) (llm.ImageGenerationClient, error) {
+			return nil, nil
+		},
+	)
 	provider.RegisterDecision(
 		"envtest",
 		func() *envTestOptions {
@@ -235,6 +244,46 @@ func TestWith_ParsesDecisionOptions(t *testing.T) {
 		t.Errorf("expected api key 'decision-secret', got %q", typed.APIKey)
 	}
 	if typed.BaseURL != "http://default-decision.example.com" {
+		t.Errorf("expected default base URL, got %q", typed.BaseURL)
+	}
+}
+
+// The IMAGE_GENERATION_ block was missing from With entirely, leaving the
+// capability unreachable from the environment. This pins the repaired path
+// so a typo or a reordering does not quietly restore the bug.
+func TestWith_ParsesImageGenerationOptions(t *testing.T) {
+	os.Setenv("TEST7_IMAGE_GENERATION_PROVIDER", "envtest")
+	os.Setenv("TEST7_IMAGE_GENERATION_ENVTEST_MODEL", "img-model")
+	os.Setenv("TEST7_IMAGE_GENERATION_ENVTEST_API_KEY", "img-secret")
+	defer func() {
+		os.Unsetenv("TEST7_IMAGE_GENERATION_PROVIDER")
+		os.Unsetenv("TEST7_IMAGE_GENERATION_ENVTEST_MODEL")
+		os.Unsetenv("TEST7_IMAGE_GENERATION_ENVTEST_API_KEY")
+	}()
+
+	opts, err := provider.NewOptions(providerenv.With("TEST7_"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if opts.ImageGeneration == nil {
+		t.Fatal("expected ImageGeneration to be set")
+	}
+	if opts.ImageGeneration.Provider != "envtest" {
+		t.Errorf("expected provider 'envtest', got %q", opts.ImageGeneration.Provider)
+	}
+
+	typed, ok := opts.ImageGeneration.Specific.(*envTestOptions)
+	if !ok {
+		t.Fatalf("expected *envTestOptions, got %T", opts.ImageGeneration.Specific)
+	}
+	if typed.Model != "img-model" {
+		t.Errorf("expected model 'img-model', got %q", typed.Model)
+	}
+	if typed.APIKey != "img-secret" {
+		t.Errorf("expected api key 'img-secret', got %q", typed.APIKey)
+	}
+	if typed.BaseURL != "http://default-img.example.com" {
 		t.Errorf("expected default base URL, got %q", typed.BaseURL)
 	}
 }
