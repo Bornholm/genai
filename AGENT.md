@@ -34,14 +34,16 @@ The `llm.Client` interface composes four sub-interfaces: `ChatCompletionClient`,
 - `llm.Attachment` — multimodal content (images, audio, video, documents)
 - `llm.JSONSchema` — builder for JSON schema parameter definitions
 - `llm.TranscriptionClient` — audio transcription (speech-to-text); audio is passed as `[]byte`, format auto-detected via `llm.DetectAudioFormat`
+- `llm.ImageGenerationClient` / `llm.DecisionClient` — optional capabilities, deliberately **not** members of `llm.Client` (adding a method there breaks every implementation). Callers reach them with a type assertion on the client returned by `provider.Create`.
+- `llm.Questions` / `llm.NoulQuestion`, `llm.ChoiceQuestion`, `llm.ScoreQuestion` — typed questions for `DecisionClient`, answered by `llm.NoulAnswer`, `llm.ChoiceAnswer`, `llm.ScoreAnswer`; retrieve one with `llm.AnswerOf[llm.NoulAnswer](response, id)`
 
 ### Provider System (`llm/provider/`)
 
-Providers register themselves via `init()` functions using `provider.RegisterChatCompletion(name, factory)`, `provider.RegisterEmbeddings(name, factory)` and `provider.RegisterTranscription(name, factory)`. The global registry creates clients via `provider.Create(ctx, opts...)`.
+Providers register themselves via `init()` functions using `provider.RegisterChatCompletion(name, factory)`, `provider.RegisterEmbeddings(name, factory)`, `provider.RegisterTranscription(name, factory)`, `provider.RegisterImageGeneration(name, factory)` and `provider.RegisterDecision(name, factory)`. The global registry creates clients via `provider.Create(ctx, opts...)`.
 
-Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at once, plus the plugin fallback. Supported providers: `openai`, `anthropic` (native Messages API through the official SDK), `openrouter`, `ollama`, `mistral`. Transcription is supported by `openai`, `mistral` (Voxtral, reuses the openai client) and `openrouter`.
+Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at once, plus the plugin fallback. Supported providers: `openai`, `anthropic` (native Messages API through the official SDK), `openrouter`, `ollama`, `mistral`, `typesafe`. Transcription is supported by `openai`, `mistral` (Voxtral, reuses the openai client) and `openrouter`. Decisions are supported by `typesafe` (native `POST {base}/systemone`) and `openrouter` (`POST /api/alpha/decisions`, which speaks the same payload and reuses the typesafe client).
 
-Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and optionally `APIKey`. Environment variable prefixes: `CHAT_COMPLETION_PROVIDER`, `CHAT_COMPLETION_BASE_URL`, `EMBEDDINGS_*`, `TRANSCRIPTION_*`, etc.
+Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and optionally `APIKey`. Environment variable prefixes: `CHAT_COMPLETION_PROVIDER`, `CHAT_COMPLETION_BASE_URL`, `EMBEDDINGS_*`, `TRANSCRIPTION_*`, `IMAGE_GENERATION_*`, `DECISION_*`, etc.
 
 ### Resilience Wrappers (`llm/circuitbreaker/`, `llm/ratelimit/`, `llm/retry/`)
 
