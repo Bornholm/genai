@@ -190,15 +190,39 @@ func (q ScoreQuestion) Validate() error {
 	return nil
 }
 
+// validateInstructions accepts what the API accepts there, a string, an
+// object or an array, and rejects the rest before the request leaves.
+//
+// Anything else reaches the service as a JSON scalar and comes back a 422,
+// after a round trip the caller already paid for. A struct is allowed: it
+// marshals to an object, which is the whole point of passing a question and
+// the data it refers to together.
 func validateInstructions(instructions any) error {
-	switch v := instructions.(type) {
-	case nil:
-		return NewValidationError("instructions", "instructions are required")
-	case string:
-		if v == "" {
-			return NewValidationError("instructions", "instructions are required")
-		}
+	const field = "instructions"
+
+	if instructions == nil {
+		return NewValidationError(field, "instructions are required")
 	}
+
+	value := reflect.ValueOf(instructions)
+	for value.Kind() == reflect.Ptr || value.Kind() == reflect.Interface {
+		if value.IsNil() {
+			return NewValidationError(field, "instructions are required")
+		}
+		value = value.Elem()
+	}
+
+	switch value.Kind() {
+	case reflect.String, reflect.Map, reflect.Slice, reflect.Array:
+		if value.Len() == 0 {
+			return NewValidationError(field, "instructions are required")
+		}
+	case reflect.Struct:
+		// Marshals to an object; there is no length to check.
+	default:
+		return NewValidationError(field, fmt.Sprintf("instructions must be a string, an object or an array, not a %s", value.Kind()))
+	}
+
 	return nil
 }
 
@@ -307,6 +331,13 @@ func AnswerOf[T Answer](response DecisionResponse, id string) (T, error) {
 	answer, exists := response.Answers()[id]
 	if !exists {
 		return zero, errors.Wrapf(ErrAnswerNotFound, "no answer for question '%s'", id)
+	}
+	// The mismatch branch below calls AnswerType on the answer. A map
+	// holding a nil under a live id would panic there instead of returning
+	// the error this function exists to return. Providers in this repo
+	// never store one, but the map comes from whoever built the response.
+	if answer == nil {
+		return zero, NewValidationError(id, "answer is nil")
 	}
 
 	typed, ok := answer.(T)

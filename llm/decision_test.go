@@ -149,3 +149,56 @@ func TestQuestions_RejectsTypedNil(t *testing.T) {
 		t.Error("Validate() with a typed nil = nil, want an error")
 	}
 }
+
+// The API takes a string, an object or an array in the instructions slot.
+// Anything else is a JSON scalar the service refuses with a 422, so it has
+// to fail here instead, before the round trip.
+func TestQuestions_ValidatesInstructionShape(t *testing.T) {
+	type question struct {
+		Question string `json:"question"`
+	}
+
+	for name, test := range map[string]struct {
+		instructions any
+		wantErr      bool
+	}{
+		"string":            {instructions: "Urgent?"},
+		"map":               {instructions: map[string]any{"question": "Urgent?"}},
+		"slice":             {instructions: []any{"Urgent?"}},
+		"struct":            {instructions: question{Question: "Urgent?"}},
+		"pointer to struct": {instructions: &question{Question: "Urgent?"}},
+		"int":               {instructions: 42, wantErr: true},
+		"bool":              {instructions: true, wantErr: true},
+		"float":             {instructions: 1.5, wantErr: true},
+		"empty string":      {instructions: "", wantErr: true},
+		"empty map":         {instructions: map[string]any{}, wantErr: true},
+		"empty slice":       {instructions: []any{}, wantErr: true},
+		"typed nil":         {instructions: (*string)(nil), wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := llm.Questions{"q": llm.NoulQuestion{Instructions: test.instructions}}.Validate()
+			if test.wantErr && err == nil {
+				t.Fatalf("Validate() with %v = nil, want an error", test.instructions)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() with %v = %v, want nil", test.instructions, err)
+			}
+		})
+	}
+}
+
+// A nil under a live id must produce the error AnswerOf exists to return,
+// not a panic from calling a method on it.
+func TestAnswerOf_NilAnswer(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("AnswerOf panicked on a nil answer: %v", r)
+		}
+	}()
+
+	response := llm.NewDecisionResponse("m", map[string]llm.Answer{"q": nil}, nil)
+
+	if _, err := llm.AnswerOf[llm.NoulAnswer](response, "q"); err == nil {
+		t.Error("AnswerOf() with a nil answer = nil, want an error")
+	}
+}
