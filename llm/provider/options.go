@@ -28,6 +28,7 @@ type Options struct {
 	Embeddings      *ResolvedClientOptions
 	Transcription   *ResolvedClientOptions
 	ImageGeneration *ResolvedClientOptions
+	Decision        *ResolvedClientOptions
 }
 
 // Validator est une interface optionnelle que les structs d'options peuvent implémenter.
@@ -128,6 +129,27 @@ func WithTranscription[T any](name Name, opts T) OptionFunc {
 func WithImageGeneration[T any](name Name, opts T) OptionFunc {
 	return func(o *Options) error {
 		o.ImageGeneration = &ResolvedClientOptions{
+			Provider: name,
+			Specific: &opts,
+		}
+		return nil
+	}
+}
+
+// WithDecision returns an OptionFunc that configures decision options for a
+// specific provider. The opts value is copied to ensure immutability of the
+// original.
+//
+// Example:
+//
+//	client, err := provider.Create(ctx,
+//	    provider.WithDecision("typesafe", typesafe.Options{
+//	        Model: "jev-latest",
+//	    }),
+//	)
+func WithDecision[T any](name Name, opts T) OptionFunc {
+	return func(o *Options) error {
+		o.Decision = &ResolvedClientOptions{
 			Provider: name,
 			Specific: &opts,
 		}

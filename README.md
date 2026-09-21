@@ -12,6 +12,7 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 - Unified API - Simple and consistent API for all providers
 - Chat Completions - Create conversational AI experiences with ease
 - Audio Transcription - Transcribe audio files (speech-to-text) with OpenAI, Mistral (Voxtral) or OpenRouter
+- Decisions - Answer typed questions about a state with calibrated probabilities, with TypeSafe (Jev) directly or through OpenRouter
 - Environment-based configuration - Configure your clients using environment variables
 - Extensible - Easily add support for new providers or capabilities
 
@@ -134,6 +135,72 @@ log.Printf("[TRANSCRIPT] %s", res.Text())
 
 The audio format is automatically detected from the file content; use `llm.WithAudioFormat()` to set it explicitly. Supported providers: `openai` (Whisper, `gpt-4o-transcribe`), `mistral` (Voxtral) and `openrouter`.
 
+### Decisions
+
+A decision provider answers typed questions about a *state* and returns
+calibrated probabilities instead of free text: a yes/no probability
+(`noul`), a pick among the options you define (`choice`), or a position on
+an ordered rubric (`score`).
+
+```bash
+GENAI_DECISION_PROVIDER=typesafe
+GENAI_DECISION_TYPESAFE_API_KEY=<your_api_key>
+GENAI_DECISION_TYPESAFE_MODEL=jev-latest
+```
+
+The same models are reachable through OpenRouter's decisions endpoint:
+
+```bash
+GENAI_DECISION_PROVIDER=openrouter
+GENAI_DECISION_OPENROUTER_API_KEY=<your_api_key>
+GENAI_DECISION_OPENROUTER_MODEL=~typesafe/jev-latest
+```
+
+Like image generation, decisions are an optional capability: `llm.DecisionClient`
+is not part of `llm.Client`, so it is reached with a type assertion.
+
+```go
+decider, ok := client.(llm.DecisionClient)
+if !ok {
+  log.Fatal("[FATAL] client does not support decisions")
+}
+
+res, err := decider.Decision(ctx, "Help! My payouts have been failing for 3 days.", llm.Questions{
+  "is_urgent": llm.NoulQuestion{
+    Instructions: "Does this convey urgency?",
+    True:         "Explicitly time-sensitive",
+    False:        "No urgency expressed",
+  },
+  "department": llm.ChoiceQuestion{
+    Instructions: "Which team should handle this?",
+    Criteria: map[string]any{
+      "billing":   "Payments, invoicing, refunds",
+      "technical": "Bugs, outages, integrations",
+      "sales":     "Pricing, upgrades, new accounts",
+    },
+  },
+  "frustration": llm.ScoreQuestion{
+    Instructions: "How frustrated is the customer?",
+    Criteria:     []any{"Calm", "Frustrated", "Very angry"},
+  },
+})
+if err != nil {
+  log.Fatalf("[FATAL] %s", err)
+}
+
+urgent, err := llm.AnswerOf[llm.NoulAnswer](res, "is_urgent")
+if err != nil {
+  log.Fatalf("[FATAL] %s", err)
+}
+
+log.Printf("[URGENT] %.2f", urgent.Noul())
+```
+
+`instructions` and every criteria description accept a string, a map or a
+slice: a long question carrying the data it refers to is expressed as a map
+holding the question in one field and the data in the others, referenced by
+name in backticks.
+
 ## Examples
 
 - [Basic](./examples/basic) - A basic example of a chat completion client with input validation
@@ -143,6 +210,7 @@ The audio format is automatically detected from the file content; use `llm.WithA
 - [Multimodal](./examples/multimodal/) - An example of a multimodal LLM model call
 - [JSON](./examples/json) - An example of a LLM call with structured output
 - [Transcription](./examples/transcription) - An example of audio transcription (speech-to-text)
+- [Decision](./examples/decision) - An example of typed questions answered with calibrated probabilities
 
 ## CLI
 
