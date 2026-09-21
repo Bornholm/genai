@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 
@@ -33,9 +34,15 @@ func main() {
 
 	// Decisions are an optional capability: it is not part of llm.Client,
 	// so it is reached with a type assertion.
+	//
+	// A client from provider.Create always satisfies the interface, even
+	// with no decision provider configured, so this assertion only catches
+	// a wrapped client: llm/retry, llm/ratelimit and llm/circuitbreaker do
+	// not forward the capability. An unconfigured one fails at the call
+	// below with llm.ErrUnavailable.
 	decider, ok := client.(llm.DecisionClient)
 	if !ok {
-		log.Fatal("[FATAL] client does not support decisions")
+		log.Fatal("[FATAL] this client does not carry the decision capability")
 	}
 
 	res, err := decider.Decision(ctx, state, llm.Questions{
@@ -58,6 +65,9 @@ func main() {
 		},
 	})
 	if err != nil {
+		if errors.Is(err, llm.ErrUnavailable) {
+			log.Fatal("[FATAL] no decision provider configured, set GENAI_DECISION_PROVIDER")
+		}
 		log.Fatalf("[FATAL] %s", err)
 	}
 

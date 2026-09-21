@@ -283,30 +283,38 @@ type NoulAnswer interface {
 }
 
 // ChoiceAnswer answers a [ChoiceQuestion].
+//
+// Every value here is what the service reported. Providers pass them
+// through: nothing recomputes the pick from the distribution, normalises
+// the probabilities or checks that they sum to 1.
 type ChoiceAnswer interface {
 	Answer
-	// Choice is the highest-probability option.
+	// Choice is the option the model picked, the highest-probability one
+	// in a well-formed response.
 	Choice() string
-	// Probabilities maps every option to its probability; they sum to 1.
+	// Probabilities maps every option to its probability. They sum to 1 in
+	// a well-formed response.
 	Probabilities() map[string]float64
-	// Confidence is how certain the model is, derived from the
-	// distribution, between 0 and 1.
+	// Confidence is how certain the service reports the model being,
+	// between 0 and 1, derived upstream from the distribution.
 	Confidence() float64
 }
 
 // ScoreAnswer answers a [ScoreQuestion].
+//
+// Every value here is what the service reported, passed through unchanged.
 type ScoreAnswer interface {
 	Answer
-	// Score is the probability-weighted position across the levels; it can
-	// land between two of them.
+	// Score is the position across the levels, weighted upstream by the
+	// probabilities, so it can land between two of them.
 	Score() float64
 	// Legend maps each level index, as a string, to its description.
 	Legend() map[string]string
 	// Probabilities maps each level index, as a string, to its
-	// probability; they sum to 1.
+	// probability. They sum to 1 in a well-formed response.
 	Probabilities() map[string]float64
-	// Confidence is how certain the model is, derived from the
-	// distribution, between 0 and 1.
+	// Confidence is how certain the service reports the model being,
+	// between 0 and 1, derived upstream from the distribution.
 	Confidence() float64
 }
 

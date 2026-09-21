@@ -1,6 +1,7 @@
 package typesafe
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	stderrors "errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -303,5 +305,110 @@ func TestNewDecisionClientForBaseURL(t *testing.T) {
 		if got := NewDecisionClientForBaseURL(baseURL, "", "").endpoint; got != want {
 			t.Errorf("baseURL %q: endpoint = %q, want %q", baseURL, got, want)
 		}
+	}
+}
+
+// WithHeader is the only way to add the attribution or auth headers a
+// gateway in front of the API may want; without a test the copy loop in
+// Decision never runs.
+func TestDecisionClient_WithHeader(t *testing.T) {
+	var got http.Header
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		io.WriteString(w, `{"model":"jev-1.13.0","answers":{},"usage":{}}`)
+	}))
+	defer server.Close()
+
+	client := NewDecisionClient(server.URL, "test-key", "",
+		WithHeader("HTTP-Referer", "https://example.com"),
+		WithHeader("X-Title", "Example"),
+	)
+
+	if _, err := client.Decision(context.Background(), "state", llm.Questions{
+		"q": llm.NoulQuestion{Instructions: "Urgent?"},
+	}); err != nil {
+		t.Fatalf("Decision() = %v", err)
+	}
+
+	if v := got.Get("HTTP-Referer"); v != "https://example.com" {
+		t.Errorf("HTTP-Referer = %q, want the configured value", v)
+	}
+	if v := got.Get("X-Title"); v != "Example" {
+		t.Errorf("X-Title = %q, want the configured value", v)
+	}
+	// The per-request headers must not overwrite what Decision sets.
+	if v := got.Get("Authorization"); v != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want it preserved", v)
+	}
+}
+
+// A body over the cap has to say so. Handing the decoder a cut document
+// reports "unexpected end of JSON input", which reads like a malformed
+// response rather than a size limit.
+func TestDecisionClient_RejectsOversizedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"model":"x","answers":{},"usage":{},"pad":"`))
+		chunk := bytes.Repeat([]byte("a"), 1<<20)
+		for written := 0; written <= maxResponseSize; written += len(chunk) {
+			w.Write(chunk)
+		}
+		w.Write([]byte(`"}`))
+	}))
+	defer server.Close()
+
+	_, err := NewDecisionClient(server.URL, "", "").
+		Decision(context.Background(), "state", llm.Questions{"q": llm.NoulQuestion{Instructions: "Urgent?"}})
+	if err == nil {
+		t.Fatal("Decision() = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("Decision() = %v, want an error naming the size limit", err)
+	}
+}
+
+func TestErrorMessage(t *testing.T) {
+	for name, test := range map[string]struct {
+		body string
+		want string
+	}{
+		"error message": {body: `{"error":{"message":"nope"}}`, want: "nope"},
+		"detail":        {body: `{"detail":[{"loc":["questions"],"msg":"required"}]}`, want: "questions"},
+		// A JSON null decodes to the bytes "null"; passing that on as the
+		// error text would say nothing at all.
+		"null detail": {body: `{"detail":null}`, want: `{"detail":null}`},
+		"not json":    {body: `<html>502 Bad Gateway</html>`, want: "502 Bad Gateway"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := errorMessage([]byte(test.body)); !strings.Contains(got, test.want) {
+				t.Errorf("errorMessage() = %q, want it to contain %q", got, test.want)
+			}
+		})
+	}
+
+	// A proxy's error page would otherwise travel whole into HTTPError.Body
+	// and from there into the caller's logs.
+	long := errorMessage(bytes.Repeat([]byte("a"), maxErrorMessageSize*2))
+	if len(long) > maxErrorMessageSize+len("… (truncated)") {
+		t.Errorf("errorMessage() kept %d bytes, want it capped at %d", len(long), maxErrorMessageSize)
+	}
+	if !strings.Contains(long, "truncated") {
+		t.Error("errorMessage() cut the body without saying so")
+	}
+}
+
+// A typed nil state is not a nil interface: it would marshal to null and
+// come back a 422, the round trip the local checks exist to save.
+func TestDecisionClient_RejectsTypedNilState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("request sent despite a nil state")
+	}))
+	defer server.Close()
+
+	var state *string
+	_, err := NewDecisionClient(server.URL, "", "").
+		Decision(context.Background(), state, llm.Questions{"q": llm.NoulQuestion{Instructions: "Urgent?"}})
+	if err == nil {
+		t.Error("Decision() with a typed nil state = nil, want an error")
 	}
 }

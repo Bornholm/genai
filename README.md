@@ -157,7 +157,11 @@ GENAI_DECISION_OPENROUTER_MODEL=~typesafe/jev-latest
 ```
 
 Like image generation, decisions are an optional capability: `llm.DecisionClient`
-is not part of `llm.Client`, so it is reached with a type assertion.
+is not part of `llm.Client`, so it is reached with a type assertion. A client
+from `provider.Create` always satisfies the interface, so the assertion only
+catches a wrapped client, since `llm/retry`, `llm/ratelimit` and
+`llm/circuitbreaker` do not forward the capability. A client built without a
+decision provider fails at the call with `llm.ErrUnavailable`.
 
 ```go
 decider, ok := client.(llm.DecisionClient)

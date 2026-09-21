@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -34,6 +35,9 @@ const evaluationPath = "/systemone"
 // maxResponseSize caps what is read from a response body. Answers are a few
 // kilobytes at most; the cap keeps a misrouted request from filling memory.
 const maxResponseSize = 8 << 20
+
+// maxErrorMessageSize caps what an error carries from a response body.
+const maxErrorMessageSize = 4 << 10
 
 // DecisionClient evaluates a state against typed questions.
 //
@@ -103,7 +107,7 @@ func NewDecisionClientForBaseURL(baseURL, apiKey, model string, funcs ...ClientO
 func (c *DecisionClient) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
 	opts := llm.NewDecisionOptions(funcs...)
 
-	if state == nil {
+	if isNilValue(state) {
 		return nil, llm.NewValidationError("state", "state is required")
 	}
 	if err := questions.Validate(); err != nil {
@@ -150,9 +154,16 @@ func (c *DecisionClient) Decision(ctx context.Context, state any, questions llm.
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	// One byte over the cap tells a body that was cut from one that just
+	// fits. Without it the decoder gets half a document and reports
+	// "unexpected end of JSON input", which reads like a malformed
+	// response rather than a size limit.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
 	if err != nil {
 		return nil, errors.WithStack(err)
+	}
+	if len(raw) > maxResponseSize {
+		return nil, errors.Errorf("response body exceeds %d bytes", maxResponseSize)
 	}
 
 	// 429 and 529 (overloaded) both ask for a backoff: RateLimitError tags
@@ -194,11 +205,43 @@ func errorMessage(raw []byte) string {
 		if parsed.Error != nil && parsed.Error.Message != "" {
 			return parsed.Error.Message
 		}
-		if len(parsed.Detail) > 0 {
-			return string(parsed.Detail)
+		// A JSON null decodes to the four bytes "null", which would travel
+		// on as the error text and say nothing.
+		if detail := string(parsed.Detail); detail != "" && detail != "null" {
+			return truncate(detail)
 		}
 	}
-	return string(raw)
+
+	// Not JSON at all: a proxy's HTML error page, for instance. It goes
+	// into HTTPError.Body and from there into the caller's logs, so only
+	// the head of it is worth keeping.
+	return truncate(string(raw))
+}
+
+// truncate caps an error message at maxErrorMessageSize, marking what it
+// cut so nobody reads the result as the whole story.
+func truncate(message string) string {
+	if len(message) <= maxErrorMessageSize {
+		return message
+	}
+	return message[:maxErrorMessageSize] + "… (truncated)"
+}
+
+// isNilValue reports whether value is nil, including a typed nil pointer.
+//
+// A typed nil is not a nil interface: (*string)(nil) would otherwise slip
+// through, marshal to "state": null and come back a 422, which is the round
+// trip the local checks exist to save.
+func isNilValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(value); v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 type decisionRequest struct {
