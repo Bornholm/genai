@@ -12,7 +12,9 @@ import (
 
 // With retourne une provider.OptionFunc qui peuple les options depuis les variables d'environnement.
 // Le parsing s'effectue en deux passes :
-//  1. Identification du provider via {prefix}CHAT_COMPLETION_PROVIDER (ou EMBEDDINGS_PROVIDER)
+//  1. Identification du provider via {prefix}CHAT_COMPLETION_PROVIDER (ou
+//     EMBEDDINGS_PROVIDER, TRANSCRIPTION_PROVIDER, IMAGE_GENERATION_PROVIDER,
+//     DECISION_PROVIDER)
 //  2. Peuplement des options spécifiques au provider via {prefix}{TYPE}_{PROVIDER_UPPER}_*
 //
 // Si le provider n'est pas enregistré et qu'aucun fallback (voir provider.RegisterFallback)
@@ -56,6 +58,26 @@ func With(variableNamePrefix string, envFiles ...string) provider.OptionFunc {
 			return errors.Wrap(err, "could not resolve transcription options")
 		}
 		opts.Transcription = transcriptionResolved
+
+		// Image generation
+		imageResolved, err := resolveOptions(
+			variableNamePrefix+"IMAGE_GENERATION_",
+			provider.NewImageGenerationProviderOptions,
+		)
+		if err != nil {
+			return errors.Wrap(err, "could not resolve image generation options")
+		}
+		opts.ImageGeneration = imageResolved
+
+		// Decision
+		decisionResolved, err := resolveOptions(
+			variableNamePrefix+"DECISION_",
+			provider.NewDecisionProviderOptions,
+		)
+		if err != nil {
+			return errors.Wrap(err, "could not resolve decision options")
+		}
+		opts.Decision = decisionResolved
 
 		return nil
 	}

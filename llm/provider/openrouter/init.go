@@ -38,6 +38,14 @@ func init() {
 		},
 	)
 
+	provider.RegisterDecision(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.DecisionClient, error) {
+			return NewDecisionClient(nil, opts.BaseURL, opts.APIKey, opts.Model), nil
+		},
+	)
+
 	provider.RegisterImageGeneration(
 		Name,
 		defaultOptions,
