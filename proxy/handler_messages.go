@@ -70,6 +70,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	opts := req.ChatOptions
 
 	if stream {
+		// A client that speaks the Messages API forwards the request as is,
+		// keeping the fields and events the translation below would drop.
+		if llm.SupportsMessagesRelay(rawClient) {
+			relay := &messagesRelayStream{client: rawClient.(llm.MessagesRelayClient), body: req.Body, header: req.Headers}
+			s.streamChatCompletion(w, r, req, relay, resolvedModel, opts, rawEventEmitter{})
+			return
+		}
 		streamingClient, ok := rawClient.(llm.ChatCompletionStreamingClient)
 		if !ok {
 			writeAnthropicAPIError(w, NewInternalError("provider does not support streaming"))

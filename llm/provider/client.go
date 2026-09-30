@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"io"
+	"net/http"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -123,6 +124,18 @@ func (c *Client) Close() error {
 		}
 	}
 	return first
+}
+
+// RelayMessages implements [llm.MessagesRelayClient] when the chat completion
+// client does.
+func (c *Client) RelayMessages(ctx context.Context, body []byte, header http.Header) (<-chan llm.StreamChunk, error) {
+	return llm.RelayMessages(ctx, c.chatCompletion, body, header)
+}
+
+// SupportsMessagesRelay reports on the chat completion client, see
+// [llm.SupportsMessagesRelay].
+func (c *Client) SupportsMessagesRelay() bool {
+	return llm.SupportsMessagesRelay(c.chatCompletion)
 }
 
 var (

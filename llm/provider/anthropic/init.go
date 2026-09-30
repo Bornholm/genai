@@ -70,7 +70,9 @@ func init() {
 				maxTokens = DefaultMaxTokens
 			}
 
-			return NewChatCompletionClient(client, opts.Model, maxTokens), nil
+			chat := NewChatCompletionClient(client, opts.Model, maxTokens)
+			chat.relay = &relayTarget{baseURL: normalizeBaseURL(opts.BaseURL), apiKey: opts.APIKey}
+			return chat, nil
 		},
 	)
 }

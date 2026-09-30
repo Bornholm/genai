@@ -21,6 +21,10 @@ type ChatCompletionClient struct {
 	client    anthropicsdk.Client
 	model     string
 	maxTokens int64
+	// relay is the upstream RelayMessages posts to. The SDK client does not
+	// expose its base URL and key, so only clients built by the registry,
+	// which knows them, can relay.
+	relay *relayTarget
 }
 
 // ChatCompletion implements llm.ChatCompletionClient.

@@ -18,6 +18,9 @@ var (
 type HTTPError struct {
 	StatusCode int
 	Body       string
+	// Header holds the upstream response headers when the provider kept them,
+	// as a relay does so that retry-after and friends reach the client.
+	Header http.Header
 }
 
 func (e *HTTPError) Error() string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/bornholm/genai/llm"
@@ -248,6 +249,39 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	}()
 
 	return outCh, nil
+}
+
+// RelayMessages implements llm.MessagesRelayClient. Only opening the stream is
+// retried: once an event has been relayed, replaying the request would send
+// the client a second copy of the message, which the Messages protocol has no
+// way to take back.
+func (c *Client) RelayMessages(ctx context.Context, body []byte, header http.Header) (<-chan llm.StreamChunk, error) {
+	backoff := c.baseDelay
+	retries := 0
+
+	for {
+		stream, err := llm.RelayMessages(ctx, c.client, body, header)
+		if err == nil {
+			return stream, nil
+		}
+		if retries >= c.maxRetries || !llm.IsRetryable(err) {
+			return nil, errors.WithStack(err)
+		}
+		slog.DebugContext(ctx, "relay failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
+		retries++
+		select {
+		case <-time.After(backoff):
+			backoff *= 2
+		case <-ctx.Done():
+			return nil, errors.WithStack(ctx.Err())
+		}
+	}
+}
+
+// SupportsMessagesRelay reports on the wrapped client, see
+// llm.SupportsMessagesRelay.
+func (c *Client) SupportsMessagesRelay() bool {
+	return llm.SupportsMessagesRelay(c.client)
 }
 
 func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int, funcs ...OptionFunc) *Client {

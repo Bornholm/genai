@@ -29,6 +29,27 @@ type streamEmitter interface {
 	Finalize(w io.Writer, usage llm.ChatCompletionUsage) error
 }
 
+// errorResponseWriter is implemented by the emitters that answer, in their own
+// wire format, a request the provider rejected before streaming anything.
+type errorResponseWriter interface {
+	WriteErrorResponse(w http.ResponseWriter, err error)
+}
+
+// writeStreamOpenError answers a stream that failed before its first chunk:
+// the error hooks get the first word, then the emitter, then the default
+// OpenAI-style error.
+func (s *Server) writeStreamOpenError(ctx context.Context, w http.ResponseWriter, req *ProxyRequest, emitter streamEmitter, err error) {
+	errRes, _ := s.chain.RunOnError(ctx, req, err)
+	switch ew, ok := emitter.(errorResponseWriter); {
+	case errRes != nil:
+		writeProxyResponse(w, errRes)
+	case ok:
+		ew.WriteErrorResponse(w, err)
+	default:
+		writeAPIError(w, apiErrorFromErr(err))
+	}
+}
+
 // streamChatCompletion runs a streaming chat completion and encodes each
 // chunk via emitter, writing SSE output to w. It handles the common
 // concerns shared by all wire formats: peeking at the first chunk to
@@ -56,12 +77,7 @@ func (s *Server) streamChatCompletion(
 	chunks, err := client.ChatCompletionStream(streamCtx, opts...)
 	if err != nil {
 		slog.ErrorContext(ctx, "stream chat completion error", slog.Any("error", err))
-		errRes, _ := s.chain.RunOnError(ctx, req, err)
-		if errRes != nil {
-			writeProxyResponse(w, errRes)
-		} else {
-			writeAPIError(w, apiErrorFromErr(err))
-		}
+		s.writeStreamOpenError(ctx, w, req, emitter, err)
 		return
 	}
 
@@ -75,12 +91,7 @@ func (s *Server) streamChatCompletion(
 	}
 	if firstChunk.Error() != nil {
 		slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", firstChunk.Error()))
-		errRes, _ := s.chain.RunOnError(ctx, req, firstChunk.Error())
-		if errRes != nil {
-			writeProxyResponse(w, errRes)
-		} else {
-			writeAPIError(w, apiErrorFromErr(firstChunk.Error()))
-		}
+		s.writeStreamOpenError(ctx, w, req, emitter, firstChunk.Error())
 		return
 	}
 
