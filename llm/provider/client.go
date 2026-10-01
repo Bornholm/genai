@@ -140,6 +140,7 @@ func (c *Client) SupportsMessagesRelay() bool {
 
 var (
 	_ llm.Client                = &Client{}
+	_ llm.MessagesRelayClient   = &Client{}
 	_ llm.ImageGenerationClient = &Client{}
 	_ io.Closer                 = &Client{}
 )

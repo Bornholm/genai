@@ -86,7 +86,7 @@ func (s *Server) streamChatCompletion(
 	// immediately rejects the request (e.g. invalid model parameters).
 	firstChunk, ok := <-chunks
 	if !ok {
-		writeAPIError(w, NewInternalError("stream closed with no data"))
+		s.writeStreamOpenError(ctx, w, req, emitter, errors.New("stream closed with no data"))
 		return
 	}
 	if firstChunk.Error() != nil {

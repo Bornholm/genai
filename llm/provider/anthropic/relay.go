@@ -17,6 +17,15 @@ import (
 // maxRelayErrorBody caps how much of a rejected request's body is kept.
 const maxRelayErrorBody = 1 << 20
 
+// httpClient is http.DefaultClient without redirects. Following one to another
+// host would carry x-api-key along, net/http only strips Authorization and
+// cookies, and the Messages endpoint never answers a POST with a redirect: a
+// 3xx comes back as an HTTPError like any other non-2xx answer. The SDK client
+// gets it too, for the translated path.
+var httpClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
 type relayTarget struct {
 	baseURL string // normalized, with a trailing slash
 	apiKey  string
@@ -59,7 +68,7 @@ func (c *ChatCompletionClient) RelayMessages(ctx context.Context, body []byte, h
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "text/event-stream")
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -234,6 +243,9 @@ func withModel(body []byte, model string) ([]byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, errors.Wrap(err, "relay: request body is not a JSON object")
+	}
+	if fields == nil { // a JSON null decodes without error into a nil map
+		return nil, errors.New("relay: request body is not a JSON object")
 	}
 	var current string
 	if json.Unmarshal(fields["model"], &current) == nil && current == model {

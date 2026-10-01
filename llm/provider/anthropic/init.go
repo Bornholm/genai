@@ -63,6 +63,7 @@ func init() {
 				option.WithBaseURL(normalizeBaseURL(opts.BaseURL)),
 				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
 				option.WithAPIKey(opts.APIKey),
+				option.WithHTTPClient(httpClient),
 			)
 
 			maxTokens := opts.MaxTokens

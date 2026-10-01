@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,5 +141,24 @@ func TestHandleMessages_HiddenRelayFallsBackToTranslation(t *testing.T) {
 
 	if inner.gotBody != nil || !strings.Contains(w.Body.String(), "translated") {
 		t.Errorf("expected the translated path, got relay=%v body=%s", inner.gotBody != nil, w.Body.String())
+	}
+}
+
+// A provider that closes its stream before any chunk is answered in the
+// Anthropic error format on /messages, translated or relayed.
+func TestHandleMessages_EmptyStreamAnswersInAnthropicFormat(t *testing.T) {
+	server := NewServer(WithHook(&resolverHook{client: &mockStreamingChatClient{}, model: "m"}))
+
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, buildMessagesRequest(t, "/messages", relayRequestBody))
+
+	var body struct {
+		Type  string `json:"type"`
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Type != "error" || body.Error.Message == "" {
+		t.Errorf("status %d body %s, want an Anthropic error", w.Code, w.Body.String())
 	}
 }

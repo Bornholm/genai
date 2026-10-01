@@ -267,3 +267,33 @@ func TestWithModel_KeepsTheBytesOfABodyAlreadyNamingTheModel(t *testing.T) {
 		t.Errorf("body rewritten: %s", got)
 	}
 }
+
+// A redirect would carry x-api-key to whatever host it names: it is not
+// followed, and comes back as the upstream's answer.
+func TestRelayMessages_DoesNotFollowRedirects(t *testing.T) {
+	var leaked bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Header.Get("x-api-key") != ""
+	}))
+	defer elsewhere.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/v1/messages", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	_, err := newRelayClient(srv.URL).RelayMessages(context.Background(), []byte(relayRequest), nil)
+
+	var httpErr *llm.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("err = %v, want the 307 as an *llm.HTTPError", err)
+	}
+	if leaked {
+		t.Error("the API key followed the redirect to another host")
+	}
+}
+
+func TestWithModel_RefusesANullBody(t *testing.T) {
+	if _, err := withModel([]byte("null"), "claude-real"); err == nil {
+		t.Error("a null body must be refused, not panic")
+	}
+}
