@@ -3,6 +3,7 @@ package circuitbreaker
 import (
 	"context"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -150,7 +151,34 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 	return stream, errors.WithStack(err)
 }
 
-var _ llm.Client = &Client{}
+// RelayMessages implements llm.MessagesRelayClient. Like a streamed
+// completion, only opening the stream counts toward the breaker.
+func (c *Client) RelayMessages(ctx context.Context, body []byte, header http.Header) (<-chan llm.StreamChunk, error) {
+	var stream <-chan llm.StreamChunk
+	var err error
+
+	breakerErr := c.breaker.Execute(func() error {
+		stream, err = llm.RelayMessages(ctx, c.client, body, header)
+		return errors.WithStack(err)
+	})
+
+	if breakerErr != nil {
+		return nil, errors.WithStack(breakerErr)
+	}
+
+	return stream, errors.WithStack(err)
+}
+
+// SupportsMessagesRelay reports on the wrapped client, see
+// llm.SupportsMessagesRelay.
+func (c *Client) SupportsMessagesRelay() bool {
+	return llm.SupportsMessagesRelay(c.client)
+}
+
+var (
+	_ llm.Client              = &Client{}
+	_ llm.MessagesRelayClient = &Client{}
+)
 
 // Close releases the wrapped client when it implements io.Closer, so that a
 // plugin client stays releasable behind this decorator. The decorator owns

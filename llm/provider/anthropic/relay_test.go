@@ -7,11 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/circuitbreaker"
 	"github.com/bornholm/genai/llm/provider"
 	"github.com/bornholm/genai/llm/ratelimit"
 )
@@ -87,15 +90,21 @@ func TestRelayMessages_ForwardsRequestAndEventsVerbatim(t *testing.T) {
 		t.Errorf("anthropic-version = %q", got.Header.Get("anthropic-version"))
 	}
 
-	var sent map[string]json.RawMessage
+	var sent, client map[string]any
 	if err := json.Unmarshal(gotBody, &sent); err != nil {
 		t.Fatal(err)
 	}
-	if string(sent["model"]) != `"claude-real"` {
-		t.Errorf("model = %s, want the client's model", sent["model"])
+	if err := json.Unmarshal([]byte(relayRequest), &client); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(gotBody), `"safeguards":[{"type":"dangerous_tool_use","classifier_context":{"v":1,"permission_mode":"auto"}}]`) {
-		t.Errorf("safeguards not forwarded as is: %s", gotBody)
+	if sent["model"] != "claude-real" {
+		t.Errorf("model = %v, want the client's model", sent["model"])
+	}
+	// Everything but the model reaches the upstream as the client sent it.
+	delete(sent, "model")
+	delete(client, "model")
+	if !reflect.DeepEqual(sent, client) {
+		t.Errorf("body altered beyond the model:\nsent   %v\nclient %v", sent, client)
 	}
 	if !strings.Contains(string(gotBody), "run <this>") {
 		t.Errorf("body was HTML-escaped: %s", gotBody)
@@ -212,10 +221,10 @@ func TestRegistryBuiltClientRelaysThroughDecorators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := ratelimit.NewClient(base)
+	client := circuitbreaker.NewClient(ratelimit.NewClient(base), 3, time.Minute)
 
 	if !llm.SupportsMessagesRelay(client) {
-		t.Fatal("the registry client must relay through the rate limiter")
+		t.Fatal("the registry client must relay through the circuit breaker and the rate limiter")
 	}
 	chunks, err := llm.RelayMessages(context.Background(), client, []byte(relayRequest), nil)
 	if err != nil {
@@ -224,5 +233,37 @@ func TestRegistryBuiltClientRelaysThroughDecorators(t *testing.T) {
 	collect(t, chunks)
 	if gotKey != "registry-key" {
 		t.Errorf("x-api-key = %q", gotKey)
+	}
+}
+
+func TestRelayMessages_LowercaseHeadersAreNotDuplicated(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, relayFixture)
+	}))
+	defer srv.Close()
+
+	header := http.Header{"anthropic-version": {"2024-01-01"}}
+	chunks, err := newRelayClient(srv.URL).RelayMessages(context.Background(), []byte(relayRequest), header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, chunks)
+
+	if v := got.Values("Anthropic-Version"); len(v) != 1 || v[0] != "2024-01-01" {
+		t.Errorf("anthropic-version = %v, want the caller's value only", v)
+	}
+}
+
+func TestWithModel_KeepsTheBytesOfABodyAlreadyNamingTheModel(t *testing.T) {
+	const body = `{"stream":true,  "model":"claude-real","messages":[]}`
+	got, err := withModel([]byte(body), "claude-real")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Errorf("body rewritten: %s", got)
 	}
 }

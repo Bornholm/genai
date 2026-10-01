@@ -64,7 +64,10 @@ var relayedErrorHeaders = []string{"Content-Type", "Retry-After", "X-Should-Retr
 
 // WriteErrorResponse forwards an upstream rejection as received: status,
 // retry headers and body. Clients recognize some rejections by their wording
-// and recover from them, which a rewritten error defeats.
+// and recover from them, which a rewritten error defeats. An error event
+// arriving first in the stream is answered here too, as an HTTP error rather
+// than an SSE event: the SSE headers are not committed yet, and a status is
+// what clients retry on.
 func (rawEventEmitter) WriteErrorResponse(w http.ResponseWriter, err error) {
 	var httpErr *llm.HTTPError
 	if !errors.As(err, &httpErr) {

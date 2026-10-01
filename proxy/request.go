@@ -23,10 +23,11 @@ type ProxyRequest struct {
 	Model   string      // model requested by the client
 	UserID  string      // extracted identity (API key, header, JWT…)
 	Headers http.Header // original headers
-	// Body is the raw request body. A relayed Messages request (see
-	// llm.MessagesRelayClient) is sent from Body as the hooks leave it, not
-	// rebuilt from ChatOptions: a hook that rewrites the conversation must
-	// update both.
+	// Body is the raw request body. On a relayed Messages request (see
+	// llm.MessagesRelayClient) Body is what goes upstream, as the hooks leave
+	// it, and ChatOptions is not read at all: a hook that only rewrites
+	// ChatOptions has no effect there. A hook that rewrites the conversation
+	// must therefore update both.
 	Body json.RawMessage
 
 	// For chat completions — populated after parsing

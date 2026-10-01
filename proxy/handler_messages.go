@@ -74,7 +74,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// keeping the fields and events the translation below would drop.
 		if llm.SupportsMessagesRelay(rawClient) {
 			relay := &messagesRelayStream{client: rawClient.(llm.MessagesRelayClient), body: req.Body, header: req.Headers}
-			s.streamChatCompletion(w, r, req, relay, resolvedModel, opts, rawEventEmitter{})
+			// The relay sends req.Body: no options apply, see ProxyRequest.Body.
+			s.streamChatCompletion(w, r, req, relay, resolvedModel, nil, rawEventEmitter{})
 			return
 		}
 		streamingClient, ok := rawClient.(llm.ChatCompletionStreamingClient)

@@ -47,7 +47,9 @@ func (c *ChatCompletionClient) RelayMessages(ctx context.Context, body []byte, h
 	}
 	for name, values := range header {
 		if strings.HasPrefix(strings.ToLower(name), "anthropic-") {
-			req.Header[name] = values
+			// Canonical, so that a caller's lowercase key and the defaults set
+			// below do not end up as two headers.
+			req.Header[http.CanonicalHeaderKey(name)] = values
 		}
 	}
 	if req.Header.Get("anthropic-version") == "" {
@@ -224,13 +226,18 @@ func (t *relayUsageTracker) usage() llm.ChatCompletionUsage {
 	return newUsage(t.input, t.output, t.cacheRead, t.cacheCreation)
 }
 
-// withModel sets the model of a request body. The other fields keep their
-// values, not their bytes: the body is re-encoded, keys sorted and whitespace
-// compacted, which the API reads the same.
+// withModel sets the model of a request body. A body already naming it is
+// returned as sent. Otherwise the other fields keep their values, not their
+// bytes: the body is re-encoded, keys sorted and whitespace compacted, which
+// the API reads the same.
 func withModel(body []byte, model string) ([]byte, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, errors.Wrap(err, "relay: request body is not a JSON object")
+	}
+	var current string
+	if json.Unmarshal(fields["model"], &current) == nil && current == model {
+		return body, nil
 	}
 	encoded, err := json.Marshal(model)
 	if err != nil {
