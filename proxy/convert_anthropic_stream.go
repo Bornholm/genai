@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/google/uuid"
@@ -99,6 +100,12 @@ func messageStartUsage(inputTokens, cacheReadTokens, cacheCreationTokens int64) 
 // Emit implements streamEmitter.
 func (e *anthropicStreamEmitter) Emit(w io.Writer, chunk llm.StreamChunk) error {
 	return e.process(w, chunk)
+}
+
+// WriteErrorResponse answers a stream that failed before its first chunk in
+// the Anthropic error format, which is what a /messages client parses.
+func (e *anthropicStreamEmitter) WriteErrorResponse(w http.ResponseWriter, err error) {
+	writeAnthropicAPIError(w, apiErrorFromErr(err))
 }
 
 // EmitError implements streamEmitter.

@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/bornholm/genai/llm"
@@ -31,6 +32,23 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 		return nil, errors.WithStack(err)
 	}
 	return c.client.ChatCompletionStream(ctx, funcs...)
+}
+
+// RelayMessages implements llm.MessagesRelayClient under the chat limit.
+func (c *Client) RelayMessages(ctx context.Context, body []byte, header http.Header) (<-chan llm.StreamChunk, error) {
+	if !llm.SupportsMessagesRelay(c.client) {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+	if err := c.chatLimiter.Wait(ctx); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return llm.RelayMessages(ctx, c.client, body, header)
+}
+
+// SupportsMessagesRelay reports on the wrapped client, see
+// llm.SupportsMessagesRelay.
+func (c *Client) SupportsMessagesRelay() bool {
+	return llm.SupportsMessagesRelay(c.client)
 }
 
 // Embeddings implements llm.Client.

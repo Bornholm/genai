@@ -20,10 +20,15 @@ const (
 // ProxyRequest encapsulates any request transiting through the proxy.
 type ProxyRequest struct {
 	Type    RequestType
-	Model   string          // model requested by the client
-	UserID  string          // extracted identity (API key, header, JWT…)
-	Headers http.Header     // original headers
-	Body    json.RawMessage // raw request body
+	Model   string      // model requested by the client
+	UserID  string      // extracted identity (API key, header, JWT…)
+	Headers http.Header // original headers
+	// Body is the raw request body. On a relayed Messages request (see
+	// llm.MessagesRelayClient) Body is what goes upstream, as the hooks leave
+	// it, and ChatOptions is not read at all: a hook that only rewrites
+	// ChatOptions has no effect there. A hook that rewrites the conversation
+	// must therefore update both.
+	Body json.RawMessage
 
 	// For chat completions — populated after parsing
 	ChatOptions []llm.ChatCompletionOptionFunc

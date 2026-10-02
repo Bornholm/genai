@@ -63,6 +63,7 @@ func init() {
 				option.WithBaseURL(normalizeBaseURL(opts.BaseURL)),
 				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
 				option.WithAPIKey(opts.APIKey),
+				option.WithHTTPClient(httpClient),
 			)
 
 			maxTokens := opts.MaxTokens
@@ -70,7 +71,9 @@ func init() {
 				maxTokens = DefaultMaxTokens
 			}
 
-			return NewChatCompletionClient(client, opts.Model, maxTokens), nil
+			chat := NewChatCompletionClient(client, opts.Model, maxTokens)
+			chat.relay = &relayTarget{baseURL: normalizeBaseURL(opts.BaseURL), apiKey: opts.APIKey}
+			return chat, nil
 		},
 	)
 }
