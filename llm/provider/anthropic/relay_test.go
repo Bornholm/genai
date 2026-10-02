@@ -297,3 +297,32 @@ func TestWithModel_RefusesANullBody(t *testing.T) {
 		t.Error("a null body must be refused, not panic")
 	}
 }
+
+// A consumer ranging over the stream is done at message_stop, even when the
+// upstream keeps the connection open after it.
+func TestRelayMessages_ChannelClosesAtMessageStop(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, relayFixture)
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	chunks, err := newRelayClient(srv.URL).RelayMessages(context.Background(), []byte(relayRequest), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		collect(t, chunks)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the channel stayed open after message_stop")
+	}
+}

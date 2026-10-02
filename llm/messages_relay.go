@@ -19,8 +19,10 @@ type MessagesRelayClient interface {
 	// RelayMessages posts body, an Anthropic Messages request with "stream":
 	// true, along with the anthropic-* headers found in header; every other
 	// header is ignored. The client substitutes its own credentials and, when
-	// it is bound to a model, its model. A non-2xx answer is returned as an
-	// error wrapping *HTTPError, before any chunk.
+	// it is bound to a model, its model. Nothing else is filled in: the body
+	// must carry what the API requires, max_tokens included, which the
+	// translated path defaults. A non-2xx answer is returned as an error
+	// wrapping *HTTPError, before any chunk.
 	RelayMessages(ctx context.Context, body []byte, header http.Header) (<-chan StreamChunk, error)
 }
 

@@ -162,3 +162,45 @@ func TestHandleMessages_EmptyStreamAnswersInAnthropicFormat(t *testing.T) {
 		t.Errorf("status %d body %s, want an Anthropic error", w.Code, w.Body.String())
 	}
 }
+
+// An upstream error event after content is written through byte for byte,
+// with no closing event after it, and the hooks learn the stream failed
+// upstream, with the usage published before it.
+func TestHandleMessages_MidStreamErrorEventRelayedAsIs(t *testing.T) {
+	start := []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+	errEvent := []byte("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")
+	usage := &usageRecorder{}
+	client := &erroringRelay{chunks: []llm.StreamChunk{
+		llm.NewRawEventChunk(start, llm.NewChatCompletionUsage(12, 3, 15), false),
+		llm.NewRawEventErrorChunk(errEvent, llm.RateLimitError(529, "overloaded"), llm.NewChatCompletionUsage(12, 3, 15)),
+	}}
+	server := NewServer(WithHook(&resolverHook{client: client, model: "m"}), WithHook(usage))
+
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, buildMessagesRequest(t, "/messages", relayRequestBody))
+
+	if w.Body.String() != string(start)+string(errEvent) {
+		t.Errorf("body = %q, want message_start then the error event verbatim, nothing after", w.Body.String())
+	}
+	res := usage.res
+	if res == nil || res.Interruption == nil || res.Interruption.Cause != StreamInterruptionUpstream {
+		t.Fatalf("interruption = %+v, want an upstream interruption", res)
+	}
+	if !res.Interruption.PartialUsage || res.TokensUsed.PromptTokens != 12 || res.TokensUsed.CompletionTokens != 3 {
+		t.Errorf("usage = %+v (partial=%v), want the counters published before the error", res.TokensUsed, res.Interruption.PartialUsage)
+	}
+}
+
+type erroringRelay struct {
+	mockStreamingChatClient
+	chunks []llm.StreamChunk
+}
+
+func (c *erroringRelay) RelayMessages(context.Context, []byte, http.Header) (<-chan llm.StreamChunk, error) {
+	ch := make(chan llm.StreamChunk, len(c.chunks))
+	for _, chunk := range c.chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return ch, nil
+}

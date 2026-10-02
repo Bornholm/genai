@@ -19,9 +19,12 @@ const maxRelayErrorBody = 1 << 20
 
 // httpClient is http.DefaultClient without redirects. Following one to another
 // host would carry x-api-key along, net/http only strips Authorization and
-// cookies, and the Messages endpoint never answers a POST with a redirect: a
-// 3xx comes back as an HTTPError like any other non-2xx answer. The SDK client
-// gets it too, for the translated path.
+// cookies, and the Messages endpoint never answers a POST with a redirect. The
+// SDK client gets it too, for the translated path. What a 3xx then becomes
+// differs: the relay returns it as an HTTPError like any other non-2xx answer,
+// while the SDK, which only makes an error of a 400 or above, takes it for a
+// success with no events, so a stream ends with ErrNoMessage and a plain
+// completion fails to decode. Either way the key stays home.
 var httpClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
@@ -91,9 +94,11 @@ func (c *ChatCompletionClient) RelayMessages(ctx context.Context, body []byte, h
 
 	chunks := make(chan llm.StreamChunk, 10)
 	go func() {
-		defer close(chunks)
 		defer res.Body.Close()
 		relayEvents(ctx, res.Body, chunks)
+		// Closed first: a consumer ranging over the channel is done at
+		// message_stop, not when the upstream closes the response.
+		close(chunks)
 		// Reading what follows message_stop, normally nothing, lets the
 		// transport reuse the connection instead of dropping it.
 		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, maxRelayErrorBody))
