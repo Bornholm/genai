@@ -307,14 +307,23 @@ func convertAnthropicUserMessage(content any) ([]llm.Message, error) {
 		}
 
 		toolUseID, _ := block["tool_use_id"].(string)
-		text, attachments, _, err := extractAnthropicContentParts(block["content"])
+		text, attachments, contentCacheControl, err := extractAnthropicContentParts(block["content"])
 		if err != nil {
 			return nil, errors.Wrap(err, "could not convert tool_result content")
 		}
 		if isError, _ := block["is_error"].(bool); isError {
 			text = "Error: " + text
 		}
-		out = append(out, llm.NewToolMessage(toolUseID, llm.NewToolResult(text, attachments...)))
+
+		toolMessage := llm.NewToolMessage(toolUseID, llm.NewToolResult(text, attachments...))
+		cacheControl := extractCacheControl(block["cache_control"])
+		if cacheControl == nil {
+			cacheControl = contentCacheControl
+		}
+		if cacheControl != nil {
+			llm.SetCacheControl(toolMessage, cacheControl)
+		}
+		out = append(out, toolMessage)
 	}
 
 	if len(otherBlocks) > 0 {
@@ -352,12 +361,18 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		reasoning strings.Builder
 		details   []llm.ReasoningDetail
 		toolCalls []llm.ToolCall
+
+		cacheControl *llm.CacheControl
 	)
 
 	for _, item := range blocks {
 		block, ok := item.(map[string]any)
 		if !ok {
 			continue
+		}
+
+		if cc := extractCacheControl(block["cache_control"]); cc != nil {
+			cacheControl = cc
 		}
 
 		switch block["type"] {
@@ -410,7 +425,7 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		case text != "":
 			out = append(out, llm.NewMessage(llm.RoleAssistant, text))
 		}
-		return out, nil
+		return withTrailingCacheControl(out, cacheControl), nil
 	}
 
 	// Carry the assistant's text on the tool calls message itself rather than
@@ -422,7 +437,15 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		out = append(out, llm.NewToolCallsMessageWithContent(text, toolCalls...))
 	}
 
-	return out, nil
+	return withTrailingCacheControl(out, cacheControl), nil
+}
+
+func withTrailingCacheControl(messages []llm.Message, cacheControl *llm.CacheControl) []llm.Message {
+	if cacheControl != nil && len(messages) > 0 {
+		llm.SetCacheControl(messages[len(messages)-1], cacheControl)
+	}
+
+	return messages
 }
 
 // newMessageWithParts builds the simplest llm.Message variant that fits the
