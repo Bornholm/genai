@@ -102,9 +102,10 @@ func messageCacheControl(m llm.Message) *llm.CacheControl {
 }
 
 // withCacheControl puts cc on the last part of content, switching a plain
-// text content to its multi-part form since only parts carry the hint. It
-// reports false when content is empty: an empty text part is refused
-// upstream, so the hint has nowhere to land.
+// text content to its multi-part form since only parts carry the hint. A
+// marked empty text block is refused upstream, so trailing empty text parts,
+// as an empty document gives, are passed over; it reports false when no part
+// is left to carry the hint.
 func withCacheControl(content openrouter.Content, cc *llm.CacheControl) (openrouter.Content, bool) {
 	if cc == nil {
 		return content, true
@@ -120,9 +121,15 @@ func withCacheControl(content openrouter.Content, cc *llm.CacheControl) (openrou
 			}},
 		}
 	}
-	parts := slices.Clone(content.Multi)
-	parts[len(parts)-1].CacheControl = toOpenRouterCacheControl(cc)
-	return openrouter.Content{Multi: parts}, true
+	for i := len(content.Multi) - 1; i >= 0; i-- {
+		if part := content.Multi[i]; part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
+			continue
+		}
+		parts := slices.Clone(content.Multi)
+		parts[i].CacheControl = toOpenRouterCacheControl(cc)
+		return openrouter.Content{Multi: parts}, true
+	}
+	return content, false
 }
 
 // messageContent builds the content of a user or tool message: its text
@@ -277,8 +284,12 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 
 		// A hint means "cache everything so far". When the message has no
 		// part to carry it, as a tool calls message without text, it goes
-		// on the end of the previous message instead; with no previous
-		// message nothing precedes it and the hint is void.
+		// on the end of the closest earlier message that has one: unlike
+		// the anthropic provider, the previous message may itself be tool
+		// calls without text, whose calls cannot carry a hint here. A hint
+		// already there is replaced, as the anthropic provider does when
+		// two land on the same block. With no such message nothing precedes
+		// it and the hint is void.
 		cc := messageCacheControl(m)
 		var placed bool
 		message.Content, placed = withCacheControl(message.Content, cc)

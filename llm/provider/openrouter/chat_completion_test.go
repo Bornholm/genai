@@ -1,10 +1,12 @@
 package openrouter
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
+	"github.com/revrost/go-openrouter"
 )
 
 const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -207,4 +209,110 @@ func pngAttachment(t *testing.T) llm.Attachment {
 		t.Fatalf("could not build attachment: %v", err)
 	}
 	return attachment
+}
+
+func textAttachment(t *testing.T, text string) llm.Attachment {
+	t.Helper()
+
+	attachment, err := llm.NewBase64Attachment(llm.AttachmentTypeDocument, "text/plain", base64.StdEncoding.EncodeToString([]byte(text)))
+	if err != nil {
+		t.Fatalf("could not build attachment: %v", err)
+	}
+	return attachment
+}
+
+func TestBuildMessages_SystemAndAssistantCarryCacheControl(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessageWithCacheControl(llm.RoleSystem, "Be brief", ephemeral()),
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewMessageWithCacheControl(llm.RoleAssistant, "Hello", ephemeral()),
+	)
+
+	assertOnlyLastPartCached(t, messages[0])
+	assertOnlyLastPartCached(t, messages[2])
+}
+
+func TestBuildMessages_EmptyMessageMovesCacheControlToPreviousMessage(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleSystem, "Be brief"),
+		llm.NewMessageWithCacheControl(llm.RoleUser, "", ephemeral()),
+	)
+
+	assertOnlyLastPartCached(t, messages[0])
+	if _, ok := messages[1]["content"]; ok {
+		t.Errorf("empty user message sent content %#v", messages[1]["content"])
+	}
+}
+
+func TestBuildMessages_DocumentAttachmentCarriesCacheControl(t *testing.T) {
+	user := llm.NewMultimodalMessage(llm.RoleUser, "Read this", textAttachment(t, "Some notes."))
+	llm.SetCacheControl(user, ephemeral())
+
+	messages := wireMessages(t, user)
+
+	assertOnlyLastPartCached(t, messages[0])
+}
+
+func TestWithCacheControl_PassesOverEmptyTrailingTextParts(t *testing.T) {
+	content, placed := withCacheControl(openrouter.Content{Multi: []openrouter.ChatMessagePart{
+		{Type: openrouter.ChatMessagePartTypeText, Text: "Read this"},
+		{Type: openrouter.ChatMessagePartTypeText, Text: ""},
+	}}, ephemeral())
+
+	if !placed {
+		t.Fatal("hint not placed, want it on the text part")
+	}
+	if cc := content.Multi[0].CacheControl; cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("text part cache_control = %+v, want ephemeral", cc)
+	}
+	if cc := content.Multi[1].CacheControl; cc != nil {
+		t.Errorf("empty part cache_control = %+v, want none", cc)
+	}
+
+	if _, placed := withCacheControl(openrouter.Content{Multi: []openrouter.ChatMessagePart{
+		{Type: openrouter.ChatMessagePartTypeText, Text: ""},
+	}}, ephemeral()); placed {
+		t.Error("hint placed on an empty text part, want it reported as not placed")
+	}
+}
+
+func TestBuildMessages_MovedCacheControlReplacesTheEarlierOne(t *testing.T) {
+	hour, fiveMinutes := "1h", "5m"
+
+	toolMessage := llm.NewToolMessage("call_01", llm.NewToolResult("done"))
+	llm.SetCacheControl(toolMessage, &llm.CacheControl{Type: "ephemeral", TTL: &hour})
+
+	toolCalls := llm.NewToolCallsMessage(llm.NewToolCall("call_02", "run", "{}"))
+	llm.SetCacheControl(toolCalls, &llm.CacheControl{Type: "ephemeral", TTL: &fiveMinutes})
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Run it twice"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "run", "{}")),
+		toolMessage,
+		toolCalls,
+	)
+
+	controls := cacheControls(messages[2])
+	if len(controls) != 1 {
+		t.Fatalf("tool result content = %#v, want one part", messages[2]["content"])
+	}
+	if cc, _ := controls[0].(map[string]any); cc["ttl"] != "5m" {
+		t.Errorf("tool result cache_control = %v, want the later hint with ttl 5m", controls[0])
+	}
+}
+
+func TestBuildMessages_ToolCallsWithReasoningCarryCacheControl(t *testing.T) {
+	toolCalls := llm.NewReasoningToolCallsMessageWithContent("Running it.", "The user wants it run.", nil, llm.NewToolCall("call_01", "run", "{}"))
+	llm.SetCacheControl(toolCalls, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Run it"),
+		toolCalls,
+	)
+
+	last := messages[len(messages)-1]
+	if last["reasoning"] != "The user wants it run." {
+		t.Errorf("tool calls reasoning = %#v, want it preserved", last["reasoning"])
+	}
+	assertOnlyLastPartCached(t, last)
 }
