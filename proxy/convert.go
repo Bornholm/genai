@@ -474,8 +474,8 @@ func withCacheControl(m llm.Message, cacheControl *llm.CacheControl) llm.Message
 }
 
 // extractPartsCacheControl returns the cache hint of the last content part
-// carrying one, as extractContentParts does, for the roles whose content is
-// reduced to its text.
+// carrying one. extractContentParts uses it too, so the roles whose content
+// is reduced to its text follow the same rule.
 func extractPartsCacheControl(raw any) *llm.CacheControl {
 	parts, ok := raw.([]any)
 	if !ok {
@@ -541,6 +541,7 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 	case string:
 		return v, nil, nil, nil
 	case []any:
+		cacheControl = extractPartsCacheControl(v)
 		var buf strings.Builder
 		for i, part := range v {
 			partMap, ok := part.(map[string]any)
@@ -553,10 +554,6 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 				slog.Warn("proxy: ignoring unsupported content part",
 					slog.Int("index", i), slog.String("goType", fmt.Sprintf("%T", part)))
 				continue
-			}
-
-			if cc := extractCacheControl(partMap["cache_control"]); cc != nil {
-				cacheControl = cc
 			}
 
 			partType := partTypeOf(partMap)
