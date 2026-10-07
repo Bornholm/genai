@@ -78,7 +78,8 @@ type anthropicMessagesResponse struct {
 // cache_control hints are carried over as sent, on system, user, tool_result
 // and assistant blocks. The anthropic provider then checks them as the API
 // does (type ephemeral, ttl 5m or 1h, at most four breakpoints), so a request
-// with an invalid hint fails rather than having it silently dropped.
+// with an invalid hint fails with a 400 invalid_request_error rather than
+// having it silently dropped.
 func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts []llm.ChatCompletionOptionFunc, err error) {
 	var req anthropicMessagesRequest
 	if err = json.Unmarshal(body, &req); err != nil {

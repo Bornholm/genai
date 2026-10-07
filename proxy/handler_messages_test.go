@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/bornholm/genai/llm"
+	"github.com/bornholm/genai/llm/provider/anthropic"
 )
 
 // mockStreamingChatClient implements llm.ChatCompletionStreamingClient for testing.
@@ -190,5 +193,50 @@ func TestHandleCountTokens_InvalidJSON(t *testing.T) {
 	// JSON by falling back to a byte-length estimate.
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestHandleMessages_InvalidCacheControlIsBadRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("an invalid request reached the upstream")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	// The anthropic client only does chat; the nil interfaces complete llm.Client.
+	client := struct {
+		*anthropic.ChatCompletionClient
+		llm.EmbeddingsClient
+		llm.TranscriptionClient
+	}{ChatCompletionClient: anthropic.NewChatCompletionClient(anthropicsdk.NewClient(
+		option.WithBaseURL(upstream.URL),
+		option.WithAPIKey("test"),
+		option.WithMaxRetries(0),
+	), "claude-sonnet-5", 100)}
+	server := NewServer(WithHook(&resolverHook{client: client, model: "claude-sonnet-5"}))
+
+	// Five breakpoints, one more than the API accepts.
+	reqBody := `{"model":"claude-sonnet-5","max_tokens":100,
+		"system":[
+			{"type":"text","text":"one","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"two","cache_control":{"type":"ephemeral"}}
+		],
+		"messages":[
+			{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]},
+			{"role":"assistant","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]},
+			{"role":"user","content":[{"type":"text","text":"again","cache_control":{"type":"ephemeral"}}]}
+		]}`
+	w := httptest.NewRecorder()
+	server.handleMessages(w, buildMessagesRequest(t, "/v1/messages", reqBody))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("could not decode response: %v", err)
+	}
+	if errObj, _ := resp["error"].(map[string]any); errObj["type"] != "invalid_request_error" {
+		t.Errorf("error = %v, want type invalid_request_error", resp["error"])
 	}
 }
