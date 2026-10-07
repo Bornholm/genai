@@ -745,3 +745,226 @@ func TestFormatMessagesResponse_SplitsCacheTokens(t *testing.T) {
 		}
 	}
 }
+
+func cacheControlOf(m llm.Message) *llm.CacheControl {
+	if cc, ok := m.(llm.CacheControlMessage); ok {
+		return cc.CacheControl()
+	}
+	return nil
+}
+
+func compileMessages(t *testing.T, body string) []llm.Message {
+	t.Helper()
+
+	_, _, opts, err := ParseMessagesRequest(json.RawMessage(body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	return llm.NewChatCompletionOptions(opts...).Messages
+}
+
+func TestParseMessagesRequest_ToolResultKeepsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Run it"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01", "name": "run", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": "done",
+				 "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+			]}
+		]
+	}`)
+
+	last := messages[len(messages)-1]
+	if last.Role() != llm.RoleTool {
+		t.Fatalf("last message role = %q, want tool", last.Role())
+	}
+
+	cc := cacheControlOf(last)
+	if cc == nil || cc.Type != "ephemeral" || cc.TTL == nil || *cc.TTL != "1h" {
+		t.Errorf("tool result cache control = %+v, want ephemeral with ttl 1h", cc)
+	}
+}
+
+func TestParseMessagesRequest_ToolResultCacheControlStaysOnItsOwnResult(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Run both"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01", "name": "run", "input": {}},
+				{"type": "tool_use", "id": "toolu_02", "name": "run", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": "one"},
+				{"type": "tool_result", "tool_use_id": "toolu_02", "content": "two",
+				 "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	first, second := messages[len(messages)-2], messages[len(messages)-1]
+	if cc := cacheControlOf(first); cc != nil {
+		t.Errorf("unmarked tool result has cache control %+v", cc)
+	}
+	if cc := cacheControlOf(second); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("marked tool result cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_ToolResultContentBlockCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Run it"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01", "name": "run", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": [
+					{"type": "text", "text": "done", "cache_control": {"type": "ephemeral"}}
+				]}
+			]}
+		]
+	}`)
+
+	if cc := cacheControlOf(messages[len(messages)-1]); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("tool result cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_AssistantToolUseKeepsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Run it"},
+			{"role": "assistant", "content": [
+				{"type": "text", "text": "Running."},
+				{"type": "tool_use", "id": "toolu_01", "name": "run", "input": {},
+				 "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	last := messages[len(messages)-1]
+	if last.Role() != llm.RoleToolCalls {
+		t.Fatalf("last message role = %q, want tool_calls", last.Role())
+	}
+	if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("tool calls cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_AssistantTextKeepsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Hi"},
+			{"role": "assistant", "content": [
+				{"type": "text", "text": "Hello", "cache_control": {"type": "ephemeral"}}
+			]},
+			{"role": "user", "content": "Again"}
+		]
+	}`)
+
+	assistant := messages[len(messages)-2]
+	if assistant.Role() != llm.RoleAssistant {
+		t.Fatalf("message role = %q, want assistant", assistant.Role())
+	}
+	if cc := cacheControlOf(assistant); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("assistant cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_UnmarkedToolTurnHasNoCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Run it"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01", "name": "run", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": "done"}
+			]}
+		]
+	}`)
+
+	for _, m := range messages {
+		if cc := cacheControlOf(m); cc != nil {
+			t.Errorf("message %q has unexpected cache control %+v", m.Role(), cc)
+		}
+	}
+}
+
+func TestParseMessagesRequest_AttachmentKeepsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+				{"type": "text", "text": "What is this?", "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	last := messages[len(messages)-1]
+	if len(last.Attachments()) != 1 {
+		t.Fatalf("last message has %d attachments, want 1", len(last.Attachments()))
+	}
+	if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("multimodal message cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_EmptyAssistantTurnMovesCacheControlBack(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Hi"},
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {},
+				 "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("got %d messages, want 1", len(messages))
+	}
+	if cc := cacheControlOf(messages[0]); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("previous turn cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_EmptyFirstAssistantTurnDropsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"system": "Be terse.",
+		"messages": [
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {},
+				 "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	for _, m := range messages {
+		if cc := cacheControlOf(m); cc != nil {
+			t.Errorf("message %q has unexpected cache control %+v", m.Role(), cc)
+		}
+	}
+}

@@ -74,6 +74,12 @@ type anthropicMessagesResponse struct {
 // ---- Request conversion ---------------------------------------------------
 
 // ParseMessagesRequest converts an Anthropic Messages JSON body to llm options.
+//
+// cache_control hints are carried over as sent, on system, user, tool_result
+// and assistant blocks. The anthropic provider then checks them as the API
+// does (type ephemeral, ttl 5m or 1h, at most four breakpoints), so a request
+// with an invalid hint fails with a 400 invalid_request_error rather than
+// having it silently dropped.
 func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts []llm.ChatCompletionOptionFunc, err error) {
 	var req anthropicMessagesRequest
 	if err = json.Unmarshal(body, &req); err != nil {
@@ -222,11 +228,14 @@ func convertAnthropicMessages(system any, messages []anthropicMessage) ([]llm.Me
 			}
 			out = append(out, msgs...)
 		case "assistant":
-			msgs, err := convertAnthropicAssistantMessage(m.Content)
+			msgs, cacheControl, err := convertAnthropicAssistantMessage(m.Content)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, msgs...)
+			// The hint goes on the last message of the turn or, when the turn
+			// yields none, on the end of the previous one, as the anthropic
+			// provider does: it still means "cache everything so far".
+			out = withTrailingCacheControl(append(out, msgs...), cacheControl)
 		default:
 			text, attachments, cacheControl, err := extractAnthropicContentParts(m.Content)
 			if err != nil {
@@ -307,14 +316,23 @@ func convertAnthropicUserMessage(content any) ([]llm.Message, error) {
 		}
 
 		toolUseID, _ := block["tool_use_id"].(string)
-		text, attachments, _, err := extractAnthropicContentParts(block["content"])
+		text, attachments, contentCacheControl, err := extractAnthropicContentParts(block["content"])
 		if err != nil {
 			return nil, errors.Wrap(err, "could not convert tool_result content")
 		}
 		if isError, _ := block["is_error"].(bool); isError {
 			text = "Error: " + text
 		}
-		out = append(out, llm.NewToolMessage(toolUseID, llm.NewToolResult(text, attachments...)))
+
+		toolMessage := llm.NewToolMessage(toolUseID, llm.NewToolResult(text, attachments...))
+		cacheControl := extractCacheControl(block["cache_control"])
+		if cacheControl == nil {
+			cacheControl = contentCacheControl
+		}
+		if cacheControl != nil {
+			llm.SetCacheControl(toolMessage, cacheControl)
+		}
+		out = append(out, toolMessage)
 	}
 
 	if len(otherBlocks) > 0 {
@@ -333,18 +351,19 @@ func convertAnthropicUserMessage(content any) ([]llm.Message, error) {
 // convertAnthropicAssistantMessage converts an "assistant" message's content
 // (which may mix text, thinking and tool_use blocks) into one or two
 // llm.Message values: an optional text/reasoning message followed by an
-// optional tool calls message.
-func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
+// optional tool calls message. It also returns the last cache hint found on
+// the blocks, left for the caller to place.
+func convertAnthropicAssistantMessage(content any) ([]llm.Message, *llm.CacheControl, error) {
 	blocks, ok := content.([]any)
 	if !ok {
 		text, _, _, err := extractAnthropicContentParts(content)
 		if err != nil {
-			return nil, errors.Wrap(err, "could not convert assistant message content")
+			return nil, nil, errors.Wrap(err, "could not convert assistant message content")
 		}
 		if text == "" {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return []llm.Message{llm.NewMessage(llm.RoleAssistant, text)}, nil
+		return []llm.Message{llm.NewMessage(llm.RoleAssistant, text)}, nil, nil
 	}
 
 	var (
@@ -352,12 +371,18 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		reasoning strings.Builder
 		details   []llm.ReasoningDetail
 		toolCalls []llm.ToolCall
+
+		cacheControl *llm.CacheControl
 	)
 
 	for _, item := range blocks {
 		block, ok := item.(map[string]any)
 		if !ok {
 			continue
+		}
+
+		if cc := extractCacheControl(block["cache_control"]); cc != nil {
+			cacheControl = cc
 		}
 
 		switch block["type"] {
@@ -391,7 +416,7 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 			}
 			raw, err := json.Marshal(input)
 			if err != nil {
-				return nil, errors.Wrap(err, "could not marshal tool_use input")
+				return nil, nil, errors.Wrap(err, "could not marshal tool_use input")
 			}
 			toolCalls = append(toolCalls, llm.NewToolCall(id, name, string(raw)))
 		}
@@ -410,7 +435,7 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		case text != "":
 			out = append(out, llm.NewMessage(llm.RoleAssistant, text))
 		}
-		return out, nil
+		return out, cacheControl, nil
 	}
 
 	// Carry the assistant's text on the tool calls message itself rather than
@@ -422,14 +447,29 @@ func convertAnthropicAssistantMessage(content any) ([]llm.Message, error) {
 		out = append(out, llm.NewToolCallsMessageWithContent(text, toolCalls...))
 	}
 
-	return out, nil
+	return out, cacheControl, nil
+}
+
+// withTrailingCacheControl puts the hint on the last message. System messages
+// are hoisted out of the turns by the provider, so with only those before it
+// the hint has no turn to land on and is dropped, as the provider would.
+func withTrailingCacheControl(messages []llm.Message, cacheControl *llm.CacheControl) []llm.Message {
+	if cacheControl != nil && len(messages) > 0 && messages[len(messages)-1].Role() != llm.RoleSystem {
+		llm.SetCacheControl(messages[len(messages)-1], cacheControl)
+	}
+
+	return messages
 }
 
 // newMessageWithParts builds the simplest llm.Message variant that fits the
 // given text/attachments/cache control combination.
 func newMessageWithParts(role llm.Role, text string, attachments []llm.Attachment, cacheControl *llm.CacheControl) llm.Message {
 	if len(attachments) > 0 {
-		return llm.NewMultimodalMessage(role, text, attachments...)
+		m := llm.NewMultimodalMessage(role, text, attachments...)
+		if cacheControl != nil {
+			llm.SetCacheControl(m, cacheControl)
+		}
+		return m
 	}
 	if cacheControl != nil {
 		return llm.NewMessageWithCacheControl(role, text, cacheControl)
