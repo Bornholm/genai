@@ -906,3 +906,65 @@ func TestParseMessagesRequest_UnmarkedToolTurnHasNoCacheControl(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMessagesRequest_AttachmentKeepsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+				{"type": "text", "text": "What is this?", "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	last := messages[len(messages)-1]
+	if len(last.Attachments()) != 1 {
+		t.Fatalf("last message has %d attachments, want 1", len(last.Attachments()))
+	}
+	if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("multimodal message cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_EmptyAssistantTurnMovesCacheControlBack(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Hi"},
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {},
+				 "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	if len(messages) != 1 {
+		t.Fatalf("got %d messages, want 1", len(messages))
+	}
+	if cc := cacheControlOf(messages[0]); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("previous turn cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestParseMessagesRequest_EmptyFirstAssistantTurnDropsCacheControl(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"system": "Be terse.",
+		"messages": [
+			{"role": "assistant", "content": [
+				{"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {},
+				 "cache_control": {"type": "ephemeral"}}
+			]}
+		]
+	}`)
+
+	for _, m := range messages {
+		if cc := cacheControlOf(m); cc != nil {
+			t.Errorf("message %q has unexpected cache control %+v", m.Role(), cc)
+		}
+	}
+}

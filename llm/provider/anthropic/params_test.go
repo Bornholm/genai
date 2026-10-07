@@ -810,3 +810,24 @@ func TestBuildParams_EmptyAssistantMessageIsRejected(t *testing.T) {
 		t.Fatal("expected an empty assistant turn to be rejected rather than folded away")
 	}
 }
+
+func TestBuildParams_ToolResultCarriesCacheControl(t *testing.T) {
+	toolMessage := llm.NewToolMessage("toolu_01", llm.NewToolResult("done"))
+	llm.SetCacheControl(toolMessage, &llm.CacheControl{Type: "ephemeral"})
+
+	body := marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Run it"),
+		llm.NewToolCallsMessageWithContent("", llm.NewToolCall("toolu_01", "run", "{}")),
+		toolMessage,
+	))
+
+	messages := messagesOf(t, body)
+	blocks := blocksOf(t, messages[len(messages)-1])
+	last := blocks[len(blocks)-1]
+	if last["type"] != "tool_result" {
+		t.Fatalf("last block is not a tool_result: %v", last)
+	}
+	if cc, _ := last["cache_control"].(map[string]any); cc["type"] != "ephemeral" {
+		t.Errorf("tool_result lost its cache_control: %v", last)
+	}
+}
