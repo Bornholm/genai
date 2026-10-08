@@ -465,11 +465,7 @@ func withTrailingCacheControl(messages []llm.Message, cacheControl *llm.CacheCon
 // given text/attachments/cache control combination.
 func newMessageWithParts(role llm.Role, text string, attachments []llm.Attachment, cacheControl *llm.CacheControl) llm.Message {
 	if len(attachments) > 0 {
-		m := llm.NewMultimodalMessage(role, text, attachments...)
-		if cacheControl != nil {
-			llm.SetCacheControl(m, cacheControl)
-		}
-		return m
+		return withCacheControl(llm.NewMultimodalMessage(role, text, attachments...), cacheControl)
 	}
 	if cacheControl != nil {
 		return llm.NewMessageWithCacheControl(role, text, cacheControl)

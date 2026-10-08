@@ -452,13 +452,7 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 			if err != nil {
 				return nil, errors.Wrapf(err, "could not convert content parts for role %s", m.Role)
 			}
-			if len(attachments) > 0 {
-				out = append(out, withCacheControl(llm.NewMultimodalMessage(role, text, attachments...), cacheControl))
-			} else if cacheControl != nil {
-				out = append(out, llm.NewMessageWithCacheControl(role, text, cacheControl))
-			} else {
-				out = append(out, llm.NewMessage(role, text))
-			}
+			out = append(out, newMessageWithParts(role, text, attachments, cacheControl))
 		}
 	}
 
