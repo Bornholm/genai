@@ -316,3 +316,21 @@ func TestBuildMessages_ToolCallsWithReasoningCarryCacheControl(t *testing.T) {
 	}
 	assertOnlyLastPartCached(t, last)
 }
+
+func TestBuildMessages_FallbackSkipsMessagesWithoutParts(t *testing.T) {
+	toolCalls := llm.NewToolCallsMessage(llm.NewToolCall("call_02", "run", "{}"))
+	llm.SetCacheControl(toolCalls, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Run it twice"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "run", "{}")),
+		toolCalls,
+	)
+
+	assertOnlyLastPartCached(t, messages[0])
+	for _, m := range messages[1:] {
+		if _, ok := m["content"]; ok {
+			t.Errorf("tool calls without text sent content %#v", m["content"])
+		}
+	}
+}
