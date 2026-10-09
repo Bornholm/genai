@@ -334,3 +334,72 @@ func TestBuildMessages_FallbackSkipsMessagesWithoutParts(t *testing.T) {
 		}
 	}
 }
+
+// partSummaries returns the type and text of each content part of message.
+func partSummaries(t *testing.T, message map[string]any) [][2]any {
+	t.Helper()
+
+	parts, ok := message["content"].([]any)
+	if !ok {
+		t.Fatalf("%s message content is not a part list: %#v", message["role"], message["content"])
+	}
+	summaries := make([][2]any, len(parts))
+	for i, part := range parts {
+		p := part.(map[string]any)
+		summaries[i] = [2]any{p["type"], p["text"]}
+	}
+	return summaries
+}
+
+func TestBuildMessages_SeveralAttachmentsOfMixedTypes(t *testing.T) {
+	want := [][2]any{
+		{"text", "Compare them"},
+		{"text", "Some notes."},
+		{"image_url", nil},
+		{"text", "More notes."},
+	}
+
+	for name, build := range map[string]func(attachments ...llm.Attachment) llm.Message{
+		"user": func(attachments ...llm.Attachment) llm.Message {
+			return llm.NewMultimodalMessage(llm.RoleUser, "Compare them", attachments...)
+		},
+		"tool": func(attachments ...llm.Attachment) llm.Message {
+			return llm.NewToolMessage("call_01", llm.NewToolResult("Compare them", attachments...))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := build(textAttachment(t, "Some notes."), pngAttachment(t), textAttachment(t, "More notes."))
+			llm.SetCacheControl(m, ephemeral())
+
+			messages := wireMessages(t,
+				llm.NewMessage(llm.RoleUser, "Look"),
+				llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+				m,
+			)
+
+			last := messages[len(messages)-1]
+			got := partSummaries(t, last)
+			if len(got) != len(want) {
+				t.Fatalf("parts = %v, want %v", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("part %d = %v, want %v", i, got[i], want[i])
+				}
+			}
+			assertOnlyLastPartCached(t, last)
+		})
+	}
+}
+
+func TestBuildMessages_SeveralAttachmentsWithoutText(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMultimodalMessage(llm.RoleUser, "", pngAttachment(t), textAttachment(t, "Some notes.")),
+	)
+
+	got := partSummaries(t, messages[0])
+	want := [][2]any{{"image_url", nil}, {"text", "Some notes."}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("parts = %v, want %v", got, want)
+	}
+}
