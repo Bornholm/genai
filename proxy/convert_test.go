@@ -280,3 +280,108 @@ func TestConvertOpenAIMessagesJSON_DeveloperRoleWithContentParts(t *testing.T) {
 		t.Errorf("content = %q, want %q", msgs[0].Content(), "Be brief.")
 	}
 }
+
+func convertMessagesJSON(t *testing.T, body string) []llm.Message {
+	t.Helper()
+
+	msgs, err := ConvertOpenAIMessagesJSON(json.RawMessage(body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	return msgs
+}
+
+func TestConvertOpenAIMessagesJSON_ToolKeepsCacheControl(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Run it"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "text", "text": "done", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+		]}
+	]`)
+
+	last := msgs[len(msgs)-1]
+	if last.Role() != llm.RoleTool || last.Content() != "done" {
+		t.Fatalf("last message = %s %q, want the tool result", last.Role(), last.Content())
+	}
+	cc := cacheControlOf(last)
+	if cc == nil || cc.Type != "ephemeral" || cc.TTL == nil || *cc.TTL != "1h" {
+		t.Errorf("tool cache control = %+v, want ephemeral with ttl 1h", cc)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_AssistantKeepsCacheControl(t *testing.T) {
+	marked := `[{"type": "text", "text": "Running.", "cache_control": {"type": "ephemeral"}}]`
+
+	for name, tc := range map[string]struct {
+		message string
+		role    llm.Role
+	}{
+		"text": {
+			message: `{"role": "assistant", "content": ` + marked + `}`,
+			role:    llm.RoleAssistant,
+		},
+		"reasoning": {
+			message: `{"role": "assistant", "reasoning_content": "Thinking.", "content": ` + marked + `}`,
+			role:    llm.RoleAssistant,
+		},
+		"tool calls": {
+			message: `{"role": "assistant", "content": ` + marked + `, "tool_calls": [
+				{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+			]}`,
+			role: llm.RoleToolCalls,
+		},
+		"reasoning tool calls": {
+			message: `{"role": "assistant", "reasoning_content": "Thinking.", "content": ` + marked + `, "tool_calls": [
+				{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+			]}`,
+			role: llm.RoleToolCalls,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[{"role": "user", "content": "Run it"}, `+tc.message+`]`)
+
+			last := msgs[len(msgs)-1]
+			if last.Role() != tc.role {
+				t.Fatalf("role = %q, want %q", last.Role(), tc.role)
+			}
+			if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+				t.Errorf("assistant cache control = %+v, want ephemeral", cc)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_AttachmentKeepsCacheControl(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": [
+			{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}},
+			{"type": "text", "text": "What is this?", "cache_control": {"type": "ephemeral"}}
+		]}
+	]`)
+
+	if len(msgs[0].Attachments()) != 1 {
+		t.Fatalf("attachments = %d, want 1", len(msgs[0].Attachments()))
+	}
+	if cc := cacheControlOf(msgs[0]); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("user cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_UnmarkedMessagesHaveNoCacheControl(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Run it"},
+		{"role": "assistant", "content": "Running.", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [{"type": "text", "text": "done"}]}
+	]`)
+
+	for _, m := range msgs {
+		if cc := cacheControlOf(m); cc != nil {
+			t.Errorf("%s message has unexpected cache control %+v", m.Role(), cc)
+		}
+	}
+}

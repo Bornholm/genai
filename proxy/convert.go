@@ -422,27 +422,29 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 		case llm.RoleTool:
 			content := extractTextContent(m.Content)
 			msg := llm.NewToolMessage(m.ToolCallID, llm.NewToolResult(content))
-			out = append(out, msg)
+			out = append(out, withCacheControl(msg, extractPartsCacheControl(m.Content)))
 
 		case llm.RoleAssistant:
 			content := extractTextContent(m.Content)
 			details := toLLMReasoningDetails(m.ReasoningDetails)
 			hasReasoning := m.ReasoningContent != "" || len(details) > 0
+			var msg llm.Message
 			if len(m.ToolCalls) > 0 {
 				calls := make([]llm.ToolCall, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {
 					calls = append(calls, llm.NewToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments))
 				}
 				if hasReasoning {
-					out = append(out, llm.NewReasoningToolCallsMessageWithContent(content, m.ReasoningContent, details, calls...))
+					msg = llm.NewReasoningToolCallsMessageWithContent(content, m.ReasoningContent, details, calls...)
 				} else {
-					out = append(out, llm.NewToolCallsMessageWithContent(content, calls...))
+					msg = llm.NewToolCallsMessageWithContent(content, calls...)
 				}
 			} else if hasReasoning {
-				out = append(out, llm.NewAssistantReasoningMessage(content, m.ReasoningContent, details))
+				msg = llm.NewAssistantReasoningMessage(content, m.ReasoningContent, details)
 			} else {
-				out = append(out, llm.NewMessage(llm.RoleAssistant, content))
+				msg = llm.NewMessage(llm.RoleAssistant, content)
 			}
+			out = append(out, withCacheControl(msg, extractPartsCacheControl(m.Content)))
 
 		default:
 			role := normalizeRole(m.Role)
@@ -450,17 +452,38 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 			if err != nil {
 				return nil, errors.Wrapf(err, "could not convert content parts for role %s", m.Role)
 			}
-			if len(attachments) > 0 {
-				out = append(out, llm.NewMultimodalMessage(role, text, attachments...))
-			} else if cacheControl != nil {
-				out = append(out, llm.NewMessageWithCacheControl(role, text, cacheControl))
-			} else {
-				out = append(out, llm.NewMessage(role, text))
-			}
+			out = append(out, newMessageWithParts(role, text, attachments, cacheControl))
 		}
 	}
 
 	return out, nil
+}
+
+// withCacheControl sets cacheControl on m when there is one.
+func withCacheControl(m llm.Message, cacheControl *llm.CacheControl) llm.Message {
+	if cacheControl != nil {
+		llm.SetCacheControl(m, cacheControl)
+	}
+	return m
+}
+
+// extractPartsCacheControl returns the cache hint of the last content part
+// carrying one. extractContentParts uses it too, so the roles whose content
+// is reduced to its text follow the same rule.
+func extractPartsCacheControl(raw any) *llm.CacheControl {
+	parts, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	var cacheControl *llm.CacheControl
+	for _, part := range parts {
+		if partMap, ok := part.(map[string]any); ok {
+			if cc := extractCacheControl(partMap["cache_control"]); cc != nil {
+				cacheControl = cc
+			}
+		}
+	}
+	return cacheControl
 }
 
 // extractTextContent returns only the text from a message content field.
@@ -512,6 +535,7 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 	case string:
 		return v, nil, nil, nil
 	case []any:
+		cacheControl = extractPartsCacheControl(v)
 		var buf strings.Builder
 		for i, part := range v {
 			partMap, ok := part.(map[string]any)
@@ -524,10 +548,6 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 				slog.Warn("proxy: ignoring unsupported content part",
 					slog.Int("index", i), slog.String("goType", fmt.Sprintf("%T", part)))
 				continue
-			}
-
-			if cc := extractCacheControl(partMap["cache_control"]); cc != nil {
-				cacheControl = cc
 			}
 
 			partType := partTypeOf(partMap)
