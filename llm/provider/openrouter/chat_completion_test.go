@@ -3,6 +3,7 @@ package openrouter
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -401,5 +402,20 @@ func TestBuildMessages_SeveralAttachmentsWithoutText(t *testing.T) {
 	want := [][2]any{{"image_url", nil}, {"text", "Some notes."}}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("parts = %v, want %v", got, want)
+	}
+}
+
+func TestMessageContent_NamesTheAttachmentThatFails(t *testing.T) {
+	pdf, err := llm.NewBase64Attachment(llm.AttachmentTypeDocument, "application/pdf", pngBase64)
+	if err != nil {
+		t.Fatalf("could not build attachment: %v", err)
+	}
+
+	_, err = messageContent(llm.NewMultimodalMessage(llm.RoleUser, "Compare them", pngAttachment(t), pdf))
+	if err == nil {
+		t.Fatal("expected an error for a PDF, which the converter does not support")
+	}
+	if !strings.Contains(err.Error(), "attachment 1") {
+		t.Errorf("error = %q, want it to name attachment 1", err)
 	}
 }

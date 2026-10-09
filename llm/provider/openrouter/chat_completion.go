@@ -153,7 +153,17 @@ func messageContent(m llm.Message) (openrouter.Content, error) {
 		if err != nil {
 			return openrouter.Content{}, errors.Wrapf(err, "failed to convert attachment %d to content", i)
 		}
-		parts = append(parts, content.Multi...)
+		switch {
+		case len(content.Multi) > 0:
+			parts = append(parts, content.Multi...)
+		case content.Text != "":
+			parts = append(parts, openrouter.ChatMessagePart{
+				Type: openrouter.ChatMessagePartTypeText,
+				Text: content.Text,
+			})
+		default:
+			return openrouter.Content{}, errors.Errorf("attachment %d converted to no content", i)
+		}
 	}
 
 	return openrouter.Content{Multi: parts}, nil
