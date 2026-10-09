@@ -130,7 +130,53 @@ func TestConfigureMessagesToolAttachmentsTheProviderCannotCarry(t *testing.T) {
 		if e, g := 1, len(params.Messages); e != g {
 			t.Fatalf("params.Messages: expected only the tool result, got %d messages", g)
 		}
+		want := "done\n" + llm.OmittedAttachmentNote(audio) + "\n" + llm.OmittedAttachmentNote(pdf)
+		if g := params.Messages[0].OfTool.Content.OfString.Value; g != want {
+			t.Errorf("tool content: expected %q, got %q", want, g)
+		}
 	})
+}
+
+// Parallel tool calls: the assistant message must be followed by all its
+// tool messages, so the media of every tool result go in one user message
+// after the last of them.
+func TestConfigureMessagesParallelToolResultsWithAttachments(t *testing.T) {
+	image, err := llm.NewImageAttachment("image/png", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := &openai.ChatCompletionNewParams{}
+	opts := &llm.ChatCompletionOptions{
+		Messages: []llm.Message{
+			llm.NewMessage(llm.RoleUser, "Take both screenshots"),
+			llm.NewToolCallsMessage(
+				llm.NewToolCall("call_1", "screenshot", "{}"),
+				llm.NewToolCall("call_2", "screenshot", "{}"),
+			),
+			llm.NewToolMessage("call_1", llm.NewToolResult("first", image)),
+			llm.NewToolMessage("call_2", llm.NewToolResult("second", image)),
+			llm.NewMessage(llm.RoleUser, "Compare them"),
+		},
+	}
+
+	if err := ConfigureMessages(context.Background(), opts, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if e, g := 6, len(params.Messages); e != g {
+		t.Fatalf("params.Messages: expected %d messages, got %d", e, g)
+	}
+	if params.Messages[2].OfTool == nil || params.Messages[3].OfTool == nil {
+		t.Fatalf("expected the two tool messages right after the tool calls, got %+v and %+v", params.Messages[2], params.Messages[3])
+	}
+	media := params.Messages[4].OfUser
+	if media == nil || len(media.Content.OfArrayOfContentParts) != 2 {
+		t.Fatalf("expected one user message with both images after the tool messages, got %+v", params.Messages[4])
+	}
+	if params.Messages[5].OfUser == nil {
+		t.Errorf("expected the next user message last, got %+v", params.Messages[5])
+	}
 }
 
 // A user message keeps failing on what the provider cannot carry: the

@@ -229,7 +229,22 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 	// Create validator for provider-specific validation (Layer 2)
 	validator := NewOpenAIAttachmentValidator(string(params.Model))
 
+	// The media of tool results go in a single user message after the last
+	// of a run of tool messages: an assistant message with parallel tool
+	// calls must be followed by all its tool messages, uninterrupted.
+	var toolMedia []openai.ChatCompletionContentPartUnionParam
+	flushToolMedia := func() {
+		if len(toolMedia) > 0 {
+			messages = append(messages, openai.UserMessage(toolMedia))
+			toolMedia = nil
+		}
+	}
+
 	for _, m := range opts.Messages {
+		if m.Role() != llm.RoleTool {
+			flushToolMedia()
+		}
+
 		// Validate attachments (Layer 2 - provider-specific validation). A
 		// tool result's are checked one by one below: the caller did not
 		// choose what a tool returns.
@@ -288,20 +303,18 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 				return errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
-			messages = append(messages, openai.ToolMessage(toolMessage.Content(), toolMessage.ID()))
-
 			// The API accepts text only under the "tool" role, yet a tool may
 			// legitimately answer with an image (an MCP server serving the
 			// screenshot it was asked for). Rejecting the message would lose
-			// it; the media are therefore carried by a user message right
-			// after the tool result, the usual way to feed a tool's output to
-			// a vision model.
+			// it; the media are therefore carried by a user message after the
+			// tool results, the usual way to feed a tool's output to a vision
+			// model.
 			//
 			// What the provider cannot carry, such as audio or a PDF, is left
-			// out with a warning rather than failing the whole request: the
-			// caller did not choose what the tool returned, and the text of
-			// the result still reaches the model.
-			contentParts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(m.Attachments()))
+			// out rather than failing the whole request: the caller did not
+			// choose what the tool returned. A note in the tool result tells
+			// the model something was there.
+			content := toolMessage.Content()
 
 			for i, attachment := range m.Attachments() {
 				contentPart, err := toolResultContentPart(validator, attachment)
@@ -310,15 +323,17 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 						slog.String("tool_call_id", toolMessage.ID()), slog.Int("index", i),
 						slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
 						slog.String("error", err.Error()))
+					if content != "" {
+						content += "\n"
+					}
+					content += llm.OmittedAttachmentNote(attachment)
 					continue
 				}
 
-				contentParts = append(contentParts, contentPart)
+				toolMedia = append(toolMedia, contentPart)
 			}
 
-			if len(contentParts) > 0 {
-				messages = append(messages, openai.UserMessage(contentParts))
-			}
+			messages = append(messages, openai.ToolMessage(content, toolMessage.ID()))
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
 				return errors.Errorf("tool calls messages cannot have attachments")
@@ -367,6 +382,8 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 			messages = append(messages, openai.ChatCompletionMessageParamUnion{OfAssistant: &message})
 		}
 	}
+
+	flushToolMedia()
 
 	params.Messages = messages
 

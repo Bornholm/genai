@@ -638,8 +638,8 @@ func TestBuildParams_ToolResultAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A tool_result cannot carry audio: it is left out, the rest of the
-	// result and of the request goes through.
+	// A tool_result cannot carry audio: a note takes its place, the rest of
+	// the result and of the request goes through.
 	body = marshalParams(t, llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "Hi"),
 		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "record", `{}`)),
@@ -647,8 +647,21 @@ func TestBuildParams_ToolResultAttachments(t *testing.T) {
 	))
 	result = blocksOf(t, messagesOf(t, body)[2])[0]
 	content, _ = result["content"].([]any)
-	if len(content) != 2 || content[0].(map[string]any)["type"] != "text" || content[1].(map[string]any)["type"] != "image" {
-		t.Errorf("expected the audio left out of the tool_result, got %v", content)
+	if len(content) != 3 || content[1].(map[string]any)["text"] != llm.OmittedAttachmentNote(audio) || content[2].(map[string]any)["type"] != "image" {
+		t.Errorf("expected a note in place of the audio, then the image, got %v", content)
+	}
+
+	// With no text and nothing it can carry, the tool_result still tells the
+	// model what the tool returned.
+	body = marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "record", `{}`)),
+		llm.NewToolMessage("call_1", llm.NewToolResult("", audio)),
+	))
+	result = blocksOf(t, messagesOf(t, body)[2])[0]
+	content, _ = result["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != llm.OmittedAttachmentNote(audio) {
+		t.Errorf("expected only the note in the tool_result, got %v", content)
 	}
 }
 
