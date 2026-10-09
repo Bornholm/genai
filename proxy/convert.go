@@ -8,6 +8,7 @@ import (
 	"mime"
 	neturl "net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -698,8 +699,22 @@ func keepUntypedPart(buf *strings.Builder, part map[string]any, index int, infer
 	if buf.Len() > 0 {
 		buf.WriteString("\n")
 	}
+	// A large object is most likely an undeclared binary payload: only its
+	// shape goes to the model, not megabytes of base64.
+	if len(raw) > maxUntypedPartBytes {
+		keys := mapKeys(data)
+		sort.Strings(keys)
+		slog.Warn("proxy: content part without a declared type is too large to keep as text, summarizing it",
+			slog.Int("index", index), slog.Int("bytes", len(raw)), slog.Any("keys", keys))
+		fmt.Fprintf(buf, "[object with keys %s left out: %d bytes]", strings.Join(keys, ", "), len(raw))
+		return
+	}
 	buf.Write(raw)
 }
+
+// maxUntypedPartBytes bounds the JSON form of a content part without a
+// declared type that keepUntypedPart writes as text.
+const maxUntypedPartBytes = 4096
 
 // partTypeOf returns the declared "type" of a content part, falling back to
 // inferring it from the part's shape when the field is absent — some clients
@@ -717,9 +732,9 @@ func partTypeOf(part map[string]any) string {
 	_, source := part["source"].(map[string]any)
 	_, file := part["file"].(map[string]any)
 	_, fileData := part["file_data"].(string)
-	_, data := part["data"].(string)
+	data, _ := part["data"].(string)
 	switch {
-	case imageURLObject, strings.HasPrefix(imageURL, "data:"):
+	case imageURLObject, strings.HasPrefix(imageURL, "data:"), isRemoteURL(imageURL):
 		return "image_url"
 	case inputAudio:
 		return "input_audio"
@@ -727,22 +742,22 @@ func partTypeOf(part map[string]any) string {
 		return "image"
 	case part["text"] != nil:
 		return "text"
-	case file, fileData, data && hasDeclaredMediaType(part):
+	case file, fileData, data != "" && (strings.HasPrefix(data, "data:") || hasKnownMediaType(part)):
 		return "file"
 	default:
 		return "unknown"
 	}
 }
 
-// hasDeclaredMediaType reports whether a content part names the media type
-// of its payload, under any of the keys the dialects use.
-func hasDeclaredMediaType(part map[string]any) bool {
-	for _, key := range []string{"mediaType", "media_type", "mimeType", "mime_type"} {
-		if t, ok := part[key].(string); ok && t != "" {
-			return true
-		}
+// hasKnownMediaType reports whether convertFilePart can tell the media type
+// of a part's payload: declared under any of the keys it reads, or given by
+// the extension of its file name.
+func hasKnownMediaType(part map[string]any) bool {
+	if declaredMIMEType(part) != "" {
+		return true
 	}
-	return false
+	filename := firstString(part, "filename", "name")
+	return filename != "" && mime.TypeByExtension(path.Ext(filename)) != ""
 }
 
 // mapKeys returns the keys of a content part, for diagnostics. Values are never

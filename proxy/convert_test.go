@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -557,9 +558,9 @@ func TestConvertOpenAIMessagesJSON_ToolUntypedObjectsAreNotMedia(t *testing.T) {
 			part: `{"source": "web", "url": "https://example.org/x.png", "text": "an excerpt"}`,
 			want: "an excerpt",
 		},
-		"named data without media type": {
-			part: `{"name": "report.pdf", "data": "aGVsbG8="}`,
-			want: `{"data":"aGVsbG8=","name":"report.pdf"}`,
+		"named data without a known media type": {
+			part: `{"name": "report", "data": "aGVsbG8="}`,
+			want: `{"data":"aGVsbG8=","name":"report"}`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -580,14 +581,37 @@ func TestConvertOpenAIMessagesJSON_ToolUntypedObjectsAreNotMedia(t *testing.T) {
 }
 
 func TestConvertOpenAIMessagesJSON_UntypedMediaShapesStillConvert(t *testing.T) {
+	for name, part := range map[string]string{
+		"image_url object":      `{"image_url": {"url": "data:image/png;base64,` + pngB64 + `"}}`,
+		"image_url data URL":    `{"image_url": "data:image/png;base64,` + pngB64 + `"}`,
+		"image_url remote URL":  `{"image_url": "https://example.org/x.png"}`,
+		"data with mediaType":   `{"data": "` + pngB64 + `", "mediaType": "image/png"}`,
+		"data with mime":        `{"data": "` + pngB64 + `", "mime": "image/png"}`,
+		"data with contentType": `{"data": "aGVsbG8=", "contentType": "application/pdf"}`,
+		"data with a file name": `{"name": "report.pdf", "data": "aGVsbG8="}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[{"role": "user", "content": [`+part+`]}]`)
+
+			if got := len(msgs[0].Attachments()); got != 1 {
+				t.Errorf("attachments = %d, want 1 (content %q)", got, msgs[0].Content())
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_LargeUntypedObjectIsSummarized(t *testing.T) {
+	payload := strings.Repeat("A", 8192)
 	msgs := convertMessagesJSON(t, `[
-		{"role": "user", "content": [
-			{"image_url": {"url": "data:image/png;base64,`+pngB64+`"}},
-			{"data": "`+pngB64+`", "mediaType": "image/png"}
-		]}
+		{"role": "user", "content": "Fetch it"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "fetch", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [{"id": 1, "blob": "`+payload+`"}]}
 	]`)
 
-	if got := len(msgs[0].Attachments()); got != 2 {
-		t.Errorf("attachments = %d, want 2", got)
+	got := msgs[len(msgs)-1].Content()
+	if strings.Contains(got, payload) || !strings.Contains(got, "blob, id") {
+		t.Errorf("tool result = %.120q, want a summary naming the keys, not the payload", got)
 	}
 }
