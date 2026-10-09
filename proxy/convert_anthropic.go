@@ -501,6 +501,9 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 			}
 
 			blockType := partTypeOf(block)
+			// As in extractContentParts: a block without a declared type
+			// whose inferred type does not convert is dropped.
+			inferred := !hasDeclaredType(block)
 			switch blockType {
 			case "text", "input_text", "output_text":
 				if t, ok := block["text"].(string); ok {
@@ -509,6 +512,10 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 
 			case "image", "image_url", "input_image":
 				att, attErr := convertImagePart(block)
+				if attErr != nil && inferred {
+					warnInferredPart(i, blockType, attErr)
+					break
+				}
 				if attErr != nil {
 					slog.Error("proxy: could not convert anthropic image block",
 						slog.Int("index", i), slog.Any("error", attErr))
@@ -523,6 +530,10 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 
 			case "audio", "input_audio":
 				att, attErr := convertAudioPart(block)
+				if attErr != nil && inferred {
+					warnInferredPart(i, blockType, attErr)
+					break
+				}
 				if attErr != nil {
 					slog.Error("proxy: could not convert anthropic audio block",
 						slog.Int("index", i), slog.Any("error", attErr))
@@ -539,6 +550,10 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 				// A "content" source (a PDF split into nested blocks) has no
 				// payload of its own and is not supported.
 				att, inlined, attErr := convertFilePart(block)
+				if attErr != nil && inferred {
+					warnInferredPart(i, blockType, attErr)
+					break
+				}
 				if attErr != nil {
 					slog.Error("proxy: could not convert anthropic document block",
 						slog.Int("index", i), slog.Any("error", attErr))
