@@ -523,3 +523,22 @@ func TestParseChatCompletionRequest_MalformedToolAttachmentFails(t *testing.T) {
 		t.Fatal("expected an error for a malformed image part in a tool result")
 	}
 }
+
+func TestConvertOpenAIMessagesJSON_ToolWithUntypedJSONObjects(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "List them"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "list", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"text": "Two items:"},
+			{"id": 1, "data": "abc"},
+			{"id": 2, "data": "def"}
+		]}
+	]`)
+
+	last := msgs[len(msgs)-1]
+	if last.Content() != "Two items:" || len(last.Attachments()) != 0 {
+		t.Errorf("tool result = %q with %d attachments, want the text and no attachment", last.Content(), len(last.Attachments()))
+	}
+}

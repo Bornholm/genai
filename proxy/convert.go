@@ -556,6 +556,11 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 			}
 
 			partType := partTypeOf(partMap)
+			// A part without a declared type is classified by its shape. A
+			// guess that does not convert, such as a tool returning a JSON
+			// object with a "data" key, drops the part instead of failing the
+			// request: the client never said it was a file.
+			inferred := !hasDeclaredType(partMap)
 			switch partType {
 			case "text", "input_text", "output_text":
 				if t, ok := partMap["text"].(string); ok {
@@ -564,6 +569,10 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 
 			case "image_url", "input_image", "image":
 				att, attErr := convertImagePart(partMap)
+				if attErr != nil && inferred {
+					warnInferredPart(i, partType, attErr)
+					continue
+				}
 				if attErr != nil {
 					slog.Error("proxy: could not convert image content part",
 						slog.Int("index", i), slog.String("type", partType), slog.Any("error", attErr))
@@ -579,6 +588,10 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 
 			case "input_audio", "audio":
 				att, attErr := convertAudioPart(partMap)
+				if attErr != nil && inferred {
+					warnInferredPart(i, partType, attErr)
+					continue
+				}
 				if attErr != nil {
 					slog.Error("proxy: could not convert audio content part",
 						slog.Int("index", i), slog.String("type", partType), slog.Any("error", attErr))
@@ -594,6 +607,10 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 
 			case "file", "input_file", "document":
 				att, inlined, attErr := convertFilePart(partMap)
+				if attErr != nil && inferred {
+					warnInferredPart(i, partType, attErr)
+					continue
+				}
 				if attErr != nil {
 					slog.Error("proxy: could not convert file content part",
 						slog.Int("index", i), slog.String("type", partType), slog.Any("error", attErr))
@@ -639,6 +656,19 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 	default:
 		return fmt.Sprintf("%v", raw), nil, nil, nil
 	}
+}
+
+// hasDeclaredType reports whether a content part names its type.
+func hasDeclaredType(part map[string]any) bool {
+	t, ok := part["type"].(string)
+	return ok && t != ""
+}
+
+// warnInferredPart logs a content part dropped because the type inferred
+// from its shape did not convert.
+func warnInferredPart(index int, partType string, err error) {
+	slog.Warn("proxy: content part without a declared type does not convert as its shape suggests, dropping it",
+		slog.Int("index", index), slog.String("inferredType", partType), slog.Any("error", err))
 }
 
 // partTypeOf returns the declared "type" of a content part, falling back to
