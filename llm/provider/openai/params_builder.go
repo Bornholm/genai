@@ -231,24 +231,36 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 
 	// The media of tool results go in a single user message after the last
 	// of a run of tool messages: an assistant message with parallel tool
-	// calls must be followed by all its tool messages, uninterrupted.
-	var toolMedia []openai.ChatCompletionContentPartUnionParam
+	// calls must be followed by all its tool messages, uninterrupted. When
+	// several results bring media, a label says which tool call each comes
+	// from.
+	type toolResultMedia struct {
+		toolCallID string
+		parts      []openai.ChatCompletionContentPartUnionParam
+	}
+	var toolMedia []toolResultMedia
 	flushToolMedia := func() {
-		if len(toolMedia) > 0 {
-			messages = append(messages, openai.UserMessage(toolMedia))
-			toolMedia = nil
+		if len(toolMedia) == 0 {
+			return
 		}
+		var parts []openai.ChatCompletionContentPartUnionParam
+		for _, media := range toolMedia {
+			if len(toolMedia) > 1 {
+				parts = append(parts, openai.TextContentPart("Attachments of tool call "+media.toolCallID+":"))
+			}
+			parts = append(parts, media.parts...)
+		}
+		messages = append(messages, openai.UserMessage(parts))
+		toolMedia = nil
 	}
 
 	for _, m := range opts.Messages {
 		if m.Role() != llm.RoleTool {
 			flushToolMedia()
-		}
 
-		// Validate attachments (Layer 2 - provider-specific validation). A
-		// tool result's are checked one by one below: the caller did not
-		// choose what a tool returns.
-		if m.Role() != llm.RoleTool {
+			// Validate attachments (Layer 2 - provider-specific
+			// validation). A tool result's are checked one by one below:
+			// the caller did not choose what a tool returns.
 			for _, attachment := range m.Attachments() {
 				if err := validator.ValidateAttachment(attachment); err != nil {
 					return errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
@@ -315,6 +327,7 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 			// choose what the tool returned. A note in the tool result tells
 			// the model something was there.
 			content := toolMessage.Content()
+			var parts []openai.ChatCompletionContentPartUnionParam
 
 			for i, attachment := range m.Attachments() {
 				contentPart, err := toolResultContentPart(validator, attachment)
@@ -330,7 +343,11 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 					continue
 				}
 
-				toolMedia = append(toolMedia, contentPart)
+				parts = append(parts, contentPart)
+			}
+
+			if len(parts) > 0 {
+				toolMedia = append(toolMedia, toolResultMedia{toolCallID: toolMessage.ID(), parts: parts})
 			}
 
 			messages = append(messages, openai.ToolMessage(content, toolMessage.ID()))

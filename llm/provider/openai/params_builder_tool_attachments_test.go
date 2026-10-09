@@ -171,8 +171,21 @@ func TestConfigureMessagesParallelToolResultsWithAttachments(t *testing.T) {
 		t.Fatalf("expected the two tool messages right after the tool calls, got %+v and %+v", params.Messages[2], params.Messages[3])
 	}
 	media := params.Messages[4].OfUser
-	if media == nil || len(media.Content.OfArrayOfContentParts) != 2 {
+	if media == nil {
 		t.Fatalf("expected one user message with both images after the tool messages, got %+v", params.Messages[4])
+	}
+	parts := media.Content.OfArrayOfContentParts
+	if len(parts) != 4 {
+		t.Fatalf("expected a label and an image per tool call, got %d parts", len(parts))
+	}
+	for i, id := range []string{"call_1", "call_2"} {
+		label, image := parts[2*i], parts[2*i+1]
+		if label.OfText == nil || label.OfText.Text != "Attachments of tool call "+id+":" {
+			t.Errorf("part %d: expected the label of %s, got %+v", 2*i, id, label)
+		}
+		if image.OfImageURL == nil {
+			t.Errorf("part %d: expected the image of %s, got %+v", 2*i+1, id, image)
+		}
 	}
 	if params.Messages[5].OfUser == nil {
 		t.Errorf("expected the next user message last, got %+v", params.Messages[5])
