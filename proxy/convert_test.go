@@ -430,3 +430,51 @@ func TestConvertOpenAIMessagesJSON_ToolWithMalformedAttachmentFails(t *testing.T
 		t.Fatal("expected an error for a malformed image part")
 	}
 }
+
+func TestConvertOpenAIMessagesJSON_ToolAttachmentDialects(t *testing.T) {
+	for name, tc := range map[string]struct {
+		part     string
+		wantType llm.AttachmentType
+	}{
+		"anthropic image block": {
+			part:     `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngB64 + `"}}`,
+			wantType: llm.AttachmentTypeImage,
+		},
+		"input audio": {
+			part:     `{"type":"input_audio","input_audio":{"data":"` + pngB64 + `","format":"wav"}}`,
+			wantType: llm.AttachmentTypeAudio,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[
+				{"role": "user", "content": "Run it"},
+				{"role": "assistant", "tool_calls": [
+					{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+				]},
+				{"role": "tool", "tool_call_id": "call_01", "content": [`+tc.part+`]}
+			]`)
+
+			attachments := msgs[len(msgs)-1].Attachments()
+			if len(attachments) != 1 || attachments[0].Type() != tc.wantType {
+				t.Errorf("tool attachments = %v, want one %s", attachments, tc.wantType)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolKeepsTextOfUnknownParts(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Run it"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "custom_result", "text": "4"},
+			{"type": "custom_result", "value": 5}
+		]}
+	]`)
+
+	if got := msgs[len(msgs)-1].Content(); got != "4" {
+		t.Errorf("tool content = %q, want the text of the unknown part", got)
+	}
+}

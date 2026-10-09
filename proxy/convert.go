@@ -620,6 +620,16 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 					slog.Int("index", i), slog.String("type", partType))
 
 			default:
+				// An unknown part that still carries text keeps it: the model
+				// would otherwise see a message, or a tool result, emptied of
+				// what the client meant it to read.
+				if t, ok := partMap["text"].(string); ok && t != "" {
+					slog.Warn("proxy: unsupported content part type, keeping its text",
+						slog.Int("index", i), slog.String("type", partType),
+						slog.Any("keys", mapKeys(partMap)))
+					buf.WriteString(t)
+					continue
+				}
 				slog.Warn("proxy: unsupported content part type, dropping it",
 					slog.Int("index", i), slog.String("type", partType),
 					slog.Any("keys", mapKeys(partMap)))
