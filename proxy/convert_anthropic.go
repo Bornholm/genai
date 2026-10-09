@@ -502,7 +502,8 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 
 			blockType := partTypeOf(block)
 			// As in extractContentParts: a block without a declared type
-			// whose inferred type does not convert is dropped.
+			// that yields nothing as the medium its shape suggests is kept
+			// as text. break, not continue, so its cache hint is read below.
 			inferred := !hasDeclaredType(block)
 			switch blockType {
 			case "text", "input_text", "output_text":
@@ -512,8 +513,8 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 
 			case "image", "image_url", "input_image":
 				att, attErr := convertImagePart(block)
-				if attErr != nil && inferred {
-					warnInferredPart(i, blockType, attErr)
+				if inferred && (attErr != nil || att == nil) {
+					keepUntypedPart(&buf, block, i, blockType, attErr)
 					break
 				}
 				if attErr != nil {
@@ -524,14 +525,14 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 				if att == nil {
 					slog.Warn("proxy: anthropic image block carries no usable payload, dropping it",
 						slog.Int("index", i), slog.Any("keys", mapKeys(block)))
-					continue
+					break
 				}
 				attachments = append(attachments, att)
 
 			case "audio", "input_audio":
 				att, attErr := convertAudioPart(block)
-				if attErr != nil && inferred {
-					warnInferredPart(i, blockType, attErr)
+				if inferred && (attErr != nil || att == nil) {
+					keepUntypedPart(&buf, block, i, blockType, attErr)
 					break
 				}
 				if attErr != nil {
@@ -542,7 +543,7 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 				if att == nil {
 					slog.Warn("proxy: anthropic audio block carries no usable payload, dropping it",
 						slog.Int("index", i), slog.Any("keys", mapKeys(block)))
-					continue
+					break
 				}
 				attachments = append(attachments, att)
 
@@ -550,8 +551,8 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 				// A "content" source (a PDF split into nested blocks) has no
 				// payload of its own and is not supported.
 				att, inlined, attErr := convertFilePart(block)
-				if attErr != nil && inferred {
-					warnInferredPart(i, blockType, attErr)
+				if inferred && (attErr != nil || (att == nil && inlined == "")) {
+					keepUntypedPart(&buf, block, i, blockType, attErr)
 					break
 				}
 				if attErr != nil {
@@ -575,6 +576,10 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 					slog.Int("index", i), slog.String("type", blockType))
 
 			default:
+				if inferred {
+					keepUntypedPart(&buf, block, i, blockType, nil)
+					break
+				}
 				// As in extractContentParts: an unknown block that still
 				// carries text keeps it.
 				if t, ok := block["text"].(string); ok && t != "" {

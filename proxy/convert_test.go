@@ -538,7 +538,56 @@ func TestConvertOpenAIMessagesJSON_ToolWithUntypedJSONObjects(t *testing.T) {
 	]`)
 
 	last := msgs[len(msgs)-1]
-	if last.Content() != "Two items:" || len(last.Attachments()) != 0 {
-		t.Errorf("tool result = %q with %d attachments, want the text and no attachment", last.Content(), len(last.Attachments()))
+	want := "Two items:\n{\"data\":\"abc\",\"id\":1}\n{\"data\":\"def\",\"id\":2}"
+	if last.Content() != want || len(last.Attachments()) != 0 {
+		t.Errorf("tool result = %q with %d attachments, want %q and no attachment", last.Content(), len(last.Attachments()), want)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolUntypedObjectsAreNotMedia(t *testing.T) {
+	for name, tc := range map[string]struct {
+		part string
+		want string
+	}{
+		"source string with text": {
+			part: `{"source": "web", "text": "an excerpt"}`,
+			want: "an excerpt",
+		},
+		"url with text": {
+			part: `{"source": "web", "url": "https://example.org/x.png", "text": "an excerpt"}`,
+			want: "an excerpt",
+		},
+		"named data without media type": {
+			part: `{"name": "report.pdf", "data": "aGVsbG8="}`,
+			want: `{"data":"aGVsbG8=","name":"report.pdf"}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[
+				{"role": "user", "content": "Search"},
+				{"role": "assistant", "tool_calls": [
+					{"id": "call_01", "type": "function", "function": {"name": "search", "arguments": "{}"}}
+				]},
+				{"role": "tool", "tool_call_id": "call_01", "content": [`+tc.part+`]}
+			]`)
+
+			last := msgs[len(msgs)-1]
+			if last.Content() != tc.want || len(last.Attachments()) != 0 {
+				t.Errorf("tool result = %q with %d attachments, want %q and no attachment", last.Content(), len(last.Attachments()), tc.want)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_UntypedMediaShapesStillConvert(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": [
+			{"image_url": {"url": "data:image/png;base64,`+pngB64+`"}},
+			{"data": "`+pngB64+`", "mediaType": "image/png"}
+		]}
+	]`)
+
+	if got := len(msgs[0].Attachments()); got != 2 {
+		t.Errorf("attachments = %d, want 2", got)
 	}
 }

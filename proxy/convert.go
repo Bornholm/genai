@@ -556,10 +556,11 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 			}
 
 			partType := partTypeOf(partMap)
-			// A part without a declared type is classified by its shape. A
-			// guess that does not convert, such as a tool returning a JSON
-			// object with a "data" key, drops the part instead of failing the
-			// request: the client never said it was a file.
+			// A part without a declared type is classified by its shape,
+			// which partTypeOf only trusts when it is unambiguous. If the
+			// guess still yields nothing, the part is kept as text, or as its
+			// JSON form: a tool returning plain objects must not fail the
+			// request nor reach the model emptied.
 			inferred := !hasDeclaredType(partMap)
 			switch partType {
 			case "text", "input_text", "output_text":
@@ -569,8 +570,8 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 
 			case "image_url", "input_image", "image":
 				att, attErr := convertImagePart(partMap)
-				if attErr != nil && inferred {
-					warnInferredPart(i, partType, attErr)
+				if inferred && (attErr != nil || att == nil) {
+					keepUntypedPart(&buf, partMap, i, partType, attErr)
 					continue
 				}
 				if attErr != nil {
@@ -588,8 +589,8 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 
 			case "input_audio", "audio":
 				att, attErr := convertAudioPart(partMap)
-				if attErr != nil && inferred {
-					warnInferredPart(i, partType, attErr)
+				if inferred && (attErr != nil || att == nil) {
+					keepUntypedPart(&buf, partMap, i, partType, attErr)
 					continue
 				}
 				if attErr != nil {
@@ -607,8 +608,8 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 
 			case "file", "input_file", "document":
 				att, inlined, attErr := convertFilePart(partMap)
-				if attErr != nil && inferred {
-					warnInferredPart(i, partType, attErr)
+				if inferred && (attErr != nil || (att == nil && inlined == "")) {
+					keepUntypedPart(&buf, partMap, i, partType, attErr)
 					continue
 				}
 				if attErr != nil {
@@ -637,6 +638,10 @@ func extractContentParts(raw any) (text string, attachments []llm.Attachment, ca
 					slog.Int("index", i), slog.String("type", partType))
 
 			default:
+				if inferred {
+					keepUntypedPart(&buf, partMap, i, partType, nil)
+					continue
+				}
 				// An unknown part that still carries text keeps it: the model
 				// would otherwise see a message, or a tool result, emptied of
 				// what the client meant it to read.
@@ -664,11 +669,36 @@ func hasDeclaredType(part map[string]any) bool {
 	return ok && t != ""
 }
 
-// warnInferredPart logs a content part dropped because the type inferred
-// from its shape did not convert.
-func warnInferredPart(index int, partType string, err error) {
-	slog.Warn("proxy: content part without a declared type does not convert as its shape suggests, dropping it",
-		slog.Int("index", index), slog.String("inferredType", partType), slog.Any("error", err))
+// keepUntypedPart writes a content part without a declared type that did not
+// convert as its shape suggested: its text when it has one, its JSON form
+// otherwise. Such a part is most often data a tool returned.
+func keepUntypedPart(buf *strings.Builder, part map[string]any, index int, inferredType string, err error) {
+	slog.Debug("proxy: keeping a content part without a declared type as text",
+		slog.Int("index", index), slog.String("inferredType", inferredType), slog.Any("error", err),
+		slog.Any("keys", mapKeys(part)))
+
+	if t, ok := part["text"].(string); ok && t != "" {
+		buf.WriteString(t)
+		return
+	}
+
+	data := make(map[string]any, len(part))
+	for k, v := range part {
+		if k != "cache_control" {
+			data[k] = v
+		}
+	}
+	if len(data) == 0 {
+		return
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	if buf.Len() > 0 {
+		buf.WriteString("\n")
+	}
+	buf.Write(raw)
 }
 
 // partTypeOf returns the declared "type" of a content part, falling back to
@@ -678,20 +708,41 @@ func partTypeOf(part map[string]any) string {
 	if t, ok := part["type"].(string); ok && t != "" {
 		return t
 	}
+	// Without a declared type, only an unambiguous shape counts: the payload
+	// objects of each dialect, then text. A plain object such as
+	// {"source": "web"} or {"id": 1, "data": "abc"} is not a medium.
+	_, imageURLObject := part["image_url"].(map[string]any)
+	imageURL, _ := part["image_url"].(string)
+	_, inputAudio := part["input_audio"].(map[string]any)
+	_, source := part["source"].(map[string]any)
+	_, file := part["file"].(map[string]any)
+	_, fileData := part["file_data"].(string)
+	_, data := part["data"].(string)
 	switch {
-	case part["image_url"] != nil:
+	case imageURLObject, strings.HasPrefix(imageURL, "data:"):
 		return "image_url"
-	case part["input_audio"] != nil:
+	case inputAudio:
 		return "input_audio"
-	case part["source"] != nil:
+	case source:
 		return "image"
 	case part["text"] != nil:
 		return "text"
-	case part["file"] != nil, part["file_data"] != nil, part["data"] != nil:
+	case file, fileData, data && hasDeclaredMediaType(part):
 		return "file"
 	default:
 		return "unknown"
 	}
+}
+
+// hasDeclaredMediaType reports whether a content part names the media type
+// of its payload, under any of the keys the dialects use.
+func hasDeclaredMediaType(part map[string]any) bool {
+	for _, key := range []string{"mediaType", "media_type", "mimeType", "mime_type"} {
+		if t, ok := part[key].(string); ok && t != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // mapKeys returns the keys of a content part, for diagnostics. Values are never
