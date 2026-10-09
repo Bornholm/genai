@@ -153,24 +153,20 @@ func messageContent(m llm.Message) (openrouter.Content, error) {
 		if err != nil {
 			return openrouter.Content{}, errors.Wrapf(err, "failed to convert attachment %d to content", i)
 		}
-		switch {
-		case len(content.Multi) > 0:
-			// An empty document gives an empty text part, which the
-			// upstream may refuse: it is left out.
-			for _, part := range content.Multi {
-				if part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
-					continue
-				}
-				parts = append(parts, part)
+		// An empty document gives an empty text part, which the upstream may
+		// refuse: it is left out.
+		for _, part := range content.Multi {
+			if part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
+				continue
 			}
-		case content.Text != "":
-			parts = append(parts, openrouter.ChatMessagePart{
-				Type: openrouter.ChatMessagePartTypeText,
-				Text: content.Text,
-			})
-		default:
-			return openrouter.Content{}, errors.Errorf("attachment %d converted to no content", i)
+			parts = append(parts, part)
 		}
+	}
+
+	if len(parts) == 0 {
+		// Nothing left, as for a text-only message with no text: the
+		// content is omitted rather than sent as null.
+		return openrouter.Content{}, nil
 	}
 
 	return openrouter.Content{Multi: parts}, nil

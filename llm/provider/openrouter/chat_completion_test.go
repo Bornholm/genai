@@ -472,3 +472,18 @@ func TestMessageContent_EmptyDocumentIsLeftOut(t *testing.T) {
 		t.Errorf("parts = %+v, want the text then the image, without the empty document", content.Multi)
 	}
 }
+
+func TestBuildMessages_OnlyAnEmptyDocumentOmitsContent(t *testing.T) {
+	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Read it"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", empty)),
+	)
+
+	last := messages[len(messages)-1]
+	if content, ok := last["content"]; ok {
+		t.Errorf("tool message content = %#v, want it omitted rather than null", content)
+	}
+}
