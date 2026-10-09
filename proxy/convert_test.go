@@ -385,3 +385,48 @@ func TestConvertOpenAIMessagesJSON_UnmarkedMessagesHaveNoCacheControl(t *testing
 		}
 	}
 }
+
+func TestConvertOpenAIMessagesJSON_ToolKeepsAttachments(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Take a screenshot"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "text", "text": "Here it is."},
+			{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},
+			 "cache_control": {"type": "ephemeral"}}
+		]}
+	]`)
+
+	last := msgs[len(msgs)-1]
+	toolMsg, ok := last.(llm.ToolMessage)
+	if !ok || toolMsg.ID() != "call_01" {
+		t.Fatalf("last message = %T, want the tool result for call_01", last)
+	}
+	if last.Content() != "Here it is." {
+		t.Errorf("tool content = %q, want %q", last.Content(), "Here it is.")
+	}
+	attachments := last.Attachments()
+	if len(attachments) != 1 || attachments[0].Type() != llm.AttachmentTypeImage {
+		t.Fatalf("tool attachments = %v, want one image", attachments)
+	}
+	if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("tool cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolWithMalformedAttachmentFails(t *testing.T) {
+	_, err := ConvertOpenAIMessagesJSON(json.RawMessage(`[
+		{"role": "user", "content": "Take a screenshot"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "image_url", "image_url": {"url": "data:image/png;base64,%%%"}}
+		]}
+	]`))
+	if err == nil {
+		t.Fatal("expected an error for a malformed image part")
+	}
+}

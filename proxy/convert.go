@@ -420,9 +420,14 @@ func convertMessages(msgs []openAIMessage) ([]llm.Message, error) {
 	for _, m := range msgs {
 		switch normalizeRole(m.Role) {
 		case llm.RoleTool:
-			content := extractTextContent(m.Content)
-			msg := llm.NewToolMessage(m.ToolCallID, llm.NewToolResult(content))
-			out = append(out, withCacheControl(msg, extractPartsCacheControl(m.Content)))
+			// A tool result carries the images, audio and files a tool
+			// returned, as the Anthropic Messages conversion keeps them.
+			text, attachments, cacheControl, err := extractContentParts(m.Content)
+			if err != nil {
+				return nil, errors.Wrapf(err, "could not convert content parts for tool call %s", m.ToolCallID)
+			}
+			msg := llm.NewToolMessage(m.ToolCallID, llm.NewToolResult(text, attachments...))
+			out = append(out, withCacheControl(msg, cacheControl))
 
 		case llm.RoleAssistant:
 			content := extractTextContent(m.Content)
