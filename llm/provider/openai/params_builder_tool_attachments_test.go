@@ -209,3 +209,41 @@ func TestConfigureMessagesUserAttachmentTheProviderCannotCarry(t *testing.T) {
 		t.Fatal("expected an error for audio in a user message")
 	}
 }
+
+// In a run of parallel tool results where only one brings media, the label
+// still says which tool call it comes from, and a result with media but no
+// text says its attachments follow.
+func TestConfigureMessagesParallelToolResultsOneWithAttachment(t *testing.T) {
+	image, err := llm.NewImageAttachment("image/png", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := &openai.ChatCompletionNewParams{}
+	opts := &llm.ChatCompletionOptions{
+		Messages: []llm.Message{
+			llm.NewMessage(llm.RoleUser, "Look and count"),
+			llm.NewToolCallsMessage(
+				llm.NewToolCall("call_1", "screenshot", "{}"),
+				llm.NewToolCall("call_2", "count", "{}"),
+			),
+			llm.NewToolMessage("call_1", llm.NewToolResult("", image)),
+			llm.NewToolMessage("call_2", llm.NewToolResult("3")),
+		},
+	}
+
+	if err := ConfigureMessages(context.Background(), opts, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if e, g := 5, len(params.Messages); e != g {
+		t.Fatalf("params.Messages: expected %d messages, got %d", e, g)
+	}
+	if g := params.Messages[2].OfTool.Content.OfString.Value; g == "" {
+		t.Error("tool message with only media: expected a placeholder, got empty content")
+	}
+	parts := params.Messages[4].OfUser.Content.OfArrayOfContentParts
+	if len(parts) != 2 || parts[0].OfText == nil || parts[0].OfText.Text != "Attachments of tool call call_1:" || parts[1].OfImageURL == nil {
+		t.Errorf("expected the label of call_1 then its image, got %+v", parts)
+	}
+}

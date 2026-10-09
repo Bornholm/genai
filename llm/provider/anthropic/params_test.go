@@ -648,7 +648,19 @@ func TestBuildParams_ToolResultAttachments(t *testing.T) {
 	result = blocksOf(t, messagesOf(t, body)[2])[0]
 	content, _ = result["content"].([]any)
 	if len(content) != 3 || content[1].(map[string]any)["text"] != llm.OmittedAttachmentNote(audio) || content[2].(map[string]any)["type"] != "image" {
-		t.Errorf("expected a note in place of the audio, then the image, got %v", content)
+		t.Errorf("expected the text, a note for the audio, then the image, got %v", content)
+	}
+
+	// The note goes with the text even when the audio comes after the image.
+	body = marshalParams(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "record", `{}`)),
+		llm.NewToolMessage("call_1", llm.NewToolResult("Recorded", image, audio)),
+	))
+	result = blocksOf(t, messagesOf(t, body)[2])[0]
+	content, _ = result["content"].([]any)
+	if len(content) != 3 || content[1].(map[string]any)["text"] != llm.OmittedAttachmentNote(audio) || content[2].(map[string]any)["type"] != "image" {
+		t.Errorf("expected the text, a note for the audio, then the image, got %v", content)
 	}
 
 	// With no text and nothing it can carry, the tool_result still tells the

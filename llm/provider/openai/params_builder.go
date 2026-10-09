@@ -232,26 +232,29 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 	// The media of tool results go in a single user message after the last
 	// of a run of tool messages: an assistant message with parallel tool
 	// calls must be followed by all its tool messages, uninterrupted. When
-	// several results bring media, a label says which tool call each comes
-	// from.
+	// the run holds several tool results, a label says which tool call each
+	// medium comes from.
 	type toolResultMedia struct {
 		toolCallID string
 		parts      []openai.ChatCompletionContentPartUnionParam
 	}
-	var toolMedia []toolResultMedia
+	var (
+		toolMedia    []toolResultMedia
+		toolRunCount int
+	)
 	flushToolMedia := func() {
+		defer func() { toolMedia, toolRunCount = nil, 0 }()
 		if len(toolMedia) == 0 {
 			return
 		}
 		var parts []openai.ChatCompletionContentPartUnionParam
 		for _, media := range toolMedia {
-			if len(toolMedia) > 1 {
+			if toolRunCount > 1 {
 				parts = append(parts, openai.TextContentPart("Attachments of tool call "+media.toolCallID+":"))
 			}
 			parts = append(parts, media.parts...)
 		}
 		messages = append(messages, openai.UserMessage(parts))
-		toolMedia = nil
 	}
 
 	for _, m := range opts.Messages {
@@ -324,8 +327,9 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 			//
 			// What the provider cannot carry, such as audio or a PDF, is left
 			// out rather than failing the whole request: the caller did not
-			// choose what the tool returned. A note in the tool result tells
-			// the model something was there.
+			// choose what the tool returned. A note appended to the tool's
+			// text, the only place the "tool" role offers, tells the model
+			// something was there.
 			content := toolMessage.Content()
 			var parts []openai.ChatCompletionContentPartUnionParam
 
@@ -346,8 +350,13 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 				parts = append(parts, contentPart)
 			}
 
+			toolRunCount++
 			if len(parts) > 0 {
 				toolMedia = append(toolMedia, toolResultMedia{toolCallID: toolMessage.ID(), parts: parts})
+				if content == "" {
+					// Some compatible endpoints refuse an empty tool message.
+					content = "[the attachments of this result follow in the next message]"
+				}
 			}
 
 			messages = append(messages, openai.ToolMessage(content, toolMessage.ID()))

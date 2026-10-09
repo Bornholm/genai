@@ -143,8 +143,10 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 			}
 			// A tool_result carries text, images and documents. Anything else
 			// a tool returned, such as audio, is left out rather than failing
-			// the whole request: the caller did not choose it. A note in its
-			// place tells the model something was there.
+			// the whole request: the caller did not choose it. A note tells
+			// the model something was there; notes go with the text, ahead
+			// of the media.
+			var media []anthropicsdk.ToolResultBlockParamContentUnion
 			for i, attachment := range m.Attachments() {
 				part, err := toolResultBlockContent(attachment)
 				if err != nil {
@@ -152,12 +154,14 @@ func buildMessages(msgs []llm.Message) ([]anthropicsdk.TextBlockParam, []anthrop
 						slog.String("tool_use_id", toolMessage.ID()), slog.Int("index", i),
 						slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
 						slog.String("error", err.Error()))
-					part = anthropicsdk.ToolResultBlockParamContentUnion{
+					result.Content = append(result.Content, anthropicsdk.ToolResultBlockParamContentUnion{
 						OfText: &anthropicsdk.TextBlockParam{Text: llm.OmittedAttachmentNote(attachment)},
-					}
+					})
+					continue
 				}
-				result.Content = append(result.Content, part)
+				media = append(media, part)
 			}
+			result.Content = append(result.Content, media...)
 			add(anthropicsdk.MessageParamRoleUser, []anthropicsdk.ContentBlockParamUnion{{OfToolResult: &result}}, cc)
 
 		default:
