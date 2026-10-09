@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/openai/openai-go"
@@ -229,10 +230,14 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 	validator := NewOpenAIAttachmentValidator(string(params.Model))
 
 	for _, m := range opts.Messages {
-		// Validate attachments (Layer 2 - provider-specific validation)
-		for _, attachment := range m.Attachments() {
-			if err := validator.ValidateAttachment(attachment); err != nil {
-				return errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
+		// Validate attachments (Layer 2 - provider-specific validation). A
+		// tool result's are checked one by one below: the caller did not
+		// choose what a tool returns.
+		if m.Role() != llm.RoleTool {
+			for _, attachment := range m.Attachments() {
+				if err := validator.ValidateAttachment(attachment); err != nil {
+					return errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
+				}
 			}
 		}
 
@@ -291,18 +296,27 @@ func ConfigureMessages(ctx context.Context, opts *llm.ChatCompletionOptions, par
 			// it; the media are therefore carried by a user message right
 			// after the tool result, the usual way to feed a tool's output to
 			// a vision model.
-			if len(m.Attachments()) > 0 {
-				contentParts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(m.Attachments()))
+			//
+			// What the provider cannot carry, such as audio or a PDF, is left
+			// out with a warning rather than failing the whole request: the
+			// caller did not choose what the tool returned, and the text of
+			// the result still reaches the model.
+			contentParts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(m.Attachments()))
 
-				for _, attachment := range m.Attachments() {
-					contentPart, err := ConvertAttachmentToContentPart(attachment)
-					if err != nil {
-						return errors.Wrapf(err, "failed to convert tool result attachment to content part")
-					}
-
-					contentParts = append(contentParts, contentPart)
+			for i, attachment := range m.Attachments() {
+				contentPart, err := toolResultContentPart(validator, attachment)
+				if err != nil {
+					slog.WarnContext(ctx, "openai: leaving out a tool result attachment the provider cannot carry",
+						slog.String("tool_call_id", toolMessage.ID()), slog.Int("index", i),
+						slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
+						slog.String("error", err.Error()))
+					continue
 				}
 
+				contentParts = append(contentParts, contentPart)
+			}
+
+			if len(contentParts) > 0 {
 				messages = append(messages, openai.UserMessage(contentParts))
 			}
 		case llm.RoleToolCalls:
@@ -371,4 +385,17 @@ func (b *paramsBuilder) BuildStreamingParams(ctx context.Context, opts *llm.Chat
 		IncludeUsage: openai.Bool(true),
 	}
 	return params, nil
+}
+
+// toolResultContentPart validates and converts one attachment of a tool
+// result.
+func toolResultContentPart(validator *OpenAIAttachmentValidator, attachment llm.Attachment) (openai.ChatCompletionContentPartUnionParam, error) {
+	if err := validator.ValidateAttachment(attachment); err != nil {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.WithStack(err)
+	}
+	contentPart, err := ConvertAttachmentToContentPart(attachment)
+	if err != nil {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.WithStack(err)
+	}
+	return contentPart, nil
 }

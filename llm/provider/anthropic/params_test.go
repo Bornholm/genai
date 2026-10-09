@@ -638,13 +638,17 @@ func TestBuildParams_ToolResultAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	// A tool_result cannot carry audio: it is left out, the rest of the
+	// result and of the request goes through.
+	body = marshalParams(t, llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "Hi"),
 		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "record", `{}`)),
-		llm.NewToolMessage("call_1", llm.NewToolResult("", audio)),
-	)), "claude-sonnet-5", DefaultMaxTokens)
-	if err == nil {
-		t.Fatal("expected audio tool result attachments to be rejected")
+		llm.NewToolMessage("call_1", llm.NewToolResult("Recorded", audio, image)),
+	))
+	result = blocksOf(t, messagesOf(t, body)[2])[0]
+	content, _ = result["content"].([]any)
+	if len(content) != 2 || content[0].(map[string]any)["type"] != "text" || content[1].(map[string]any)["type"] != "image" {
+		t.Errorf("expected the audio left out of the tool_result, got %v", content)
 	}
 }
 

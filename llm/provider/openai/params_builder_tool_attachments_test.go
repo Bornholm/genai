@@ -80,3 +80,73 @@ func TestConfigureMessagesToolWithoutAttachments(t *testing.T) {
 		t.Fatalf("params.Messages: expected %d, got %d", e, g)
 	}
 }
+
+// A tool may return what the provider cannot carry, such as audio or a PDF:
+// those attachments are left out, and the rest of the tool result and of the
+// request goes through.
+func TestConfigureMessagesToolAttachmentsTheProviderCannotCarry(t *testing.T) {
+	image, err := llm.NewImageAttachment("image/png", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	audio, err := llm.NewAudioAttachment("audio/wav", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pdf, err := llm.NewBase64Attachment(llm.AttachmentTypeDocument, "application/pdf", "aGVsbG8=")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	t.Run("some carried", func(t *testing.T) {
+		params := &openai.ChatCompletionNewParams{}
+		opts := &llm.ChatCompletionOptions{
+			Messages: []llm.Message{llm.NewToolMessage("call_1", llm.NewToolResult("done", audio, image, pdf))},
+		}
+
+		if err := ConfigureMessages(context.Background(), opts, params); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if e, g := 2, len(params.Messages); e != g {
+			t.Fatalf("params.Messages: expected %d messages (tool result + its image), got %d", e, g)
+		}
+		parts := params.Messages[1].OfUser.Content.OfArrayOfContentParts
+		if len(parts) != 1 || parts[0].OfImageURL == nil {
+			t.Errorf("user content parts: expected only the image, got %+v", parts)
+		}
+	})
+
+	t.Run("none carried", func(t *testing.T) {
+		params := &openai.ChatCompletionNewParams{}
+		opts := &llm.ChatCompletionOptions{
+			Messages: []llm.Message{llm.NewToolMessage("call_1", llm.NewToolResult("done", audio, pdf))},
+		}
+
+		if err := ConfigureMessages(context.Background(), opts, params); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if e, g := 1, len(params.Messages); e != g {
+			t.Fatalf("params.Messages: expected only the tool result, got %d messages", g)
+		}
+	})
+}
+
+// A user message keeps failing on what the provider cannot carry: the
+// caller chose to send it.
+func TestConfigureMessagesUserAttachmentTheProviderCannotCarry(t *testing.T) {
+	audio, err := llm.NewAudioAttachment("audio/wav", "aGVsbG8=", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	params := &openai.ChatCompletionNewParams{}
+	opts := &llm.ChatCompletionOptions{
+		Messages: []llm.Message{llm.NewMultimodalMessage(llm.RoleUser, "Listen", audio)},
+	}
+
+	if err := ConfigureMessages(context.Background(), opts, params); err == nil {
+		t.Fatal("expected an error for audio in a user message")
+	}
+}
