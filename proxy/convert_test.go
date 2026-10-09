@@ -478,3 +478,48 @@ func TestConvertOpenAIMessagesJSON_ToolKeepsTextOfUnknownParts(t *testing.T) {
 		t.Errorf("tool content = %q, want the text of the unknown part", got)
 	}
 }
+
+func TestConvertOpenAIMessagesJSON_UserKeepsTextOfUnknownParts(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": [
+			{"type": "text", "text": "Read this: "},
+			{"type": "custom_note", "text": "the note"}
+		]}
+	]`)
+
+	if got := msgs[0].Content(); got != "Read this: the note" {
+		t.Errorf("user content = %q, want the text of the unknown part appended", got)
+	}
+}
+
+func TestParseMessagesRequest_UserKeepsTextOfUnknownBlocks(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Read this: "},
+				{"type": "custom_note", "text": "the note"}
+			]}
+		]
+	}`)
+
+	if got := messages[0].Content(); got != "Read this: the note" {
+		t.Errorf("user content = %q, want the text of the unknown block appended", got)
+	}
+}
+
+func TestParseChatCompletionRequest_MalformedToolAttachmentFails(t *testing.T) {
+	_, _, _, err := ParseChatCompletionRequest(json.RawMessage(`{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "user", "content": "Take a screenshot"},
+			{"role": "tool", "tool_call_id": "call_01", "content": [
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,%%%"}}
+			]}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("expected an error for a malformed image part in a tool result")
+	}
+}

@@ -560,6 +560,15 @@ func extractAnthropicContentParts(raw any) (text string, attachments []llm.Attac
 					slog.Int("index", i), slog.String("type", blockType))
 
 			default:
+				// As in extractContentParts: an unknown block that still
+				// carries text keeps it.
+				if t, ok := block["text"].(string); ok && t != "" {
+					slog.Warn("proxy: unsupported anthropic content block type, keeping its text",
+						slog.Int("index", i), slog.String("type", blockType),
+						slog.Any("keys", mapKeys(block)))
+					buf.WriteString(t)
+					break
+				}
 				slog.Warn("proxy: unsupported anthropic content block type, dropping it",
 					slog.Int("index", i), slog.String("type", blockType),
 					slog.Any("keys", mapKeys(block)))
