@@ -155,7 +155,14 @@ func messageContent(m llm.Message) (openrouter.Content, error) {
 		}
 		switch {
 		case len(content.Multi) > 0:
-			parts = append(parts, content.Multi...)
+			// An empty document gives an empty text part, which the
+			// upstream may refuse: it is left out.
+			for _, part := range content.Multi {
+				if part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
+					continue
+				}
+				parts = append(parts, part)
+			}
 		case content.Text != "":
 			parts = append(parts, openrouter.ChatMessagePart{
 				Type: openrouter.ChatMessagePartTypeText,

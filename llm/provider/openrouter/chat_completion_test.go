@@ -419,3 +419,56 @@ func TestMessageContent_NamesTheAttachmentThatFails(t *testing.T) {
 		t.Errorf("error = %q, want it to name attachment 1", err)
 	}
 }
+
+// rawAttachment is an llm.Attachment built field by field, for the shapes
+// the llm constructors refuse.
+type rawAttachment struct {
+	kind     llm.AttachmentType
+	mimeType string
+	source   llm.AttachmentSource
+	data     string
+}
+
+func (a rawAttachment) Type() llm.AttachmentType     { return a.kind }
+func (a rawAttachment) MimeType() string             { return a.mimeType }
+func (a rawAttachment) Source() llm.AttachmentSource { return a.source }
+func (a rawAttachment) Data() string                 { return a.data }
+func (a rawAttachment) ValidateFormat() error        { return nil }
+
+func TestMessageContent_SingleAttachmentParts(t *testing.T) {
+	content, err := messageContent(llm.NewMultimodalMessage(llm.RoleUser, "What is this?", pngAttachment(t)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(content.Multi) != 2 ||
+		content.Multi[0].Type != openrouter.ChatMessagePartTypeText || content.Multi[0].Text != "What is this?" ||
+		content.Multi[1].Type != openrouter.ChatMessagePartTypeImageURL {
+		t.Errorf("parts = %+v, want the text then the image", content.Multi)
+	}
+}
+
+func TestMessageContent_UnknownSourceFails(t *testing.T) {
+	unknown := rawAttachment{kind: llm.AttachmentTypeImage, mimeType: "image/png", source: "inline", data: pngBase64}
+
+	_, err := messageContent(llm.NewMultimodalMessage(llm.RoleUser, "Compare them", pngAttachment(t), unknown))
+	if err == nil {
+		t.Fatal("expected an error for an attachment of unknown source")
+	}
+	if !strings.Contains(err.Error(), "attachment 1") {
+		t.Errorf("error = %q, want it to name attachment 1", err)
+	}
+}
+
+func TestMessageContent_EmptyDocumentIsLeftOut(t *testing.T) {
+	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
+
+	content, err := messageContent(llm.NewMultimodalMessage(llm.RoleUser, "Read them", empty, pngAttachment(t)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(content.Multi) != 2 || content.Multi[0].Text != "Read them" || content.Multi[1].Type != openrouter.ChatMessagePartTypeImageURL {
+		t.Errorf("parts = %+v, want the text then the image, without the empty document", content.Multi)
+	}
+}
