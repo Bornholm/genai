@@ -3,6 +3,7 @@ package openrouter
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -92,24 +93,88 @@ func toOpenRouterCacheControl(cc *llm.CacheControl) *openrouter.CacheControl {
 	}
 }
 
-// textContent builds an openrouter.Content for a plain-text message, using a
-// multi-part representation with cache_control when the message carries an
-// explicit cache hint, or a plain text content otherwise.
-func textContent(m llm.Message) openrouter.Content {
+// messageCacheControl returns the cache hint carried by m, if any.
+func messageCacheControl(m llm.Message) *llm.CacheControl {
 	if cm, ok := m.(llm.CacheControlMessage); ok {
-		if cc := cm.CacheControl(); cc != nil {
-			return openrouter.Content{
-				Multi: []openrouter.ChatMessagePart{{
-					Type:         openrouter.ChatMessagePartTypeText,
-					Text:         m.Content(),
-					CacheControl: toOpenRouterCacheControl(cc),
-				}},
-			}
+		return cm.CacheControl()
+	}
+	return nil
+}
+
+// withCacheControl puts cc on the last part of content, switching a plain
+// text content to its multi-part form since only parts carry the hint. A
+// marked empty text block is refused upstream, so trailing empty text parts,
+// as an empty document gives, are passed over; it reports false when no part
+// is left to carry the hint.
+func withCacheControl(content openrouter.Content, cc *llm.CacheControl) (openrouter.Content, bool) {
+	if cc == nil {
+		return content, true
+	}
+	if len(content.Multi) == 0 {
+		if content.Text == "" {
+			return content, false
+		}
+		content = openrouter.Content{
+			Multi: []openrouter.ChatMessagePart{{
+				Type: openrouter.ChatMessagePartTypeText,
+				Text: content.Text,
+			}},
 		}
 	}
-	return openrouter.Content{
-		Text: m.Content(),
+	for i := len(content.Multi) - 1; i >= 0; i-- {
+		if part := content.Multi[i]; part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
+			continue
+		}
+		parts := slices.Clone(content.Multi)
+		parts[i].CacheControl = toOpenRouterCacheControl(cc)
+		return openrouter.Content{Multi: parts}, true
 	}
+	return content, false
+}
+
+// messageContent builds the content of a user or tool message: its text
+// alone, or its text and attachments as parts. A single attachment can be of
+// any supported type, several must be images.
+func messageContent(m llm.Message) (openrouter.Content, error) {
+	switch len(m.Attachments()) {
+	case 0:
+		return openrouter.Content{Text: m.Content()}, nil
+	case 1:
+		content, err := ConvertAttachmentToContent(m.Attachments()[0], m.Content())
+		if err != nil {
+			return openrouter.Content{}, errors.Wrapf(err, "failed to convert attachment to content")
+		}
+		return content, nil
+	}
+
+	parts := make([]openrouter.ChatMessagePart, 0, len(m.Attachments())+1)
+
+	if m.Content() != "" {
+		parts = append(parts, openrouter.ChatMessagePart{
+			Type: openrouter.ChatMessagePartTypeText,
+			Text: m.Content(),
+		})
+	}
+
+	for _, attachment := range m.Attachments() {
+		switch attachment.Type() {
+		case llm.AttachmentTypeImage:
+			data := attachment.Data()
+			if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
+				data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
+			}
+			parts = append(parts, openrouter.ChatMessagePart{
+				Type: openrouter.ChatMessagePartTypeImageURL,
+				ImageURL: &openrouter.ChatMessageImageURL{
+					URL: data,
+				},
+			})
+		default:
+			return openrouter.Content{}, errors.Errorf("unsupported attachment type: %s", attachment.Type())
+		}
+	}
+
+	return openrouter.Content{Multi: parts}, nil
 }
 
 // buildMessages converts llm.Message slice to openrouter.ChatCompletionMessage slice,
@@ -128,158 +193,51 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 			}
 		}
 
+		var message openrouter.ChatCompletionMessage
+
 		switch m.Role() {
 		case llm.RoleSystem:
 			if len(m.Attachments()) > 0 {
 				return nil, errors.Errorf("system messages cannot have attachments")
 			}
-			messages = append(messages, openrouter.ChatCompletionMessage{
+			message = openrouter.ChatCompletionMessage{
 				Role:    openrouter.ChatMessageRoleSystem,
-				Content: textContent(m),
-			})
+				Content: openrouter.Content{Text: m.Content()},
+			}
 		case llm.RoleUser:
-			if len(m.Attachments()) > 0 {
-				// Handle multimodal user message
-				if len(m.Attachments()) == 1 {
-					// Single attachment - use the conversion function
-					content, err := ConvertAttachmentToContent(m.Attachments()[0], m.Content())
-					if err != nil {
-						return nil, errors.Wrapf(err, "failed to convert attachment to content")
-					}
-					messages = append(messages, openrouter.ChatCompletionMessage{
-						Role:    openrouter.ChatMessageRoleUser,
-						Content: content,
-					})
-				} else {
-					// Multiple attachments - build multi-part content manually
-					parts := make([]openrouter.ChatMessagePart, 0)
-
-					// Add text content if present
-					if m.Content() != "" {
-						parts = append(parts, openrouter.ChatMessagePart{
-							Type: openrouter.ChatMessagePartTypeText,
-							Text: m.Content(),
-						})
-					}
-
-					// Add all attachments
-					for _, attachment := range m.Attachments() {
-						switch attachment.Type() {
-						case llm.AttachmentTypeImage:
-							data := attachment.Data()
-							if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
-								data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
-							}
-							parts = append(parts, openrouter.ChatMessagePart{
-								Type: openrouter.ChatMessagePartTypeImageURL,
-								ImageURL: &openrouter.ChatMessageImageURL{
-									URL: data,
-								},
-							})
-						default:
-							return nil, errors.Errorf("unsupported attachment type: %s", attachment.Type())
-						}
-					}
-
-					messages = append(messages, openrouter.ChatCompletionMessage{
-						Role: openrouter.ChatMessageRoleUser,
-						Content: openrouter.Content{
-							Multi: parts,
-						},
-					})
-				}
-			} else {
-				messages = append(messages, openrouter.ChatCompletionMessage{
-					Role:    openrouter.ChatMessageRoleUser,
-					Content: textContent(m),
-				})
+			content, err := messageContent(m)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+			message = openrouter.ChatCompletionMessage{
+				Role:    openrouter.ChatMessageRoleUser,
+				Content: content,
 			}
 		case llm.RoleAssistant:
 			if len(m.Attachments()) > 0 {
 				return nil, errors.Errorf("assistant messages cannot have attachments")
 			}
-			msg := openrouter.ChatCompletionMessage{
+			message = openrouter.ChatCompletionMessage{
 				Role:    openrouter.ChatMessageRoleAssistant,
-				Content: textContent(m),
+				Content: openrouter.Content{Text: m.Content()},
 			}
 			// Preserve reasoning for multi-turn conversations.
 			// When a model returns reasoning tokens, they must be passed back in
 			// subsequent requests so the model can continue its reasoning chain.
-			if rm, ok := m.(llm.ReasoningMessage); ok {
-				if r := rm.Reasoning(); r != "" {
-					msg.Reasoning = &r
-				}
-				if details := rm.ReasoningDetails(); len(details) > 0 {
-					msg.ReasoningDetails = fromReasoningDetails(details)
-				}
-			}
-			messages = append(messages, msg)
+			preserveReasoning(&message, m)
 		case llm.RoleTool:
 			toolMessage, ok := m.(llm.ToolMessage)
 			if !ok {
 				return nil, errors.Errorf("unexpected tool message type '%T'", m)
 			}
-
-			if len(m.Attachments()) > 0 {
-				// Handle multimodal user message
-				if len(m.Attachments()) == 1 {
-					// Single attachment - use the conversion function
-					content, err := ConvertAttachmentToContent(m.Attachments()[0], m.Content())
-					if err != nil {
-						return nil, errors.Wrapf(err, "failed to convert attachment to content")
-					}
-					messages = append(messages, openrouter.ChatCompletionMessage{
-						Role:       openrouter.ChatMessageRoleTool,
-						ToolCallID: toolMessage.ID(),
-						Content:    content,
-					})
-				} else {
-					// Multiple attachments - build multi-part content manually
-					parts := make([]openrouter.ChatMessagePart, 0)
-
-					// Add text content if present
-					if m.Content() != "" {
-						parts = append(parts, openrouter.ChatMessagePart{
-							Type: openrouter.ChatMessagePartTypeText,
-							Text: m.Content(),
-						})
-					}
-
-					// Add all attachments
-					for _, attachment := range m.Attachments() {
-						switch attachment.Type() {
-						case llm.AttachmentTypeImage:
-							data := attachment.Data()
-							if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
-								data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
-							}
-							parts = append(parts, openrouter.ChatMessagePart{
-								Type: openrouter.ChatMessagePartTypeImageURL,
-								ImageURL: &openrouter.ChatMessageImageURL{
-									URL: data,
-								},
-							})
-						default:
-							return nil, errors.Errorf("unsupported attachment type: %s", attachment.Type())
-						}
-					}
-
-					messages = append(messages, openrouter.ChatCompletionMessage{
-						Role:       openrouter.ChatMessageRoleTool,
-						ToolCallID: toolMessage.ID(),
-						Content: openrouter.Content{
-							Multi: parts,
-						},
-					})
-				}
-			} else {
-				messages = append(messages, openrouter.ChatCompletionMessage{
-					Role:       openrouter.ChatMessageRoleTool,
-					ToolCallID: toolMessage.ID(),
-					Content: openrouter.Content{
-						Text: m.Content(),
-					},
-				})
+			content, err := messageContent(m)
+			if err != nil {
+				return nil, errors.WithStack(err)
+			}
+			message = openrouter.ChatCompletionMessage{
+				Role:       openrouter.ChatMessageRoleTool,
+				ToolCallID: toolMessage.ID(),
+				Content:    content,
 			}
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
@@ -290,8 +248,11 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 				return nil, errors.Errorf("unexpected tool calls message type '%T'", m)
 			}
 
-			message := openrouter.ChatCompletionMessage{
-				Role: openrouter.ChatMessageRoleAssistant,
+			// The text the model wrote alongside its tool calls is part of
+			// the turn, and the only part a cache hint can land on.
+			message = openrouter.ChatCompletionMessage{
+				Role:    openrouter.ChatMessageRoleAssistant,
+				Content: openrouter.Content{Text: m.Content()},
 			}
 
 			toolCalls := make([]openrouter.ToolCall, 0, len(toolCallsMessage.ToolCalls()))
@@ -316,20 +277,46 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 			// For reasoning models (e.g. Claude, GPT-5), when the model responds with
 			// tool calls AND reasoning, both must be sent back together in the next turn
 			// so the model can continue its reasoning chain from where it left off.
-			if rm, ok := m.(llm.ReasoningMessage); ok {
-				if r := rm.Reasoning(); r != "" {
-					message.Reasoning = &r
-				}
-				if details := rm.ReasoningDetails(); len(details) > 0 {
-					message.ReasoningDetails = fromReasoningDetails(details)
-				}
-			}
-
-			messages = append(messages, message)
+			preserveReasoning(&message, m)
+		default:
+			continue
 		}
+
+		// A hint means "cache everything so far". When the message has no
+		// part to carry it, as a tool calls message without text, it goes
+		// on the end of the closest earlier message that has one: unlike
+		// the anthropic provider, the previous message may itself be tool
+		// calls without text, whose calls cannot carry a hint here. A hint
+		// already there is replaced, as the anthropic provider does when
+		// two land on the same block. With no such message nothing precedes
+		// it and the hint is void.
+		cc := messageCacheControl(m)
+		var placed bool
+		message.Content, placed = withCacheControl(message.Content, cc)
+		if !placed {
+			for i := len(messages) - 1; i >= 0 && !placed; i-- {
+				messages[i].Content, placed = withCacheControl(messages[i].Content, cc)
+			}
+		}
+
+		messages = append(messages, message)
 	}
 
 	return messages, nil
+}
+
+// preserveReasoning copies the reasoning carried by m, if any, onto message.
+func preserveReasoning(message *openrouter.ChatCompletionMessage, m llm.Message) {
+	rm, ok := m.(llm.ReasoningMessage)
+	if !ok {
+		return
+	}
+	if r := rm.Reasoning(); r != "" {
+		message.Reasoning = &r
+	}
+	if details := rm.ReasoningDetails(); len(details) > 0 {
+		message.ReasoningDetails = fromReasoningDetails(details)
+	}
 }
 
 // ChatCompletion implements llm.Client.
