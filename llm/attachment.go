@@ -262,3 +262,11 @@ func NewDocumentAttachment(mimeType, data string, isURL bool) (*BaseAttachment, 
 	}
 	return NewBase64Attachment(AttachmentTypeDocument, mimeType, data)
 }
+
+// OmittedAttachmentNote is the text a provider puts in place of an attachment
+// it could not send, whether its type is not supported or its payload is
+// malformed, so the model knows something was there rather than reading an
+// empty result.
+func OmittedAttachmentNote(attachment Attachment) string {
+	return fmt.Sprintf("[%s attachment (%s) left out: it could not be sent]", attachment.Type(), attachment.MimeType())
+}

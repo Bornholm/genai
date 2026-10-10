@@ -968,3 +968,53 @@ func TestParseMessagesRequest_EmptyFirstAssistantTurnDropsCacheControl(t *testin
 		}
 	}
 }
+
+func TestParseMessagesRequest_ToolResultWithUntypedJSONObjects(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "List them"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01", "name": "list", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": [
+					{"text": "Two items:"},
+					{"id": 1, "data": "abc", "cache_control": {"type": "ephemeral"}}
+				]}
+			]}
+		]
+	}`)
+
+	last := messages[len(messages)-1]
+	want := "Two items:\n{\"data\":\"abc\",\"id\":1}"
+	if last.Content() != want || len(last.Attachments()) != 0 {
+		t.Errorf("tool result = %q with %d attachments, want %q and no attachment", last.Content(), len(last.Attachments()), want)
+	}
+	if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("tool result cache control = %+v, want the hint of the dropped block", cc)
+	}
+}
+
+func TestParseMessagesRequest_ToolResultUntypedTextIsKept(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": "Search"},
+			{"role": "assistant", "content": [
+				{"type": "tool_use", "id": "toolu_01", "name": "search", "input": {}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "toolu_01", "content": [
+					{"source": "web", "text": "an excerpt"}
+				]}
+			]}
+		]
+	}`)
+
+	if got := messages[len(messages)-1].Content(); got != "an excerpt" {
+		t.Errorf("tool result = %q, want the text of the untyped block", got)
+	}
+}

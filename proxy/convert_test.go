@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -383,5 +384,234 @@ func TestConvertOpenAIMessagesJSON_UnmarkedMessagesHaveNoCacheControl(t *testing
 		if cc := cacheControlOf(m); cc != nil {
 			t.Errorf("%s message has unexpected cache control %+v", m.Role(), cc)
 		}
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolKeepsAttachments(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Take a screenshot"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "text", "text": "Here it is."},
+			{"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},
+			 "cache_control": {"type": "ephemeral"}}
+		]}
+	]`)
+
+	last := msgs[len(msgs)-1]
+	toolMsg, ok := last.(llm.ToolMessage)
+	if !ok || toolMsg.ID() != "call_01" {
+		t.Fatalf("last message = %T, want the tool result for call_01", last)
+	}
+	if last.Content() != "Here it is." {
+		t.Errorf("tool content = %q, want %q", last.Content(), "Here it is.")
+	}
+	attachments := last.Attachments()
+	if len(attachments) != 1 || attachments[0].Type() != llm.AttachmentTypeImage {
+		t.Fatalf("tool attachments = %v, want one image", attachments)
+	}
+	if cc := cacheControlOf(last); cc == nil || cc.Type != "ephemeral" {
+		t.Errorf("tool cache control = %+v, want ephemeral", cc)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolWithMalformedAttachmentFails(t *testing.T) {
+	_, err := ConvertOpenAIMessagesJSON(json.RawMessage(`[
+		{"role": "user", "content": "Take a screenshot"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "image_url", "image_url": {"url": "data:image/png;base64,%%%"}}
+		]}
+	]`))
+	if err == nil {
+		t.Fatal("expected an error for a malformed image part")
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolAttachmentDialects(t *testing.T) {
+	for name, tc := range map[string]struct {
+		part     string
+		wantType llm.AttachmentType
+	}{
+		"anthropic image block": {
+			part:     `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + pngB64 + `"}}`,
+			wantType: llm.AttachmentTypeImage,
+		},
+		"input audio": {
+			part:     `{"type":"input_audio","input_audio":{"data":"` + pngB64 + `","format":"wav"}}`,
+			wantType: llm.AttachmentTypeAudio,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[
+				{"role": "user", "content": "Run it"},
+				{"role": "assistant", "tool_calls": [
+					{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+				]},
+				{"role": "tool", "tool_call_id": "call_01", "content": [`+tc.part+`]}
+			]`)
+
+			attachments := msgs[len(msgs)-1].Attachments()
+			if len(attachments) != 1 || attachments[0].Type() != tc.wantType {
+				t.Errorf("tool attachments = %v, want one %s", attachments, tc.wantType)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolKeepsTextOfUnknownParts(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Run it"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "run", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"type": "custom_result", "text": "4"},
+			{"type": "custom_result", "value": 5}
+		]}
+	]`)
+
+	if got := msgs[len(msgs)-1].Content(); got != "4" {
+		t.Errorf("tool content = %q, want the text of the unknown part", got)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_UserKeepsTextOfUnknownParts(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": [
+			{"type": "text", "text": "Read this: "},
+			{"type": "custom_note", "text": "the note"}
+		]}
+	]`)
+
+	if got := msgs[0].Content(); got != "Read this: the note" {
+		t.Errorf("user content = %q, want the text of the unknown part appended", got)
+	}
+}
+
+func TestParseMessagesRequest_UserKeepsTextOfUnknownBlocks(t *testing.T) {
+	messages := compileMessages(t, `{
+		"model": "m",
+		"max_tokens": 100,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Read this: "},
+				{"type": "custom_note", "text": "the note"}
+			]}
+		]
+	}`)
+
+	if got := messages[0].Content(); got != "Read this: the note" {
+		t.Errorf("user content = %q, want the text of the unknown block appended", got)
+	}
+}
+
+func TestParseChatCompletionRequest_MalformedToolAttachmentFails(t *testing.T) {
+	_, _, _, err := ParseChatCompletionRequest(json.RawMessage(`{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "user", "content": "Take a screenshot"},
+			{"role": "tool", "tool_call_id": "call_01", "content": [
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,%%%"}}
+			]}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("expected an error for a malformed image part in a tool result")
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolWithUntypedJSONObjects(t *testing.T) {
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "List them"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "list", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [
+			{"text": "Two items:"},
+			{"id": 1, "data": "abc"},
+			{"id": 2, "data": "def"}
+		]}
+	]`)
+
+	last := msgs[len(msgs)-1]
+	want := "Two items:\n{\"data\":\"abc\",\"id\":1}\n{\"data\":\"def\",\"id\":2}"
+	if last.Content() != want || len(last.Attachments()) != 0 {
+		t.Errorf("tool result = %q with %d attachments, want %q and no attachment", last.Content(), len(last.Attachments()), want)
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_ToolUntypedObjectsAreNotMedia(t *testing.T) {
+	for name, tc := range map[string]struct {
+		part string
+		want string
+	}{
+		"source string with text": {
+			part: `{"source": "web", "text": "an excerpt"}`,
+			want: "an excerpt",
+		},
+		"url with text": {
+			part: `{"source": "web", "url": "https://example.org/x.png", "text": "an excerpt"}`,
+			want: "an excerpt",
+		},
+		"named data without a known media type": {
+			part: `{"name": "report", "data": "aGVsbG8="}`,
+			want: `{"data":"aGVsbG8=","name":"report"}`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[
+				{"role": "user", "content": "Search"},
+				{"role": "assistant", "tool_calls": [
+					{"id": "call_01", "type": "function", "function": {"name": "search", "arguments": "{}"}}
+				]},
+				{"role": "tool", "tool_call_id": "call_01", "content": [`+tc.part+`]}
+			]`)
+
+			last := msgs[len(msgs)-1]
+			if last.Content() != tc.want || len(last.Attachments()) != 0 {
+				t.Errorf("tool result = %q with %d attachments, want %q and no attachment", last.Content(), len(last.Attachments()), tc.want)
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_UntypedMediaShapesStillConvert(t *testing.T) {
+	for name, part := range map[string]string{
+		"image_url object":      `{"image_url": {"url": "data:image/png;base64,` + pngB64 + `"}}`,
+		"image_url data URL":    `{"image_url": "data:image/png;base64,` + pngB64 + `"}`,
+		"image_url remote URL":  `{"image_url": "https://example.org/x.png"}`,
+		"data with mediaType":   `{"data": "` + pngB64 + `", "mediaType": "image/png"}`,
+		"data with mime":        `{"data": "` + pngB64 + `", "mime": "image/png"}`,
+		"data with contentType": `{"data": "aGVsbG8=", "contentType": "application/pdf"}`,
+		"data with a file name": `{"name": "report.pdf", "data": "aGVsbG8="}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			msgs := convertMessagesJSON(t, `[{"role": "user", "content": [`+part+`]}]`)
+
+			if got := len(msgs[0].Attachments()); got != 1 {
+				t.Errorf("attachments = %d, want 1 (content %q)", got, msgs[0].Content())
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIMessagesJSON_LargeUntypedObjectIsSummarized(t *testing.T) {
+	payload := strings.Repeat("A", 8192)
+	msgs := convertMessagesJSON(t, `[
+		{"role": "user", "content": "Fetch it"},
+		{"role": "assistant", "tool_calls": [
+			{"id": "call_01", "type": "function", "function": {"name": "fetch", "arguments": "{}"}}
+		]},
+		{"role": "tool", "tool_call_id": "call_01", "content": [{"id": 1, "blob": "`+payload+`"}]}
+	]`)
+
+	got := msgs[len(msgs)-1].Content()
+	if strings.Contains(got, payload) || !strings.Contains(got, "blob, id") {
+		t.Errorf("tool result = %.120q, want a summary naming the keys, not the payload", got)
 	}
 }
