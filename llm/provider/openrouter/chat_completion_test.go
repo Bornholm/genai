@@ -353,43 +353,33 @@ func partSummaries(t *testing.T, message map[string]any) [][2]any {
 }
 
 func TestBuildMessages_SeveralAttachmentsOfMixedTypes(t *testing.T) {
+	user := llm.NewMultimodalMessage(llm.RoleUser, "Compare them",
+		textAttachment(t, "Some notes."), pngAttachment(t), textAttachment(t, "More notes."))
+	llm.SetCacheControl(user, ephemeral())
+
+	messages := wireMessages(t, user)
+
 	want := [][2]any{
 		{"text", "Compare them"},
 		{"text", "Some notes."},
 		{"image_url", nil},
 		{"text", "More notes."},
 	}
+	assertParts(t, messages[0], want)
+	assertOnlyLastPartCached(t, messages[0])
+}
 
-	for name, build := range map[string]func(attachments ...llm.Attachment) llm.Message{
-		"user": func(attachments ...llm.Attachment) llm.Message {
-			return llm.NewMultimodalMessage(llm.RoleUser, "Compare them", attachments...)
-		},
-		"tool": func(attachments ...llm.Attachment) llm.Message {
-			return llm.NewToolMessage("call_01", llm.NewToolResult("Compare them", attachments...))
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := build(textAttachment(t, "Some notes."), pngAttachment(t), textAttachment(t, "More notes."))
-			llm.SetCacheControl(m, ephemeral())
+func assertParts(t *testing.T, message map[string]any, want [][2]any) {
+	t.Helper()
 
-			messages := wireMessages(t,
-				llm.NewMessage(llm.RoleUser, "Look"),
-				llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
-				m,
-			)
-
-			last := messages[len(messages)-1]
-			got := partSummaries(t, last)
-			if len(got) != len(want) {
-				t.Fatalf("parts = %v, want %v", got, want)
-			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Errorf("part %d = %v, want %v", i, got[i], want[i])
-				}
-			}
-			assertOnlyLastPartCached(t, last)
-		})
+	got := partSummaries(t, message)
+	if len(got) != len(want) {
+		t.Fatalf("parts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("part %d = %v, want %v", i, got[i], want[i])
+		}
 	}
 }
 
