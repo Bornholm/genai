@@ -3,6 +3,7 @@ package mistral
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"github.com/bornholm/genai/llm"
@@ -65,8 +66,7 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 				return errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
-			// Tool messages only support text content for now
-			messages = append(messages, openai.ToolMessage(toolMessage.Content(), toolMessage.ID()))
+			messages = append(messages, toolResultMessage(ctx, toolMessage))
 
 		case llm.RoleToolCalls:
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
@@ -103,6 +103,50 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 	params.Messages = messages
 
 	return nil
+}
+
+// toolResultMessage builds the message of a tool result. Unlike the OpenAI
+// API, Mistral takes content chunks under the "tool" role and refuses a user
+// message right after a tool message, so the media stay in the tool message
+// rather than following in a user message as the openai provider does.
+//
+// What the provider cannot carry, such as audio or a document, is left out
+// rather than failing the whole request: the caller did not choose what the
+// tool returned. A note appended to the tool's text tells the model
+// something was there.
+func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) openai.ChatCompletionMessageParamUnion {
+	content := toolMessage.Content()
+	var parts []openai.ChatCompletionContentPartUnionParam
+
+	for i, attachment := range toolMessage.Attachments() {
+		part, err := convertAttachment(attachment)
+		if err != nil {
+			slog.WarnContext(ctx, "mistral: leaving out a tool result attachment the provider cannot carry",
+				slog.String("tool_call_id", toolMessage.ID()), slog.Int("index", i),
+				slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
+				slog.String("error", err.Error()))
+			if content != "" {
+				content += "\n"
+			}
+			content += llm.OmittedAttachmentNote(attachment)
+			continue
+		}
+		parts = append(parts, part)
+	}
+
+	message := openai.ToolMessage(content, toolMessage.ID())
+	if len(parts) == 0 {
+		return message
+	}
+
+	// The SDK types the tool content as text only: the chunk list replaces
+	// it on the wire.
+	if content != "" {
+		parts = append([]openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(content)}, parts...)
+	}
+	message.OfTool.WithExtraFields(map[string]any{"content": parts})
+
+	return message
 }
 
 // convertAttachment converts an llm.Attachment to OpenAI content part format
