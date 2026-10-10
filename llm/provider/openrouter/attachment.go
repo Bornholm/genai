@@ -123,7 +123,9 @@ func NewOpenRouterAttachmentValidator(model string) *OpenRouterAttachmentValidat
 
 var _ llm.AttachmentValidator = &OpenRouterAttachmentValidator{}
 
-// ConvertAttachmentToContent converts an attachment to OpenRouter content format
+// ConvertAttachmentToContent converts an attachment to OpenRouter content
+// format. The result always holds its parts in Multi, textContent first when
+// it is not empty, then the attachment's own part.
 func ConvertAttachmentToContent(attachment llm.Attachment, textContent string) (openrouter.Content, error) {
 	switch attachment.Type() {
 	case llm.AttachmentTypeImage:

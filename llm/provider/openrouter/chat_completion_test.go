@@ -3,6 +3,7 @@ package openrouter
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -332,5 +333,157 @@ func TestBuildMessages_FallbackSkipsMessagesWithoutParts(t *testing.T) {
 		if _, ok := m["content"]; ok {
 			t.Errorf("tool calls without text sent content %#v", m["content"])
 		}
+	}
+}
+
+// partSummaries returns the type and text of each content part of message.
+func partSummaries(t *testing.T, message map[string]any) [][2]any {
+	t.Helper()
+
+	parts, ok := message["content"].([]any)
+	if !ok {
+		t.Fatalf("%s message content is not a part list: %#v", message["role"], message["content"])
+	}
+	summaries := make([][2]any, len(parts))
+	for i, part := range parts {
+		p := part.(map[string]any)
+		summaries[i] = [2]any{p["type"], p["text"]}
+	}
+	return summaries
+}
+
+func TestBuildMessages_SeveralAttachmentsOfMixedTypes(t *testing.T) {
+	want := [][2]any{
+		{"text", "Compare them"},
+		{"text", "Some notes."},
+		{"image_url", nil},
+		{"text", "More notes."},
+	}
+
+	for name, build := range map[string]func(attachments ...llm.Attachment) llm.Message{
+		"user": func(attachments ...llm.Attachment) llm.Message {
+			return llm.NewMultimodalMessage(llm.RoleUser, "Compare them", attachments...)
+		},
+		"tool": func(attachments ...llm.Attachment) llm.Message {
+			return llm.NewToolMessage("call_01", llm.NewToolResult("Compare them", attachments...))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := build(textAttachment(t, "Some notes."), pngAttachment(t), textAttachment(t, "More notes."))
+			llm.SetCacheControl(m, ephemeral())
+
+			messages := wireMessages(t,
+				llm.NewMessage(llm.RoleUser, "Look"),
+				llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+				m,
+			)
+
+			last := messages[len(messages)-1]
+			got := partSummaries(t, last)
+			if len(got) != len(want) {
+				t.Fatalf("parts = %v, want %v", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("part %d = %v, want %v", i, got[i], want[i])
+				}
+			}
+			assertOnlyLastPartCached(t, last)
+		})
+	}
+}
+
+func TestBuildMessages_SeveralAttachmentsWithoutText(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMultimodalMessage(llm.RoleUser, "", pngAttachment(t), textAttachment(t, "Some notes.")),
+	)
+
+	got := partSummaries(t, messages[0])
+	want := [][2]any{{"image_url", nil}, {"text", "Some notes."}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("parts = %v, want %v", got, want)
+	}
+}
+
+func TestMessageContent_NamesTheAttachmentThatFails(t *testing.T) {
+	pdf, err := llm.NewBase64Attachment(llm.AttachmentTypeDocument, "application/pdf", pngBase64)
+	if err != nil {
+		t.Fatalf("could not build attachment: %v", err)
+	}
+
+	_, err = messageContent(llm.NewMultimodalMessage(llm.RoleUser, "Compare them", pngAttachment(t), pdf))
+	if err == nil {
+		t.Fatal("expected an error for a PDF, which the converter does not support")
+	}
+	if !strings.Contains(err.Error(), "attachment 1") {
+		t.Errorf("error = %q, want it to name attachment 1", err)
+	}
+}
+
+// rawAttachment is an llm.Attachment built field by field, for the shapes
+// the llm constructors refuse.
+type rawAttachment struct {
+	kind     llm.AttachmentType
+	mimeType string
+	source   llm.AttachmentSource
+	data     string
+}
+
+func (a rawAttachment) Type() llm.AttachmentType     { return a.kind }
+func (a rawAttachment) MimeType() string             { return a.mimeType }
+func (a rawAttachment) Source() llm.AttachmentSource { return a.source }
+func (a rawAttachment) Data() string                 { return a.data }
+func (a rawAttachment) ValidateFormat() error        { return nil }
+
+func TestMessageContent_SingleAttachmentParts(t *testing.T) {
+	content, err := messageContent(llm.NewMultimodalMessage(llm.RoleUser, "What is this?", pngAttachment(t)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(content.Multi) != 2 ||
+		content.Multi[0].Type != openrouter.ChatMessagePartTypeText || content.Multi[0].Text != "What is this?" ||
+		content.Multi[1].Type != openrouter.ChatMessagePartTypeImageURL {
+		t.Errorf("parts = %+v, want the text then the image", content.Multi)
+	}
+}
+
+func TestMessageContent_UnknownSourceFails(t *testing.T) {
+	unknown := rawAttachment{kind: llm.AttachmentTypeImage, mimeType: "image/png", source: "inline", data: pngBase64}
+
+	_, err := messageContent(llm.NewMultimodalMessage(llm.RoleUser, "Compare them", pngAttachment(t), unknown))
+	if err == nil {
+		t.Fatal("expected an error for an attachment of unknown source")
+	}
+	if !strings.Contains(err.Error(), "attachment 1") {
+		t.Errorf("error = %q, want it to name attachment 1", err)
+	}
+}
+
+func TestMessageContent_EmptyDocumentIsLeftOut(t *testing.T) {
+	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
+
+	content, err := messageContent(llm.NewMultimodalMessage(llm.RoleUser, "Read them", empty, pngAttachment(t)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(content.Multi) != 2 || content.Multi[0].Text != "Read them" || content.Multi[1].Type != openrouter.ChatMessagePartTypeImageURL {
+		t.Errorf("parts = %+v, want the text then the image, without the empty document", content.Multi)
+	}
+}
+
+func TestBuildMessages_OnlyAnEmptyDocumentOmitsContent(t *testing.T) {
+	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Read it"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", empty)),
+	)
+
+	last := messages[len(messages)-1]
+	if content, ok := last["content"]; ok {
+		t.Errorf("tool message content = %#v, want it omitted rather than null", content)
 	}
 }

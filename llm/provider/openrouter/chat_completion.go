@@ -1,10 +1,8 @@
 package openrouter
 
 import (
-	"fmt"
 	"math"
 	"slices"
-	"strings"
 	"sync/atomic"
 
 	"github.com/bornholm/genai/llm"
@@ -133,18 +131,11 @@ func withCacheControl(content openrouter.Content, cc *llm.CacheControl) (openrou
 }
 
 // messageContent builds the content of a user or tool message: its text
-// alone, or its text and attachments as parts. A single attachment can be of
-// any supported type, several must be images.
+// alone, or its text followed by one or more parts per attachment, each
+// converted by ConvertAttachmentToContent whatever their number.
 func messageContent(m llm.Message) (openrouter.Content, error) {
-	switch len(m.Attachments()) {
-	case 0:
+	if len(m.Attachments()) == 0 {
 		return openrouter.Content{Text: m.Content()}, nil
-	case 1:
-		content, err := ConvertAttachmentToContent(m.Attachments()[0], m.Content())
-		if err != nil {
-			return openrouter.Content{}, errors.Wrapf(err, "failed to convert attachment to content")
-		}
-		return content, nil
 	}
 
 	parts := make([]openrouter.ChatMessagePart, 0, len(m.Attachments())+1)
@@ -156,22 +147,26 @@ func messageContent(m llm.Message) (openrouter.Content, error) {
 		})
 	}
 
-	for _, attachment := range m.Attachments() {
-		switch attachment.Type() {
-		case llm.AttachmentTypeImage:
-			data := attachment.Data()
-			if attachment.Source() == llm.AttachmentSourceBase64 && !strings.HasPrefix(data, "data:") {
-				data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
-			}
-			parts = append(parts, openrouter.ChatMessagePart{
-				Type: openrouter.ChatMessagePartTypeImageURL,
-				ImageURL: &openrouter.ChatMessageImageURL{
-					URL: data,
-				},
-			})
-		default:
-			return openrouter.Content{}, errors.Errorf("unsupported attachment type: %s", attachment.Type())
+	for i, attachment := range m.Attachments() {
+		// The message text is added once above, not before each attachment.
+		content, err := ConvertAttachmentToContent(attachment, "")
+		if err != nil {
+			return openrouter.Content{}, errors.Wrapf(err, "failed to convert attachment %d to content", i)
 		}
+		// An empty document gives an empty text part, which the upstream may
+		// refuse: it is left out.
+		for _, part := range content.Multi {
+			if part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
+				continue
+			}
+			parts = append(parts, part)
+		}
+	}
+
+	if len(parts) == 0 {
+		// Nothing left, as for a text-only message with no text: the
+		// content is omitted rather than sent as null.
+		return openrouter.Content{}, nil
 	}
 
 	return openrouter.Content{Multi: parts}, nil
