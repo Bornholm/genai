@@ -175,7 +175,7 @@ func messageContent(m llm.Message) (openrouter.Content, error) {
 
 // buildMessages converts llm.Message slice to openrouter.ChatCompletionMessage slice,
 // handling attachments and reasoning preservation.
-func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletionMessage, error) {
+func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]openrouter.ChatCompletionMessage, error) {
 	messages := make([]openrouter.ChatCompletionMessage, 0, len(msgs))
 
 	// Create validator for provider-specific validation (Layer 2)
@@ -187,19 +187,20 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 	// assistant message with parallel tool calls must be followed by all its
 	// tool messages, uninterrupted. When the run holds several tool results,
 	// a label says which tool call each medium comes from.
+	//
+	// The hint of a tool message whose media were moved goes on the last of
+	// its own media, so that they are cached too.
 	type toolResultMedia struct {
-		toolCallID string
-		parts      []openrouter.ChatMessagePart
+		toolCallID   string
+		parts        []openrouter.ChatMessagePart
+		cacheControl *llm.CacheControl
 	}
 	var (
 		toolMedia    []toolResultMedia
 		toolRunCount int
-		// toolMediaCacheControl is the hint of a tool message whose media
-		// were moved: it goes after them, so that they are cached too.
-		toolMediaCacheControl *llm.CacheControl
 	)
 	flushToolMedia := func() {
-		defer func() { toolMedia, toolRunCount, toolMediaCacheControl = nil, 0, nil }()
+		defer func() { toolMedia, toolRunCount = nil, 0 }()
 		if len(toolMedia) == 0 {
 			return
 		}
@@ -211,12 +212,14 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 					Text: "Attachments of tool call " + media.toolCallID + ":",
 				})
 			}
-			parts = append(parts, media.parts...)
+			// toolResultParts leaves no empty text part, so the hint
+			// always lands on the last medium.
+			content, _ := withCacheControl(openrouter.Content{Multi: media.parts}, media.cacheControl)
+			parts = append(parts, content.Multi...)
 		}
-		content, _ := withCacheControl(openrouter.Content{Multi: parts}, toolMediaCacheControl)
 		messages = append(messages, openrouter.ChatCompletionMessage{
 			Role:    openrouter.ChatMessageRoleUser,
-			Content: content,
+			Content: openrouter.Content{Multi: parts},
 		})
 	}
 
@@ -282,7 +285,7 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 			for i, attachment := range m.Attachments() {
 				attachmentParts, err := toolResultParts(validator, attachment)
 				if err != nil {
-					slog.Warn("openrouter: leaving out a tool result attachment the provider cannot carry",
+					slog.WarnContext(ctx, "openrouter: leaving out a tool result attachment the provider cannot carry",
 						slog.String("tool_call_id", toolMessage.ID()), slog.Int("index", i),
 						slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
 						slog.String("error", err.Error()))
@@ -297,8 +300,9 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 			}
 
 			toolRunCount++
+			cc := messageCacheControl(m)
 			if len(parts) > 0 {
-				toolMedia = append(toolMedia, toolResultMedia{toolCallID: toolMessage.ID(), parts: parts})
+				toolMedia = append(toolMedia, toolResultMedia{toolCallID: toolMessage.ID(), parts: parts, cacheControl: cc})
 				if content == "" {
 					// Some upstreams refuse an empty tool message.
 					content = "[the attachments of this result follow in the next message]"
@@ -311,10 +315,9 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 				Content:    openrouter.Content{Text: content},
 			}
 
-			if cc := messageCacheControl(m); cc != nil && len(parts) > 0 {
+			if cc != nil && len(parts) > 0 {
 				// The hint goes after the media, on the user message that
 				// carries them.
-				toolMediaCacheControl = cc
 				messages = append(messages, message)
 				continue
 			}
@@ -497,7 +500,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		}
 	}
 
-	messages, err := buildMessages(opts.Messages, c.model)
+	messages, err := buildMessages(ctx, opts.Messages, c.model)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -670,7 +673,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 	}
 
-	messages, err := buildMessages(opts.Messages, c.model)
+	messages, err := buildMessages(ctx, opts.Messages, c.model)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

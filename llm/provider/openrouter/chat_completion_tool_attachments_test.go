@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -112,7 +113,7 @@ func TestBuildMessages_ToolAttachmentsAllLeftOut(t *testing.T) {
 }
 
 func TestBuildMessages_UserAttachmentTheProviderCannotCarry(t *testing.T) {
-	_, err := buildMessages([]llm.Message{
+	_, err := buildMessages(t.Context(), []llm.Message{
 		llm.NewMultimodalMessage(llm.RoleUser, "Listen", audioAttachment(t)),
 	}, "anthropic/claude-sonnet-4.5")
 	if err == nil {
@@ -181,4 +182,38 @@ func TestBuildMessages_ToolAttachmentsCarryCacheControlAfterMedia(t *testing.T) 
 		t.Fatalf("message after the tool result = %#v, want the media message", messages[3])
 	}
 	assertOnlyLastPartCached(t, messages[3])
+}
+
+func TestBuildMessages_ParallelToolResultsKeepTheirOwnCacheControl(t *testing.T) {
+	hour := "1h"
+	first := llm.NewToolMessage("call_01", llm.NewToolResult("first", pngAttachment(t)))
+	llm.SetCacheControl(first, &llm.CacheControl{Type: "ephemeral", TTL: &hour})
+	second := llm.NewToolMessage("call_02", llm.NewToolResult("second", pngAttachment(t)))
+	llm.SetCacheControl(second, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look at both"),
+		llm.NewToolCallsMessage(
+			llm.NewToolCall("call_01", "screenshot", "{}"),
+			llm.NewToolCall("call_02", "screenshot", "{}"),
+		),
+		first,
+		second,
+	)
+
+	// Label, image, label, image: each image carries its own result's hint.
+	controls := cacheControls(messages[4])
+	if len(controls) != 4 {
+		t.Fatalf("media message parts = %#v, want 4", messages[4]["content"])
+	}
+	for i, want := range []any{nil, map[string]any{"type": "ephemeral", "ttl": "1h"}, nil, map[string]any{"type": "ephemeral"}} {
+		if fmt.Sprint(controls[i]) != fmt.Sprint(want) {
+			t.Errorf("part %d cache_control = %v, want %v", i, controls[i], want)
+		}
+	}
+	for _, m := range messages[2:4] {
+		if _, ok := m["content"].(string); !ok {
+			t.Errorf("tool message content = %#v, want plain text without hint", m["content"])
+		}
+	}
 }

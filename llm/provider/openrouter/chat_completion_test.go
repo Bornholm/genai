@@ -17,7 +17,7 @@ const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+
 func wireMessages(t *testing.T, msgs ...llm.Message) []map[string]any {
 	t.Helper()
 
-	messages, err := buildMessages(msgs, "anthropic/claude-sonnet-4.5")
+	messages, err := buildMessages(t.Context(), msgs, "anthropic/claude-sonnet-4.5")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

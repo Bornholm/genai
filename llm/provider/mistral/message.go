@@ -2,6 +2,7 @@ package mistral
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -44,7 +45,16 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 					if err != nil {
 						return errors.Wrapf(err, "failed to convert attachment")
 					}
+					if isEmptyText(part) {
+						continue
+					}
 					contentParts = append(contentParts, part)
+				}
+
+				if len(contentParts) == 0 {
+					// Only empty documents, and no text.
+					messages = append(messages, openai.UserMessage(m.Content()))
+					break
 				}
 
 				messages = append(messages, openai.UserMessage(contentParts))
@@ -131,6 +141,9 @@ func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) openai.
 			content += llm.OmittedAttachmentNote(attachment)
 			continue
 		}
+		if isEmptyText(part) {
+			continue
+		}
 		parts = append(parts, part)
 	}
 
@@ -161,11 +174,33 @@ func convertAttachment(attachment llm.Attachment) (openai.ChatCompletionContentP
 	}
 }
 
-// convertImageAttachment converts an image attachment to OpenAI image content part
+// supportedImageMimeTypes are the image formats Mistral vision models
+// accept; an animated GIF is refused upstream but cannot be told apart here.
+var supportedImageMimeTypes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/jpg":  {},
+	"image/webp": {},
+	"image/gif":  {},
+}
+
+// maxImageBytes is the size limit Mistral sets on an image.
+const maxImageBytes = 10 * 1024 * 1024
+
+// convertImageAttachment converts an image attachment to OpenAI image content
+// part, refusing a format or a size Mistral would reject: a tool result's
+// image is then left out instead of failing the request.
 func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionContentPartUnionParam, error) {
+	if _, ok := supportedImageMimeTypes[strings.ToLower(attachment.MimeType())]; !ok {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported image MIME type: %s (supported: png, jpeg, webp, gif)", attachment.MimeType())
+	}
+
 	switch attachment.Source() {
 	case llm.AttachmentSourceBase64:
 		data := attachment.Data()
+		if size := base64.StdEncoding.DecodedLen(len(base64Payload(data))); size > maxImageBytes {
+			return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("image of about %d bytes exceeds the %d bytes limit", size, maxImageBytes)
+		}
 		if len(data) > 0 && !hasDataPrefix(data) {
 			data = "data:" + attachment.MimeType() + ";base64," + data
 		}
@@ -192,9 +227,38 @@ func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionCon
 	}
 }
 
-// convertDocumentAttachment converts a document attachment to OpenAI text content part
+// convertDocumentAttachment converts a text/* document to a text content
+// part holding its decoded content. Other documents are not supported.
 func convertDocumentAttachment(attachment llm.Attachment) (openai.ChatCompletionContentPartUnionParam, error) {
-	return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("document attachments not yet supported for Mistral")
+	if !strings.HasPrefix(strings.ToLower(attachment.MimeType()), "text/") {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported document MIME type: %s (only text/* types are supported)", attachment.MimeType())
+	}
+	if attachment.Source() != llm.AttachmentSourceBase64 {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported document source: %s (only base64 is supported)", attachment.Source())
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(base64Payload(attachment.Data()))
+	if err != nil {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Wrap(err, "failed to decode base64 document content")
+	}
+
+	return openai.TextContentPart(string(decoded)), nil
+}
+
+// isEmptyText reports whether part is a text part without text, as an empty
+// document gives: Mistral may refuse it, and nothing is lost leaving it out.
+func isEmptyText(part openai.ChatCompletionContentPartUnionParam) bool {
+	return part.OfText != nil && part.OfText.Text == ""
+}
+
+// base64Payload returns data without its data URL prefix, if any.
+func base64Payload(data string) string {
+	if hasDataPrefix(data) {
+		if _, payload, ok := strings.Cut(data, ","); ok {
+			return payload
+		}
+	}
+	return data
 }
 
 func hasDataPrefix(s string) bool {

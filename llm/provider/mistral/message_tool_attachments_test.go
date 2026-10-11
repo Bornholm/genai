@@ -1,7 +1,9 @@
 package mistral
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -147,3 +149,74 @@ func TestUserAttachmentTheProviderCannotCarry(t *testing.T) {
 		t.Fatal("expected an error for an audio attachment the caller chose to send")
 	}
 }
+
+func documentAttachment(t *testing.T, text string) llm.Attachment {
+	t.Helper()
+
+	a, err := llm.NewBase64Attachment(llm.AttachmentTypeDocument, "text/plain", base64.StdEncoding.EncodeToString([]byte(text)))
+	if err != nil {
+		t.Fatalf("could not build attachment: %v", err)
+	}
+	return a
+}
+
+func TestToolResultImagesMistralCannotRead(t *testing.T) {
+	tiff := attachment(t, llm.AttachmentTypeImage, "image/tiff")
+
+	huge, err := llm.NewBase64Attachment(llm.AttachmentTypeImage, "image/png", strings.Repeat("AAAA", (maxImageBytes/3)+1))
+	if err != nil {
+		t.Fatalf("could not build attachment: %v", err)
+	}
+
+	for name, image := range map[string]llm.Attachment{"unsupported format": tiff, "over the size limit": huge} {
+		t.Run(name, func(t *testing.T) {
+			messages := wireMessages(t, toolTurn(llm.NewToolResult("captured", image))...)
+
+			want := "captured\n" + llm.OmittedAttachmentNote(image)
+			if messages[2]["content"] != want {
+				t.Errorf("tool content = %#v, want %q", messages[2]["content"], want)
+			}
+		})
+	}
+}
+
+func TestToolResultTextDocument(t *testing.T) {
+	messages := wireMessages(t, toolTurn(llm.NewToolResult("read", documentAttachment(t, "Some notes.")))...)
+
+	parts, ok := messages[2]["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("tool content = %#v, want the text then the document", messages[2]["content"])
+	}
+	if text := parts[1].(map[string]any)["text"]; text != "Some notes." {
+		t.Errorf("document chunk = %v, want its decoded text", text)
+	}
+}
+
+func TestToolResultEmptyDocument(t *testing.T) {
+	empty := rawDocument{}
+
+	messages := wireMessages(t, toolTurn(llm.NewToolResult("read", empty))...)
+
+	if messages[2]["content"] != "read" {
+		t.Errorf("tool content = %#v, want the text alone", messages[2]["content"])
+	}
+}
+
+func TestUserTextDocument(t *testing.T) {
+	messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Summarize", documentAttachment(t, "Some notes.")))
+
+	types := partTypes(t, messages[0])
+	if len(types) != 2 || types[0] != "text" || types[1] != "text" {
+		t.Errorf("chunk types = %v, want the text then the document", types)
+	}
+}
+
+// rawDocument is an empty text document, which the attachment constructors
+// refuse.
+type rawDocument struct{}
+
+func (rawDocument) Type() llm.AttachmentType     { return llm.AttachmentTypeDocument }
+func (rawDocument) MimeType() string             { return "text/plain" }
+func (rawDocument) Source() llm.AttachmentSource { return llm.AttachmentSourceBase64 }
+func (rawDocument) Data() string                 { return "" }
+func (rawDocument) ValidateFormat() error        { return nil }
