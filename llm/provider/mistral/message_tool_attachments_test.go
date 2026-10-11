@@ -199,9 +199,13 @@ func TestToolResultEmptyDocument(t *testing.T) {
 	empty := rawDocument{}
 
 	messages := wireMessages(t, toolTurn(llm.NewToolResult("read", empty))...)
-
 	if messages[2]["content"] != "read" {
 		t.Errorf("tool content = %#v, want the text alone", messages[2]["content"])
+	}
+
+	messages = wireMessages(t, toolTurn(llm.NewToolResult("", empty))...)
+	if content, _ := messages[2]["content"].(string); content == "" {
+		t.Errorf("tool content = %#v, want a placeholder text", messages[2]["content"])
 	}
 }
 

@@ -312,6 +312,9 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 					// Some upstreams refuse an empty tool message.
 					content = "[the attachments of this result follow in the next message]"
 				}
+			} else if content == "" && len(m.Attachments()) > 0 {
+				// Its only attachments were empty documents.
+				content = "[the tool returned no content]"
 			}
 
 			message = openrouter.ChatCompletionMessage{

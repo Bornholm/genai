@@ -466,14 +466,11 @@ func TestMessageContent_EmptyDocumentIsLeftOut(t *testing.T) {
 func TestBuildMessages_OnlyAnEmptyDocumentOmitsContent(t *testing.T) {
 	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
 
-	messages := wireMessages(t,
-		llm.NewMessage(llm.RoleUser, "Read it"),
-		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
-		llm.NewToolMessage("call_01", llm.NewToolResult("", empty)),
-	)
+	// A tool message gets a placeholder instead: see
+	// TestBuildMessages_ToolEmptyDocument.
+	messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "", empty))
 
-	last := messages[len(messages)-1]
-	if content, ok := last["content"]; ok {
-		t.Errorf("tool message content = %#v, want it omitted rather than null", content)
+	if content, ok := messages[0]["content"]; ok {
+		t.Errorf("user message content = %#v, want it omitted rather than null", content)
 	}
 }

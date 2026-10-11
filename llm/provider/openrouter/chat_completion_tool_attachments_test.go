@@ -217,3 +217,33 @@ func TestBuildMessages_ParallelToolResultsKeepTheirOwnCacheControl(t *testing.T)
 		}
 	}
 }
+
+func TestBuildMessages_ToolTextDocument(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Read"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", textAttachment(t, "Some notes."))),
+	)
+
+	if len(messages) != 4 {
+		t.Fatalf("got %d messages, want 4: %#v", len(messages), messages)
+	}
+	assertParts(t, messages[3], [][2]any{{"text", "Some notes."}})
+}
+
+func TestBuildMessages_ToolEmptyDocument(t *testing.T) {
+	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Read"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", empty)),
+	)
+
+	if len(messages) != 3 {
+		t.Fatalf("got %d messages, want 3 (no media message): %#v", len(messages), messages)
+	}
+	if content, _ := messages[2]["content"].(string); content == "" {
+		t.Errorf("tool message = %#v, want a placeholder text", messages[2])
+	}
+}

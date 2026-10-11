@@ -148,10 +148,15 @@ func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) openai.
 		parts = append(parts, part)
 	}
 
-	message := openai.ToolMessage(content, toolMessage.ID())
 	if len(parts) == 0 {
-		return message
+		if content == "" && len(toolMessage.Attachments()) > 0 {
+			// Its only attachments were empty documents.
+			content = "[the tool returned no content]"
+		}
+		return openai.ToolMessage(content, toolMessage.ID())
 	}
+
+	message := openai.ToolMessage(content, toolMessage.ID())
 
 	// The SDK types the tool content as text only: the chunk list replaces
 	// it on the wire. A text chunk leads it even when the tool returned only
