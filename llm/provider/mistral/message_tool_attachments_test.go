@@ -96,8 +96,11 @@ func TestToolResultImageWithoutText(t *testing.T) {
 	messages := wireMessages(t, toolTurn(llm.NewToolResult("", image))...)
 
 	types := partTypes(t, messages[2])
-	if len(types) != 1 || types[0] != "image_url" {
-		t.Errorf("chunk types = %v, want the image alone", types)
+	if len(types) != 2 || types[0] != "text" || types[1] != "image_url" {
+		t.Errorf("chunk types = %v, want a placeholder text then the image", types)
+	}
+	if text := messages[2]["content"].([]any)[0].(map[string]any)["text"]; text == "" {
+		t.Error("placeholder text is empty")
 	}
 }
 
@@ -220,3 +223,24 @@ func (rawDocument) MimeType() string             { return "text/plain" }
 func (rawDocument) Source() llm.AttachmentSource { return llm.AttachmentSourceBase64 }
 func (rawDocument) Data() string                 { return "" }
 func (rawDocument) ValidateFormat() error        { return nil }
+
+func TestToolResultDocumentOverTheSizeLimit(t *testing.T) {
+	big := documentAttachment(t, strings.Repeat("a", maxDocumentBytes+1))
+
+	messages := wireMessages(t, toolTurn(llm.NewToolResult("read", big))...)
+
+	want := "read\n" + llm.OmittedAttachmentNote(big)
+	if messages[2]["content"] != want {
+		t.Errorf("tool content = %#v, want %q", messages[2]["content"], want)
+	}
+}
+
+func TestUserMessageWithOnlyEmptyDocuments(t *testing.T) {
+	b := &paramsBuilder{model: "mistral-small-latest"}
+	_, err := b.BuildParams(t.Context(), llm.NewChatCompletionOptions(llm.WithMessages(
+		llm.NewMultimodalMessage(llm.RoleUser, "", rawDocument{}),
+	)))
+	if err == nil {
+		t.Fatal("expected an error for a user message left without content")
+	}
+}

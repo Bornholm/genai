@@ -188,6 +188,11 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 	// tool messages, uninterrupted. When the run holds several tool results,
 	// a label says which tool call each medium comes from.
 	//
+	// Mistral refuses a user message right after a tool message, which is
+	// why the mistral provider keeps the media in the tool message instead.
+	// Whether OpenRouter rewrites the messages for a mistralai/* model so
+	// that this media message passes has not been checked.
+	//
 	// The hint of a tool message whose media were moved goes on the last of
 	// its own media, so that they are cached too.
 	type toolResultMedia struct {
@@ -364,6 +369,11 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 			continue
 		}
 
+		// A hint on a tool message turns its text into a single marked part:
+		// unlike media, which are moved out, this part list is how
+		// OpenRouter passes cache_control on to Anthropic, the provider
+		// hints are for, and it is kept on purpose.
+		//
 		// A hint means "cache everything so far". When the message has no
 		// part to carry it, as a tool calls message without text, it goes
 		// on the end of the closest earlier message that has one: unlike

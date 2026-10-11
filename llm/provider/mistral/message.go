@@ -52,9 +52,10 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 				}
 
 				if len(contentParts) == 0 {
-					// Only empty documents, and no text.
-					messages = append(messages, openai.UserMessage(m.Content()))
-					break
+					// Only empty documents, and no text: an empty user
+					// message would be refused upstream with a less clear
+					// error.
+					return errors.Errorf("user message has no content: no text, and its attachments are empty documents")
 				}
 
 				messages = append(messages, openai.UserMessage(contentParts))
@@ -153,10 +154,16 @@ func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) openai.
 	}
 
 	// The SDK types the tool content as text only: the chunk list replaces
-	// it on the wire.
-	if content != "" {
-		parts = append([]openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(content)}, parts...)
+	// it on the wire. A text chunk leads it even when the tool returned only
+	// media, as the openrouter provider gives such a result a text.
+	//
+	// The chunk list follows the schema of the official Mistral client
+	// (ToolMessageContent is a string or a list of content chunks); the
+	// Mistral docs show images in user messages only.
+	if content == "" {
+		content = "[the tool returned the following attachments]"
 	}
+	parts = append([]openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(content)}, parts...)
 	message.OfTool.WithExtraFields(map[string]any{"content": parts})
 
 	return message
@@ -227,6 +234,11 @@ func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionCon
 	}
 }
 
+// maxDocumentBytes caps the decoded size of a text document, as the
+// openrouter provider does: a tool result's larger document is left out
+// rather than filling the context or failing the request.
+const maxDocumentBytes = 1 * 1024 * 1024
+
 // convertDocumentAttachment converts a text/* document to a text content
 // part holding its decoded content. Other documents are not supported.
 func convertDocumentAttachment(attachment llm.Attachment) (openai.ChatCompletionContentPartUnionParam, error) {
@@ -240,6 +252,9 @@ func convertDocumentAttachment(attachment llm.Attachment) (openai.ChatCompletion
 	decoded, err := base64.StdEncoding.DecodeString(base64Payload(attachment.Data()))
 	if err != nil {
 		return openai.ChatCompletionContentPartUnionParam{}, errors.Wrap(err, "failed to decode base64 document content")
+	}
+	if len(decoded) > maxDocumentBytes {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("document of %d bytes exceeds the %d bytes limit", len(decoded), maxDocumentBytes)
 	}
 
 	return openai.TextContentPart(string(decoded)), nil
