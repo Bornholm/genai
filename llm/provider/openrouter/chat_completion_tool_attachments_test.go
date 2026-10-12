@@ -39,7 +39,7 @@ func TestBuildMessages_ToolAttachmentsFollowInUserMessage(t *testing.T) {
 	if media["role"] != "user" {
 		t.Fatalf("message after the tool result = %#v, want a user message", media)
 	}
-	assertParts(t, media, [][2]any{{"image_url", nil}, {"text", "Some notes."}})
+	assertParts(t, media, [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}, {"text", "Some notes."}})
 
 	if messages[4]["content"] != "What do you see?" {
 		t.Errorf("last message = %#v, want the user question", messages[4])
@@ -72,7 +72,7 @@ func TestBuildMessages_ToolAttachmentsWithoutText(t *testing.T) {
 	if content == "" {
 		t.Errorf("tool message = %#v, want a placeholder text", messages[2])
 	}
-	assertParts(t, messages[3], [][2]any{{"image_url", nil}})
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}})
 }
 
 func TestBuildMessages_ToolAttachmentsTheProviderCannotCarry(t *testing.T) {
@@ -92,7 +92,7 @@ func TestBuildMessages_ToolAttachmentsTheProviderCannotCarry(t *testing.T) {
 	if messages[2]["content"] != want {
 		t.Errorf("tool content = %q, want %q", messages[2]["content"], want)
 	}
-	assertParts(t, messages[3], [][2]any{{"image_url", nil}})
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}})
 }
 
 func TestBuildMessages_ToolAttachmentsAllLeftOut(t *testing.T) {
@@ -157,8 +157,6 @@ func TestBuildMessages_ParallelToolResultsOneWithAttachment(t *testing.T) {
 		llm.NewToolMessage("call_02", llm.NewToolResult("done")),
 	)
 
-	// The label is kept: with two results the model cannot tell which one
-	// the image belongs to.
 	assertParts(t, messages[4], [][2]any{
 		{"text", "Attachments of tool call call_01:"},
 		{"image_url", nil},
@@ -228,7 +226,7 @@ func TestBuildMessages_ToolTextDocument(t *testing.T) {
 	if len(messages) != 4 {
 		t.Fatalf("got %d messages, want 4: %#v", len(messages), messages)
 	}
-	assertParts(t, messages[3], [][2]any{{"text", "Some notes."}})
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"text", "Some notes."}})
 }
 
 func TestBuildMessages_ToolEmptyDocument(t *testing.T) {

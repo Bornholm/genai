@@ -276,3 +276,19 @@ func TestUserMessageWithOnlyEmptyDocuments(t *testing.T) {
 		t.Fatal("expected an error for a user message left without content")
 	}
 }
+
+func TestDocumentAtTheSizeLimit(t *testing.T) {
+	messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Read", documentAttachment(t, strings.Repeat("a", maxDocumentBytes))))
+
+	assertChunks(t, messages[0], []any{"text", "text"})
+}
+
+func TestJPGImageSentAsJPEG(t *testing.T) {
+	messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Look", attachment(t, llm.AttachmentTypeImage, "image/jpg")))
+
+	part := messages[0]["content"].([]any)[1].(map[string]any)
+	url := part["image_url"].(map[string]any)["url"].(string)
+	if !strings.HasPrefix(url, "data:image/jpeg;base64,") {
+		t.Errorf("image url = %.40s, want an image/jpeg data URL", url)
+	}
+}

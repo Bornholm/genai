@@ -205,7 +205,7 @@ func convertAttachment(attachment llm.Attachment) (openai.ChatCompletionContentP
 var supportedImageMimeTypes = map[string]struct{}{
 	"image/png":  {},
 	"image/jpeg": {},
-	"image/jpg":  {},
+	"image/jpg":  {}, // not registered, sent as image/jpeg
 	"image/webp": {},
 	"image/gif":  {},
 }
@@ -224,11 +224,15 @@ func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionCon
 	switch attachment.Source() {
 	case llm.AttachmentSourceBase64:
 		data := attachment.Data()
-		if size := base64.StdEncoding.DecodedLen(len(base64Payload(data))); size > maxImageBytes {
-			return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("image of about %d bytes exceeds the %d bytes limit", size, maxImageBytes)
+		if size := decodedSize(base64Payload(data)); size > maxImageBytes {
+			return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("image of %d bytes exceeds the %d bytes limit", size, maxImageBytes)
 		}
 		if len(data) > 0 && !hasDataPrefix(data) {
-			data = "data:" + attachment.MimeType() + ";base64," + data
+			mimeType := strings.ToLower(attachment.MimeType())
+			if mimeType == "image/jpg" {
+				mimeType = "image/jpeg"
+			}
+			data = "data:" + mimeType + ";base64," + data
 		}
 
 		return openai.ChatCompletionContentPartUnionParam{
@@ -268,12 +272,14 @@ func convertDocumentAttachment(attachment llm.Attachment) (openai.ChatCompletion
 		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported document source: %s (only base64 is supported)", attachment.Source())
 	}
 
-	decoded, err := base64.StdEncoding.DecodeString(base64Payload(attachment.Data()))
+	payload := base64Payload(attachment.Data())
+	if size := decodedSize(payload); size > maxDocumentBytes {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("document of %d bytes exceeds the %d bytes limit", size, maxDocumentBytes)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		return openai.ChatCompletionContentPartUnionParam{}, errors.Wrap(err, "failed to decode base64 document content")
-	}
-	if len(decoded) > maxDocumentBytes {
-		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("document of %d bytes exceeds the %d bytes limit", len(decoded), maxDocumentBytes)
 	}
 
 	return openai.TextContentPart(string(decoded)), nil
@@ -483,4 +489,10 @@ func parseThinkingBlockMap(block map[string]any, index int) *llm.ReasoningDetail
 	}
 
 	return nil
+}
+
+// decodedSize returns the size of the data a base64 payload decodes to,
+// without decoding it.
+func decodedSize(payload string) int {
+	return base64.StdEncoding.DecodedLen(len(payload)) - (len(payload) - len(strings.TrimRight(payload, "=")))
 }

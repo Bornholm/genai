@@ -185,8 +185,9 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 	// of a run of tool messages, as the openai provider does: the tool
 	// message content is a string in the Chat Completions reference, and an
 	// assistant message with parallel tool calls must be followed by all its
-	// tool messages, uninterrupted. When the run holds several tool results,
-	// a label says which tool call each medium comes from.
+	// tool messages, uninterrupted. A label says which tool call each
+	// result's media come from, even for a single result: the mistral
+	// provider needs it, and the two stay alike.
 	// A live call with mistralai/mistral-small-3.2-24b-instruct read an
 	// image sent this way.
 	//
@@ -197,23 +198,18 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 		parts        []openrouter.ChatMessagePart
 		cacheControl *llm.CacheControl
 	}
-	var (
-		toolMedia    []toolResultMedia
-		toolRunCount int
-	)
+	var toolMedia []toolResultMedia
 	flushToolMedia := func() {
-		defer func() { toolMedia, toolRunCount = nil, 0 }()
+		defer func() { toolMedia = nil }()
 		if len(toolMedia) == 0 {
 			return
 		}
 		var parts []openrouter.ChatMessagePart
 		for _, media := range toolMedia {
-			if toolRunCount > 1 {
-				parts = append(parts, openrouter.ChatMessagePart{
-					Type: openrouter.ChatMessagePartTypeText,
-					Text: "Attachments of tool call " + media.toolCallID + ":",
-				})
-			}
+			parts = append(parts, openrouter.ChatMessagePart{
+				Type: openrouter.ChatMessagePartTypeText,
+				Text: "Attachments of tool call " + media.toolCallID + ":",
+			})
 			// toolResultParts leaves no empty text part, so the hint
 			// always lands on the last medium.
 			content, _ := withCacheControl(openrouter.Content{Multi: media.parts}, media.cacheControl)
@@ -301,7 +297,6 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 				parts = append(parts, attachmentParts...)
 			}
 
-			toolRunCount++
 			cc := messageCacheControl(m)
 			if len(parts) > 0 {
 				toolMedia = append(toolMedia, toolResultMedia{toolCallID: toolMessage.ID(), parts: parts, cacheControl: cc})
