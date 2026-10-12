@@ -187,11 +187,8 @@ func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]ope
 	// assistant message with parallel tool calls must be followed by all its
 	// tool messages, uninterrupted. When the run holds several tool results,
 	// a label says which tool call each medium comes from.
-	//
-	// Mistral refuses a user message right after a tool message, which is
-	// why the mistral provider keeps the media in the tool message instead.
-	// Whether OpenRouter rewrites the messages for a mistralai/* model so
-	// that this media message passes has not been checked.
+	// A live call with mistralai/mistral-small-3.2-24b-instruct read an
+	// image sent this way.
 	//
 	// The hint of a tool message whose media were moved goes on the last of
 	// its own media, so that they are cached too.
