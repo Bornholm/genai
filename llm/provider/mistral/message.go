@@ -20,7 +20,26 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 	// but need to handle reasoning messages specially
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(opts.Messages))
 
+	// The media of tool results go in a single user message after the last
+	// of a run of tool messages, as the openai provider does: an assistant
+	// message with parallel tool calls must be followed by all its tool
+	// messages, uninterrupted. Each result's media are preceded by a label
+	// naming its tool call: against the live API, mistral-medium-latest
+	// timed out on a user message holding an image alone, and on images
+	// inside the tool message, while it read a labelled image correctly.
+	var toolMedia []openai.ChatCompletionContentPartUnionParam
+	flushToolMedia := func() {
+		if len(toolMedia) > 0 {
+			messages = append(messages, openai.UserMessage(toolMedia))
+		}
+		toolMedia = nil
+	}
+
 	for _, m := range opts.Messages {
+		if m.Role() != llm.RoleTool {
+			flushToolMedia()
+		}
+
 		switch m.Role() {
 		case llm.RoleSystem:
 			messages = append(messages, openai.SystemMessage(m.Content()))
@@ -77,7 +96,12 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 				return errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
-			messages = append(messages, toolResultMessage(ctx, toolMessage))
+			message, parts := toolResultMessage(ctx, toolMessage)
+			messages = append(messages, message)
+			if len(parts) > 0 {
+				toolMedia = append(toolMedia, openai.TextContentPart("Attachments of tool call "+toolMessage.ID()+":"))
+				toolMedia = append(toolMedia, parts...)
+			}
 
 		case llm.RoleToolCalls:
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
@@ -111,21 +135,22 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 		}
 	}
 
+	flushToolMedia()
+
 	params.Messages = messages
 
 	return nil
 }
 
-// toolResultMessage builds the message of a tool result. Unlike the OpenAI
-// API, Mistral takes content chunks under the "tool" role and refuses a user
-// message right after a tool message, so the media stay in the tool message
-// rather than following in a user message as the openai provider does.
+// toolResultMessage builds the message of a tool result, text only, and
+// returns apart the parts of its attachments, which go in the user message
+// after the run of tool messages.
 //
-// What the provider cannot carry, such as audio or a document, is left out
-// rather than failing the whole request: the caller did not choose what the
-// tool returned. A note appended to the tool's text tells the model
-// something was there.
-func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) openai.ChatCompletionMessageParamUnion {
+// What the provider cannot carry, such as audio or a document other than
+// text, is left out rather than failing the whole request: the caller did
+// not choose what the tool returned. A note appended to the tool's text
+// tells the model something was there.
+func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) (openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionContentPartUnionParam) {
 	content := toolMessage.Content()
 	var parts []openai.ChatCompletionContentPartUnionParam
 
@@ -148,30 +173,16 @@ func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) openai.
 		parts = append(parts, part)
 	}
 
-	if len(parts) == 0 {
-		if content == "" && len(toolMessage.Attachments()) > 0 {
+	if content == "" && len(toolMessage.Attachments()) > 0 {
+		if len(parts) > 0 {
+			content = "[the attachments of this result follow in the next message]"
+		} else {
 			// Its only attachments were empty documents.
 			content = "[the tool returned no content]"
 		}
-		return openai.ToolMessage(content, toolMessage.ID())
 	}
 
-	message := openai.ToolMessage(content, toolMessage.ID())
-
-	// The SDK types the tool content as text only: the chunk list replaces
-	// it on the wire. A text chunk leads it even when the tool returned only
-	// media, as the openrouter provider gives such a result a text.
-	//
-	// The chunk list follows the schema of the official Mistral client
-	// (ToolMessageContent is a string or a list of content chunks); the
-	// Mistral docs show images in user messages only.
-	if content == "" {
-		content = "[the tool returned the following attachments]"
-	}
-	parts = append([]openai.ChatCompletionContentPartUnionParam{openai.TextContentPart(content)}, parts...)
-	message.OfTool.WithExtraFields(map[string]any{"content": parts})
-
-	return message
+	return openai.ToolMessage(content, toolMessage.ID()), parts
 }
 
 // convertAttachment converts an llm.Attachment to OpenAI content part format

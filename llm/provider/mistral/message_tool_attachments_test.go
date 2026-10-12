@@ -62,21 +62,39 @@ func toolTurn(result llm.ToolResult) []llm.Message {
 	}
 }
 
-func TestToolResultImagesStayInToolMessage(t *testing.T) {
+func TestToolResultImagesFollowInLabelledUserMessage(t *testing.T) {
 	image := attachment(t, llm.AttachmentTypeImage, "image/png")
 
-	messages := wireMessages(t, toolTurn(llm.NewToolResult("screenshot", image, image))...)
+	messages := wireMessages(t, append(toolTurn(llm.NewToolResult("screenshot", image, image)),
+		llm.NewMessage(llm.RoleUser, "What do you see?"))...)
 
-	if len(messages) != 3 {
-		t.Fatalf("got %d messages, want 3 (no user message after the tool result): %#v", len(messages), messages)
+	if len(messages) != 5 {
+		t.Fatalf("got %d messages, want 5: %#v", len(messages), messages)
 	}
 
 	tool := messages[2]
-	if tool["role"] != "tool" || tool["tool_call_id"] != "call_01" {
-		t.Fatalf("last message = %#v, want the tool result", tool)
+	if tool["role"] != "tool" || tool["tool_call_id"] != "call_01" || tool["content"] != "screenshot" {
+		t.Fatalf("tool message = %#v, want the text alone", tool)
 	}
-	types := partTypes(t, tool)
-	want := []any{"text", "image_url", "image_url"}
+
+	media := messages[3]
+	if media["role"] != "user" {
+		t.Fatalf("message after the tool result = %#v, want a user message", media)
+	}
+	assertChunks(t, media, []any{"text", "image_url", "image_url"})
+	if text := media["content"].([]any)[0].(map[string]any)["text"]; text != "Attachments of tool call call_01:" {
+		t.Errorf("label = %v, want the tool call it comes from", text)
+	}
+
+	if messages[4]["content"] != "What do you see?" {
+		t.Errorf("last message = %#v, want the user question", messages[4])
+	}
+}
+
+func assertChunks(t *testing.T, message map[string]any, want []any) {
+	t.Helper()
+
+	types := partTypes(t, message)
 	if len(types) != len(want) {
 		t.Fatalf("chunk types = %v, want %v", types, want)
 	}
@@ -85,9 +103,28 @@ func TestToolResultImagesStayInToolMessage(t *testing.T) {
 			t.Errorf("chunk %d = %v, want %v", i, types[i], want[i])
 		}
 	}
-	if text := tool["content"].([]any)[0].(map[string]any)["text"]; text != "screenshot" {
-		t.Errorf("text chunk = %v, want the tool text", text)
+}
+
+func TestParallelToolResultsWithImages(t *testing.T) {
+	image := attachment(t, llm.AttachmentTypeImage, "image/png")
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look at both"),
+		llm.NewToolCallsMessage(
+			llm.NewToolCall("call_01", "screenshot", "{}"),
+			llm.NewToolCall("call_02", "screenshot", "{}"),
+		),
+		llm.NewToolMessage("call_01", llm.NewToolResult("first", image)),
+		llm.NewToolMessage("call_02", llm.NewToolResult("second", image)),
+	)
+
+	if len(messages) != 5 {
+		t.Fatalf("got %d messages, want 5: %#v", len(messages), messages)
 	}
+	if messages[2]["role"] != "tool" || messages[3]["role"] != "tool" {
+		t.Fatalf("tool results are not adjacent: %#v", messages[2:4])
+	}
+	assertChunks(t, messages[4], []any{"text", "image_url", "text", "image_url"})
 }
 
 func TestToolResultImageWithoutText(t *testing.T) {
@@ -95,13 +132,10 @@ func TestToolResultImageWithoutText(t *testing.T) {
 
 	messages := wireMessages(t, toolTurn(llm.NewToolResult("", image))...)
 
-	types := partTypes(t, messages[2])
-	if len(types) != 2 || types[0] != "text" || types[1] != "image_url" {
-		t.Errorf("chunk types = %v, want a placeholder text then the image", types)
+	if content, _ := messages[2]["content"].(string); content == "" {
+		t.Errorf("tool message = %#v, want a placeholder text", messages[2])
 	}
-	if text := messages[2]["content"].([]any)[0].(map[string]any)["text"]; text == "" {
-		t.Error("placeholder text is empty")
-	}
+	assertChunks(t, messages[3], []any{"text", "image_url"})
 }
 
 func TestToolResultWithoutAttachments(t *testing.T) {
@@ -129,17 +163,11 @@ func TestToolResultAttachmentsTheProviderCannotCarry(t *testing.T) {
 	t.Run("some left out", func(t *testing.T) {
 		messages := wireMessages(t, toolTurn(llm.NewToolResult("recorded", audio, image))...)
 
-		parts := messages[2]["content"].([]any)
-		if len(parts) != 2 {
-			t.Fatalf("chunks = %#v, want the text with its note, then the image", parts)
-		}
 		want := "recorded\n" + llm.OmittedAttachmentNote(audio)
-		if text := parts[0].(map[string]any)["text"]; text != want {
-			t.Errorf("text chunk = %v, want %q", text, want)
+		if messages[2]["content"] != want {
+			t.Errorf("tool content = %#v, want %q", messages[2]["content"], want)
 		}
-		if parts[1].(map[string]any)["type"] != "image_url" {
-			t.Errorf("chunk 1 = %#v, want the image", parts[1])
-		}
+		assertChunks(t, messages[3], []any{"text", "image_url"})
 	})
 }
 
@@ -186,11 +214,11 @@ func TestToolResultImagesMistralCannotRead(t *testing.T) {
 func TestToolResultTextDocument(t *testing.T) {
 	messages := wireMessages(t, toolTurn(llm.NewToolResult("read", documentAttachment(t, "Some notes.")))...)
 
-	parts, ok := messages[2]["content"].([]any)
-	if !ok || len(parts) != 2 {
-		t.Fatalf("tool content = %#v, want the text then the document", messages[2]["content"])
+	if messages[2]["content"] != "read" {
+		t.Errorf("tool content = %#v, want the text alone", messages[2]["content"])
 	}
-	if text := parts[1].(map[string]any)["text"]; text != "Some notes." {
+	assertChunks(t, messages[3], []any{"text", "text"})
+	if text := messages[3]["content"].([]any)[1].(map[string]any)["text"]; text != "Some notes." {
 		t.Errorf("document chunk = %v, want its decoded text", text)
 	}
 }
