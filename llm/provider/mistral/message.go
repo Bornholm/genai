@@ -27,6 +27,9 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 	// naming its tool call: against the live API, mistral-medium-latest
 	// timed out on a user message holding an image alone, and on images
 	// inside the tool message, while it read a labelled image correctly.
+	// A model without vision, such as codestral-latest, answers 400 to such
+	// a request: the caller picks the model, so tools returning images call
+	// for one that reads them.
 	var toolMedia []openai.ChatCompletionContentPartUnionParam
 	flushToolMedia := func() {
 		if len(toolMedia) > 0 {
