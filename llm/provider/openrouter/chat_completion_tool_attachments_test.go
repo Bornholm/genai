@@ -245,3 +245,63 @@ func TestBuildMessages_ToolEmptyDocument(t *testing.T) {
 		t.Errorf("tool message = %#v, want a placeholder text", messages[2])
 	}
 }
+
+func TestBuildMessages_ToolAttachmentsAllLeftOutKeepCacheControl(t *testing.T) {
+	audio := audioAttachment(t)
+	toolMessage := llm.NewToolMessage("call_01", llm.NewToolResult("recorded", audio))
+	llm.SetCacheControl(toolMessage, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Listen"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "record", "{}")),
+		toolMessage,
+	)
+
+	if len(messages) != 3 {
+		t.Fatalf("got %d messages, want 3 (no media message): %#v", len(messages), messages)
+	}
+	assertParts(t, messages[2], [][2]any{{"text", "recorded\n" + llm.OmittedAttachmentNote(audio)}})
+	assertOnlyLastPartCached(t, messages[2])
+}
+
+func TestBuildMessages_SuccessiveToolRunsKeepTheirOwnMedia(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look twice"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "screenshot", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("first", pngAttachment(t))),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_02", "screenshot", "{}")),
+		llm.NewToolMessage("call_02", llm.NewToolResult("second", pngAttachment(t))),
+	)
+
+	roles := make([]any, len(messages))
+	for i, m := range messages {
+		roles[i] = m["role"]
+	}
+	if fmt.Sprint(roles) != "[user assistant tool user assistant tool user]" {
+		t.Fatalf("roles = %v, want each run followed by its media", roles)
+	}
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}})
+	assertParts(t, messages[6], [][2]any{{"text", "Attachments of tool call call_02:"}, {"image_url", nil}})
+}
+
+func TestBuildMessages_JPGImageSentAsJPEG(t *testing.T) {
+	for name, data := range map[string]string{
+		"raw base64": pngBase64,
+		"data URL":   "data:image/jpg;base64," + pngBase64,
+	} {
+		t.Run(name, func(t *testing.T) {
+			image, err := llm.NewBase64Attachment(llm.AttachmentTypeImage, "image/jpg", data)
+			if err != nil {
+				t.Fatalf("could not build attachment: %v", err)
+			}
+
+			messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Look", image))
+
+			parts := messages[0]["content"].([]any)
+			url := parts[len(parts)-1].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+			if url != "data:image/jpeg;base64,"+pngBase64 {
+				t.Errorf("image url = %.40s, want an image/jpeg data URL", url)
+			}
+		})
+	}
+}

@@ -284,11 +284,49 @@ func TestDocumentAtTheSizeLimit(t *testing.T) {
 }
 
 func TestJPGImageSentAsJPEG(t *testing.T) {
-	messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Look", attachment(t, llm.AttachmentTypeImage, "image/jpg")))
+	for name, data := range map[string]string{
+		"raw base64": pngBase64,
+		"data URL":   "data:image/jpg;base64," + pngBase64,
+	} {
+		t.Run(name, func(t *testing.T) {
+			image, err := llm.NewBase64Attachment(llm.AttachmentTypeImage, "image/jpg", data)
+			if err != nil {
+				t.Fatalf("could not build attachment: %v", err)
+			}
 
-	part := messages[0]["content"].([]any)[1].(map[string]any)
-	url := part["image_url"].(map[string]any)["url"].(string)
-	if !strings.HasPrefix(url, "data:image/jpeg;base64,") {
-		t.Errorf("image url = %.40s, want an image/jpeg data URL", url)
+			messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Look", image))
+
+			part := messages[0]["content"].([]any)[1].(map[string]any)
+			url := part["image_url"].(map[string]any)["url"].(string)
+			if url != "data:image/jpeg;base64,"+pngBase64 {
+				t.Errorf("image url = %.40s, want an image/jpeg data URL", url)
+			}
+		})
+	}
+}
+
+func TestSuccessiveToolRunsKeepTheirOwnImages(t *testing.T) {
+	image := attachment(t, llm.AttachmentTypeImage, "image/png")
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look twice"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "screenshot", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("first", image)),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_02", "screenshot", "{}")),
+		llm.NewToolMessage("call_02", llm.NewToolResult("second", image)),
+	)
+
+	roles := make([]string, len(messages))
+	for i, m := range messages {
+		roles[i], _ = m["role"].(string)
+	}
+	if got := strings.Join(roles, " "); got != "user assistant tool user assistant tool user" {
+		t.Fatalf("roles = %s, want each run followed by its images", got)
+	}
+	for i, id := range map[int]string{3: "call_01", 6: "call_02"} {
+		assertChunks(t, messages[i], []any{"text", "image_url"})
+		if text := messages[i]["content"].([]any)[0].(map[string]any)["text"]; text != "Attachments of tool call "+id+":" {
+			t.Errorf("label of message %d = %v, want %s", i, text, id)
+		}
 	}
 }

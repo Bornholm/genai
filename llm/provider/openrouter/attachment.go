@@ -39,6 +39,7 @@ func (v *OpenRouterAttachmentValidator) validateImageAttachment(attachment llm.A
 	supportedMimeTypes := []string{
 		"image/png",
 		"image/jpeg",
+		"image/jpg", // not registered, sent as image/jpeg
 		"image/webp",
 		"image/gif",
 	}
@@ -154,11 +155,19 @@ func convertImageAttachment(attachment llm.Attachment, textContent string) (open
 	// Add image part
 	switch attachment.Source() {
 	case llm.AttachmentSourceBase64:
-		// For base64, format as data URL if not already
+		// For base64, format as data URL, rebuilt from the attachment MIME
+		// type when the data already is one
 		data := attachment.Data()
-		if !strings.HasPrefix(data, "data:") {
-			data = fmt.Sprintf("data:%s;base64,%s", attachment.MimeType(), data)
+		if strings.HasPrefix(data, "data:") {
+			if _, payload, ok := strings.Cut(data, ","); ok {
+				data = payload
+			}
 		}
+		mimeType := strings.ToLower(attachment.MimeType())
+		if mimeType == "image/jpg" {
+			mimeType = "image/jpeg"
+		}
+		data = fmt.Sprintf("data:%s;base64,%s", mimeType, data)
 
 		parts = append(parts, openrouter.ChatMessagePart{
 			Type: openrouter.ChatMessagePartTypeImageURL,

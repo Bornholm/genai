@@ -227,12 +227,14 @@ func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionCon
 		if size := decodedSize(base64Payload(data)); size > maxImageBytes {
 			return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("image of %d bytes exceeds the %d bytes limit", size, maxImageBytes)
 		}
-		if len(data) > 0 && !hasDataPrefix(data) {
+		if len(data) > 0 {
+			// The data URL is rebuilt from the checked MIME type, which
+			// also replaces a type the caller wrote in its own data URL.
 			mimeType := strings.ToLower(attachment.MimeType())
 			if mimeType == "image/jpg" {
 				mimeType = "image/jpeg"
 			}
-			data = "data:" + mimeType + ";base64," + data
+			data = "data:" + mimeType + ";base64," + base64Payload(data)
 		}
 
 		return openai.ChatCompletionContentPartUnionParam{
