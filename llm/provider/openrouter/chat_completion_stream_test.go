@@ -100,7 +100,7 @@ func TestChatCompletionStream_ReportsAProviderFailure(t *testing.T) {
 
 	_, last := collect(t, client)
 
-	if last == nil || !errors.Is(last.Error(), errStreamFailed) {
+	if last == nil || !isProviderFailure(last.Error()) {
 		t.Fatalf("last chunk = %v, want the provider failure", last)
 	}
 }
@@ -187,7 +187,7 @@ func TestChatCompletionStream_ReportsAFailureGivenAsNativeFinishReason(t *testin
 
 	_, last := collect(t, client)
 
-	if last == nil || !errors.Is(last.Error(), errStreamFailed) {
+	if last == nil || !isProviderFailure(last.Error()) {
 		t.Fatalf("last chunk = %v, want the provider failure", last)
 	}
 }
@@ -216,7 +216,7 @@ func TestChatCompletionStream_ClosesTheUpstreamOnAProviderFailure(t *testing.T) 
 	t.Cleanup(func() { close(testDone) })
 
 	_, last := collect(t, client)
-	if last == nil || !errors.Is(last.Error(), errStreamFailed) {
+	if last == nil || !isProviderFailure(last.Error()) {
 		t.Fatalf("last chunk = %v, want the provider failure", last)
 	}
 
@@ -241,5 +241,36 @@ func TestEmbeddings_MapsAnUnparsableErrorToAnHTTPError(t *testing.T) {
 	var httpErr *llm.HTTPError
 	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusServiceUnavailable || !llm.IsRetryable(err) {
 		t.Errorf("err = %v, want a retryable *llm.HTTPError with status 503", err)
+	}
+}
+
+// isProviderFailure reports whether err is the error of an answer the provider
+// failed to produce.
+func isProviderFailure(err error) bool {
+	var httpErr *llm.HTTPError
+	return errors.As(err, &httpErr) && httpErr.Body == errProviderFailed().(*llm.HTTPError).Body
+}
+
+func TestChatCompletionStream_ReportsAFailureWhateverItsCase(t *testing.T) {
+	failure := `{"choices":[{"index":0,"delta":{"content":""},"native_finish_reason":"ERROR"}]}`
+	client := newTestClient(t, sse(helloChunk, failure, "[DONE]"))
+
+	_, last := collect(t, client)
+
+	if last == nil || !isProviderFailure(last.Error()) {
+		t.Fatalf("last chunk = %v, want the provider failure", last)
+	}
+}
+
+func TestChatCompletion_ReportsAProviderFailure(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Hel"},"finish_reason":"error"}]}`))
+	})
+
+	_, err := client.ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+
+	if !isProviderFailure(err) || !llm.IsRetryable(err) {
+		t.Errorf("err = %v, want a retryable provider failure", err)
 	}
 }

@@ -59,13 +59,11 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				select {
-				case <-time.After(backoff):
-					backoff *= 2
-				case <-ctx.Done():
+				if !wait(ctx, backoff) {
 					// Both stay visible: the caller left, and why it was waiting.
 					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
+				backoff *= 2
 				continue
 			}
 
@@ -93,13 +91,11 @@ func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.T
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				select {
-				case <-time.After(backoff):
-					backoff *= 2
-				case <-ctx.Done():
+				if !wait(ctx, backoff) {
 					// Both stay visible: the caller left, and why it was waiting.
 					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
+				backoff *= 2
 				continue
 			}
 
@@ -127,13 +123,11 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				select {
-				case <-time.After(backoff):
-					backoff *= 2
-				case <-ctx.Done():
+				if !wait(ctx, backoff) {
 					// Both stay visible: the caller left, and why it was waiting.
 					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
+				backoff *= 2
 				continue
 			}
 
@@ -199,13 +193,11 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 				if retries < c.maxRetries && llm.IsRetryable(err) {
 					slog.DebugContext(ctx, "stream open failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
 					retries++
-					select {
-					case <-time.After(backoff):
-						backoff *= 2
-					case <-ctx.Done():
-						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
+					if !wait(ctx, backoff) {
+						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(stderrors.Join(ctx.Err(), err))))
 						return
 					}
+					backoff *= 2
 					continue
 				}
 				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(err)))
@@ -216,6 +208,8 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			// Use select to respect ctx cancellation — a stalled TCP connection
 			// would otherwise block this goroutine indefinitely.
 			var retryCall bool
+			// retried is the error the next attempt is retrying.
+			var retried error
 			// forwarded records that this attempt already sent output on: from
 			// then on, a retry would repeat it. A chunk carrying nothing, such as
 			// the role-only delta streams often open with, leaves it unset.
@@ -232,6 +226,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 							slog.DebugContext(ctx, "stream chunk error, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", chunkErr))
 							retries++
 							retryCall = true
+							retried = chunkErr
 							break streamLoop
 						}
 						// Not retryable, out of retries, or too late to retry:
@@ -249,7 +244,10 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 						return
 					}
-					forwarded = forwarded || carriesOutput(chunk)
+					// A completion chunk counts too: a provider sending anything
+					// after it breaks the contract, and a retry would follow a
+					// whole answer with a second one.
+					forwarded = forwarded || chunk.IsComplete() || carriesOutput(chunk)
 				case <-ctx.Done():
 					abandonAttempt(stream)
 					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
@@ -265,13 +263,11 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			}
 			abandonAttempt(stream)
 			// retryCall == true: wait (respecting ctx) then open a fresh stream
-			select {
-			case <-time.After(backoff):
-				backoff *= 2
-			case <-ctx.Done():
-				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
+			if !wait(ctx, backoff) {
+				sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(stderrors.Join(ctx.Err(), retried))))
 				return
 			}
+			backoff *= 2
 		}
 	}()
 
@@ -296,12 +292,10 @@ func (c *Client) RelayMessages(ctx context.Context, body []byte, header http.Hea
 		}
 		slog.DebugContext(ctx, "relay failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
 		retries++
-		select {
-		case <-time.After(backoff):
-			backoff *= 2
-		case <-ctx.Done():
-			return nil, errors.WithStack(ctx.Err())
+		if !wait(ctx, backoff) {
+			return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 		}
+		backoff *= 2
 	}
 }
 
@@ -358,4 +352,17 @@ func carriesOutput(chunk llm.StreamChunk) bool {
 		return true
 	}
 	return false
+}
+
+// wait waits for d, or until ctx ends, and reports whether d elapsed. Unlike
+// time.After, its timer is released when ctx wins.
+func wait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

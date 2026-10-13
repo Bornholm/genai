@@ -2,6 +2,8 @@ package openrouter
 
 import (
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -19,15 +21,26 @@ func providerError(err error) error {
 	return errors.WithStack(err)
 }
 
-// finishReasonError is the finish reason OpenRouter gives a stream the
-// provider failed after it started: the error event carrying the cause is
-// dropped by the SDK, the finish reason is all that is left of it.
-const finishReasonError openrouter.FinishReason = "error"
+// drainTimeout bounds the read releasing the SDK reader of a stream stopped
+// early, see ChatCompletionStream.
+const drainTimeout = 30 * time.Second
 
-// errStreamFailed and errStreamTruncated end a stream that did not finish.
-// They are reported as a 502, which the gateway is acting as, so that the
-// stream is retried when nothing was forwarded yet.
-var (
-	errStreamFailed    = llm.NewHTTPError(http.StatusBadGateway, "openrouter: the provider failed while streaming the answer")
-	errStreamTruncated = llm.NewHTTPError(http.StatusBadGateway, "openrouter: the stream ended before the model finished its answer")
-)
+// isFailure reports whether a choice ended on a provider failure, which
+// OpenRouter gives as the finish reason "error". The native finish reason
+// repeats the upstream provider's own value, whose case varies by provider.
+func isFailure(finishReason openrouter.FinishReason, nativeFinishReason string) bool {
+	return strings.EqualFold(string(finishReason), "error") || strings.EqualFold(nativeFinishReason, "error")
+}
+
+// errProviderFailed and errStreamTruncated report an answer that did not
+// finish: the provider failed while producing it, the SDK having dropped the
+// error event that carried the cause, or the stream was cut. They are 502s,
+// which the gateway is acting as, so that the call is retried when nothing was
+// forwarded yet. Each call builds its own: an *llm.HTTPError is mutable.
+func errProviderFailed() error {
+	return llm.NewHTTPError(http.StatusBadGateway, "openrouter: the provider failed while producing the answer")
+}
+
+func errStreamTruncated() error {
+	return llm.NewHTTPError(http.StatusBadGateway, "openrouter: the stream ended before the model finished its answer")
+}
