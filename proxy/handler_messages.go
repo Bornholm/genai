@@ -41,7 +41,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if s.options.AuthExtractor != nil {
 		userID, err := s.options.AuthExtractor(r)
 		if err != nil {
-			writeAnthropicAPIError(w, NewUnauthorizedError(err.Error()))
+			writeAnthropicAPIError(w, authAPIError(r.Context(), err))
 			return
 		}
 		req.UserID = userID
@@ -51,16 +51,20 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 5. Pre-request hooks
 	shortCircuit, err := s.chain.RunPreRequest(ctx, req)
 	if err != nil {
-		writeAnthropicAPIError(w, NewInternalError(err.Error()))
+		writeAnthropicAPIError(w, hookAPIError(err, "a pre-request hook failed"))
 		return
 	}
 	if shortCircuit != nil {
-		writeProxyResponse(w, shortCircuit)
+		writeAnthropicProxyResponse(w, shortCircuit)
 		return
 	}
 
 	// 6. Resolve model → client
-	rawClient, resolvedModel, apiErr := s.resolveClient(r, req)
+	rawClient, resolvedModel, errRes, apiErr := s.resolveClient(r, req)
+	if errRes != nil {
+		writeAnthropicProxyResponse(w, errRes)
+		return
+	}
 	if apiErr != nil {
 		writeAnthropicAPIError(w, apiErr)
 		return
@@ -100,7 +104,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(ctx, "messages completion error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)
 		if errRes != nil {
-			writeProxyResponse(w, errRes)
+			writeAnthropicProxyResponse(w, errRes)
 		} else {
 			writeAnthropicAPIError(w, apiErrorFromErr(err))
 		}
@@ -146,7 +150,7 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 
 	if s.options.AuthExtractor != nil {
 		if _, err := s.options.AuthExtractor(r); err != nil {
-			writeAnthropicAPIError(w, NewUnauthorizedError(err.Error()))
+			writeAnthropicAPIError(w, authAPIError(r.Context(), err))
 			return
 		}
 	}

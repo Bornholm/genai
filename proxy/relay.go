@@ -62,6 +62,11 @@ func (rawEventEmitter) Finalize(io.Writer, llm.ChatCompletionUsage) error {
 // (organization, rate limits) or its infrastructure, not the client's call.
 var relayedErrorHeaders = []string{"Content-Type", "Retry-After", "X-Should-Retry", "Request-Id"}
 
+// WriteHookResponse writes an error hook's response in the Anthropic format.
+func (rawEventEmitter) WriteHookResponse(w http.ResponseWriter, res *ProxyResponse) {
+	writeAnthropicProxyResponse(w, res)
+}
+
 // WriteErrorResponse forwards an upstream rejection as received: status,
 // retry headers and body. Clients recognize some rejections by their wording
 // and recover from them, which a rewritten error defeats. An error event

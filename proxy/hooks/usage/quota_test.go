@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -161,5 +162,32 @@ func TestInMemoryUsageStore_GetTotalTokens(t *testing.T) {
 	}
 	if total != 450 {
 		t.Errorf("total = %d, want 450", total)
+	}
+}
+
+// failingStore is a usage store that cannot be read.
+type failingStore struct{ UsageStore }
+
+func (failingStore) GetTotalTokens(context.Context, string, time.Time) (int, error) {
+	return 0, errors.New("store unreachable")
+}
+
+func (failingStore) GetTotalRequests(context.Context, string, time.Time) (int, error) {
+	return 0, errors.New("store unreachable")
+}
+
+func TestQuotaEnforcer_StoreErrorRefusesTheRequest(t *testing.T) {
+	for name, cfg := range map[string]QuotaConfig{
+		"request quota": {MaxRequestsPerDay: 10},
+		"token quota":   {MaxTokensPerDay: 1000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			enforcer := NewQuotaEnforcer(failingStore{}, map[string]QuotaConfig{"*": cfg}, 0)
+
+			req := &proxy.ProxyRequest{UserID: "user1", Model: "gpt-4", Metadata: map[string]any{}}
+			if _, err := enforcer.PreRequest(context.Background(), req); err == nil {
+				t.Fatal("expected an error when the quota cannot be checked")
+			}
+		})
 	}
 }

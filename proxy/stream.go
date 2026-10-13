@@ -30,9 +30,11 @@ type streamEmitter interface {
 }
 
 // errorResponseWriter is implemented by the emitters that answer, in their own
-// wire format, a request the provider rejected before streaming anything.
+// wire format, a request the provider rejected before streaming anything, and
+// the response an error hook gave for it.
 type errorResponseWriter interface {
 	WriteErrorResponse(w http.ResponseWriter, err error)
+	WriteHookResponse(w http.ResponseWriter, res *ProxyResponse)
 }
 
 // writeStreamOpenError answers a stream that failed before its first chunk:
@@ -41,6 +43,8 @@ type errorResponseWriter interface {
 func (s *Server) writeStreamOpenError(ctx context.Context, w http.ResponseWriter, req *ProxyRequest, emitter streamEmitter, err error) {
 	errRes, _ := s.chain.RunOnError(ctx, req, err)
 	switch ew, ok := emitter.(errorResponseWriter); {
+	case errRes != nil && ok:
+		ew.WriteHookResponse(w, errRes)
 	case errRes != nil:
 		writeProxyResponse(w, errRes)
 	case ok:

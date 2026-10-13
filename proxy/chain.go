@@ -57,6 +57,10 @@ func NewHookChain(hooks ...Hook) *HookChain {
 // If any hook returns a non-nil Response, the chain short-circuits.
 // If any hook returns a non-nil Request, the modified request propagates.
 // Returns (*ProxyResponse, nil) on short-circuit, (nil, nil) to continue normally.
+//
+// A hook error is offered to the error hooks first. When none of them answers
+// it, the error is returned and the request must not be sent: the failing hook
+// may be the one enforcing a quota or an access rule.
 func (c *HookChain) RunPreRequest(ctx context.Context, req *ProxyRequest) (*ProxyResponse, error) {
 	for _, h := range c.preRequest {
 		result, err := h.PreRequest(ctx, req)
@@ -65,7 +69,14 @@ func (c *HookChain) RunPreRequest(ctx context.Context, req *ProxyRequest) (*Prox
 				slog.String("hook", h.Name()),
 				slog.Any("error", err),
 			)
-			return c.RunOnError(ctx, req, errors.WithStack(err))
+			res, hookErr := c.RunOnError(ctx, req, errors.WithStack(err))
+			if res != nil {
+				return res, nil
+			}
+			if hookErr != nil {
+				slog.ErrorContext(ctx, "error hooks failed", slog.Any("error", hookErr))
+			}
+			return nil, errors.Wrapf(err, "pre-request hook %s", h.Name())
 		}
 		if result == nil {
 			continue
@@ -105,8 +116,8 @@ func (c *HookChain) RunPostResponse(ctx context.Context, req *ProxyRequest, res 
 
 // RunOnError iterates error hooks in priority order.
 // The first hook that returns a non-nil Response short-circuits and that
-// response is returned to the caller.  If no hook handles it, a generic 500
-// is returned.
+// response is returned to the caller. If no hook handles it, it returns nil,
+// nil and the caller answers with its own error.
 func (c *HookChain) RunOnError(ctx context.Context, req *ProxyRequest, err error) (*ProxyResponse, error) {
 	for _, h := range c.errorHooks {
 		result, hookErr := h.OnError(ctx, req, err)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bornholm/genai/proxy"
+	"github.com/pkg/errors"
 )
 
 // QuotaConfig defines rate limits for a user (or the default "*").
@@ -41,7 +42,12 @@ func (q *QuotaEnforcer) PreRequest(ctx context.Context, req *proxy.ProxyRequest)
 
 	if cfg.MaxRequestsPerDay > 0 {
 		count, err := q.store.GetTotalRequests(ctx, req.UserID, since)
-		if err == nil && count >= cfg.MaxRequestsPerDay {
+		if err != nil {
+			// The quota cannot be checked: the request is refused rather
+			// than let through unchecked.
+			return nil, errors.Wrap(err, "could not read the daily request count")
+		}
+		if count >= cfg.MaxRequestsPerDay {
 			apiErr := proxy.NewRateLimitError("daily request quota exceeded")
 			return &proxy.HookResult{
 				Response: &proxy.ProxyResponse{
@@ -54,7 +60,10 @@ func (q *QuotaEnforcer) PreRequest(ctx context.Context, req *proxy.ProxyRequest)
 
 	if cfg.MaxTokensPerDay > 0 {
 		tokens, err := q.store.GetTotalTokens(ctx, req.UserID, since)
-		if err == nil && tokens >= cfg.MaxTokensPerDay {
+		if err != nil {
+			return nil, errors.Wrap(err, "could not read the daily token count")
+		}
+		if tokens >= cfg.MaxTokensPerDay {
 			apiErr := proxy.NewRateLimitError("daily token quota exceeded")
 			return &proxy.HookResult{
 				Response: &proxy.ProxyResponse{

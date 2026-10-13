@@ -9,6 +9,10 @@ import (
 // HookResult tells the chain how to proceed after a hook runs.
 type HookResult struct {
 	// If non-nil, short-circuits the chain and returns this response.
+	// A refusal meant for /messages too should carry an ErrorResponse value
+	// or pointer as Body: /messages rewrites it in the Anthropic error
+	// envelope, while any other body, such as a map or raw JSON in the
+	// OpenAI shape, is sent as is.
 	Response *ProxyResponse
 	// If non-nil, replaces the request for subsequent hooks.
 	Request *ProxyRequest
@@ -24,6 +28,9 @@ type Hook interface {
 
 // PreRequestHook is called BEFORE the LLM provider call.
 // It can modify the request, reject it, or redirect to another backend.
+// A non-nil error stops the request and the HookResult returned with it is
+// ignored: refuse with a Response and a nil error, or with an error, an
+// *APIError setting the status.
 type PreRequestHook interface {
 	Hook
 	PreRequest(ctx context.Context, req *ProxyRequest) (*HookResult, error)
