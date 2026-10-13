@@ -1,0 +1,319 @@
+package openrouter
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/bornholm/genai/llm"
+)
+
+func audioAttachment(t *testing.T) llm.Attachment {
+	t.Helper()
+
+	attachment, err := llm.NewBase64Attachment(llm.AttachmentTypeAudio, "audio/wav", pngBase64)
+	if err != nil {
+		t.Fatalf("could not build attachment: %v", err)
+	}
+	return attachment
+}
+
+func TestBuildMessages_ToolAttachmentsFollowInUserMessage(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "screenshot", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("screenshot",
+			pngAttachment(t), textAttachment(t, "Some notes."))),
+		llm.NewMessage(llm.RoleUser, "What do you see?"),
+	)
+
+	if len(messages) != 5 {
+		t.Fatalf("got %d messages, want 5: %#v", len(messages), messages)
+	}
+
+	tool := messages[2]
+	if tool["role"] != "tool" || tool["tool_call_id"] != "call_01" || tool["content"] != "screenshot" {
+		t.Errorf("tool message = %#v, want the text alone", tool)
+	}
+
+	media := messages[3]
+	if media["role"] != "user" {
+		t.Fatalf("message after the tool result = %#v, want a user message", media)
+	}
+	assertParts(t, media, [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}, {"text", "Some notes."}})
+
+	if messages[4]["content"] != "What do you see?" {
+		t.Errorf("last message = %#v, want the user question", messages[4])
+	}
+}
+
+func TestBuildMessages_ToolWithoutAttachments(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Run it"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "run", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("done")),
+	)
+
+	if len(messages) != 3 {
+		t.Fatalf("got %d messages, want 3: %#v", len(messages), messages)
+	}
+	if messages[2]["content"] != "done" {
+		t.Errorf("tool message = %#v, want the text alone", messages[2])
+	}
+}
+
+func TestBuildMessages_ToolAttachmentsWithoutText(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "screenshot", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", pngAttachment(t))),
+	)
+
+	content, _ := messages[2]["content"].(string)
+	if content == "" {
+		t.Errorf("tool message = %#v, want a placeholder text", messages[2])
+	}
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}})
+}
+
+func TestBuildMessages_ToolAttachmentsTheProviderCannotCarry(t *testing.T) {
+	audio := audioAttachment(t)
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Listen"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "record", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("recorded", audio, pngAttachment(t))),
+	)
+
+	if len(messages) != 4 {
+		t.Fatalf("got %d messages, want 4: %#v", len(messages), messages)
+	}
+
+	want := "recorded\n" + llm.OmittedAttachmentNote(audio)
+	if messages[2]["content"] != want {
+		t.Errorf("tool content = %q, want %q", messages[2]["content"], want)
+	}
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}})
+}
+
+func TestBuildMessages_ToolAttachmentsAllLeftOut(t *testing.T) {
+	audio := audioAttachment(t)
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Listen"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "record", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", audio)),
+	)
+
+	if len(messages) != 3 {
+		t.Fatalf("got %d messages, want 3 (no media message): %#v", len(messages), messages)
+	}
+	if messages[2]["content"] != llm.OmittedAttachmentNote(audio) {
+		t.Errorf("tool content = %q, want the note alone", messages[2]["content"])
+	}
+}
+
+func TestBuildMessages_UserAttachmentTheProviderCannotCarry(t *testing.T) {
+	_, err := buildMessages(t.Context(), []llm.Message{
+		llm.NewMultimodalMessage(llm.RoleUser, "Listen", audioAttachment(t)),
+	}, "anthropic/claude-sonnet-4.5")
+	if err == nil {
+		t.Fatal("expected an error for an audio attachment the caller chose to send")
+	}
+}
+
+func TestBuildMessages_ParallelToolResultsWithAttachments(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look at both"),
+		llm.NewToolCallsMessage(
+			llm.NewToolCall("call_01", "screenshot", "{}"),
+			llm.NewToolCall("call_02", "screenshot", "{}"),
+		),
+		llm.NewToolMessage("call_01", llm.NewToolResult("first", pngAttachment(t))),
+		llm.NewToolMessage("call_02", llm.NewToolResult("second", pngAttachment(t))),
+	)
+
+	if len(messages) != 5 {
+		t.Fatalf("got %d messages, want 5: %#v", len(messages), messages)
+	}
+	if messages[2]["role"] != "tool" || messages[3]["role"] != "tool" {
+		t.Fatalf("tool results are not adjacent: %#v", messages[2:4])
+	}
+	assertParts(t, messages[4], [][2]any{
+		{"text", "Attachments of tool call call_01:"},
+		{"image_url", nil},
+		{"text", "Attachments of tool call call_02:"},
+		{"image_url", nil},
+	})
+}
+
+func TestBuildMessages_ParallelToolResultsOneWithAttachment(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look"),
+		llm.NewToolCallsMessage(
+			llm.NewToolCall("call_01", "screenshot", "{}"),
+			llm.NewToolCall("call_02", "run", "{}"),
+		),
+		llm.NewToolMessage("call_01", llm.NewToolResult("first", pngAttachment(t))),
+		llm.NewToolMessage("call_02", llm.NewToolResult("done")),
+	)
+
+	assertParts(t, messages[4], [][2]any{
+		{"text", "Attachments of tool call call_01:"},
+		{"image_url", nil},
+	})
+}
+
+func TestBuildMessages_ToolAttachmentsCarryCacheControlAfterMedia(t *testing.T) {
+	toolMessage := llm.NewToolMessage("call_01", llm.NewToolResult("screenshot", pngAttachment(t)))
+	llm.SetCacheControl(toolMessage, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "screenshot", "{}")),
+		toolMessage,
+	)
+
+	if _, ok := messages[2]["content"].(string); !ok {
+		t.Errorf("tool message content = %#v, want plain text without hint", messages[2]["content"])
+	}
+	if messages[3]["role"] != "user" {
+		t.Fatalf("message after the tool result = %#v, want the media message", messages[3])
+	}
+	assertOnlyLastPartCached(t, messages[3])
+}
+
+func TestBuildMessages_ParallelToolResultsKeepTheirOwnCacheControl(t *testing.T) {
+	hour := "1h"
+	first := llm.NewToolMessage("call_01", llm.NewToolResult("first", pngAttachment(t)))
+	llm.SetCacheControl(first, &llm.CacheControl{Type: "ephemeral", TTL: &hour})
+	second := llm.NewToolMessage("call_02", llm.NewToolResult("second", pngAttachment(t)))
+	llm.SetCacheControl(second, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look at both"),
+		llm.NewToolCallsMessage(
+			llm.NewToolCall("call_01", "screenshot", "{}"),
+			llm.NewToolCall("call_02", "screenshot", "{}"),
+		),
+		first,
+		second,
+	)
+
+	// Label, image, label, image: each image carries its own result's hint.
+	controls := cacheControls(messages[4])
+	if len(controls) != 4 {
+		t.Fatalf("media message parts = %#v, want 4", messages[4]["content"])
+	}
+	for i, want := range []any{nil, map[string]any{"type": "ephemeral", "ttl": "1h"}, nil, map[string]any{"type": "ephemeral"}} {
+		if fmt.Sprint(controls[i]) != fmt.Sprint(want) {
+			t.Errorf("part %d cache_control = %v, want %v", i, controls[i], want)
+		}
+	}
+	for _, m := range messages[2:4] {
+		if _, ok := m["content"].(string); !ok {
+			t.Errorf("tool message content = %#v, want plain text without hint", m["content"])
+		}
+	}
+}
+
+func TestBuildMessages_ToolTextDocument(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Read"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", textAttachment(t, "Some notes."))),
+	)
+
+	if len(messages) != 4 {
+		t.Fatalf("got %d messages, want 4: %#v", len(messages), messages)
+	}
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"text", "Some notes."}})
+}
+
+func TestBuildMessages_ToolEmptyDocument(t *testing.T) {
+	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Read"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("", empty)),
+	)
+
+	if len(messages) != 3 {
+		t.Fatalf("got %d messages, want 3 (no media message): %#v", len(messages), messages)
+	}
+	if content, _ := messages[2]["content"].(string); content == "" {
+		t.Errorf("tool message = %#v, want a placeholder text", messages[2])
+	}
+}
+
+func TestBuildMessages_ToolAttachmentsAllLeftOutKeepCacheControl(t *testing.T) {
+	audio := audioAttachment(t)
+	toolMessage := llm.NewToolMessage("call_01", llm.NewToolResult("recorded", audio))
+	llm.SetCacheControl(toolMessage, ephemeral())
+
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Listen"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "record", "{}")),
+		toolMessage,
+	)
+
+	if len(messages) != 3 {
+		t.Fatalf("got %d messages, want 3 (no media message): %#v", len(messages), messages)
+	}
+	assertParts(t, messages[2], [][2]any{{"text", "recorded\n" + llm.OmittedAttachmentNote(audio)}})
+	assertOnlyLastPartCached(t, messages[2])
+}
+
+func TestBuildMessages_SuccessiveToolRunsKeepTheirOwnMedia(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Look twice"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "screenshot", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("first", pngAttachment(t))),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_02", "screenshot", "{}")),
+		llm.NewToolMessage("call_02", llm.NewToolResult("second", pngAttachment(t))),
+	)
+
+	roles := make([]any, len(messages))
+	for i, m := range messages {
+		roles[i] = m["role"]
+	}
+	if fmt.Sprint(roles) != "[user assistant tool user assistant tool user]" {
+		t.Fatalf("roles = %v, want each run followed by its media", roles)
+	}
+	assertParts(t, messages[3], [][2]any{{"text", "Attachments of tool call call_01:"}, {"image_url", nil}})
+	assertParts(t, messages[6], [][2]any{{"text", "Attachments of tool call call_02:"}, {"image_url", nil}})
+}
+
+func TestBuildMessages_JPGImageSentAsJPEG(t *testing.T) {
+	for name, data := range map[string]string{
+		"raw base64": pngBase64,
+		"data URL":   "data:image/jpg;base64," + pngBase64,
+	} {
+		t.Run(name, func(t *testing.T) {
+			image, err := llm.NewBase64Attachment(llm.AttachmentTypeImage, "image/jpg", data)
+			if err != nil {
+				t.Fatalf("could not build attachment: %v", err)
+			}
+
+			messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "Look", image))
+
+			parts := messages[0]["content"].([]any)
+			url := parts[len(parts)-1].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+			if url != "data:image/jpeg;base64,"+pngBase64 {
+				t.Errorf("image url = %.40s, want an image/jpeg data URL", url)
+			}
+		})
+	}
+}
+
+func TestBuildMessages_EmptyToolResult(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Run it"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "run", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("")),
+	)
+
+	if messages[2]["content"] != "[the tool returned no content]" {
+		t.Errorf("tool content = %#v, want a placeholder text", messages[2]["content"])
+	}
+}

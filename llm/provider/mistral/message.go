@@ -2,7 +2,9 @@ package mistral
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"strings"
 
 	"github.com/bornholm/genai/llm"
@@ -18,7 +20,29 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 	// but need to handle reasoning messages specially
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, len(opts.Messages))
 
+	// The media of tool results go in a single user message after the last
+	// of a run of tool messages, as the openai provider does: an assistant
+	// message with parallel tool calls must be followed by all its tool
+	// messages, uninterrupted. Each result's media are preceded by a label
+	// naming its tool call: against the live API, mistral-medium-latest
+	// timed out on a user message holding an image alone, and on images
+	// inside the tool message, while it read a labelled image correctly.
+	// A model without vision, such as codestral-latest, answers 400 to such
+	// a request: the caller picks the model, so tools returning images call
+	// for one that reads them.
+	var toolMedia []openai.ChatCompletionContentPartUnionParam
+	flushToolMedia := func() {
+		if len(toolMedia) > 0 {
+			messages = append(messages, openai.UserMessage(toolMedia))
+		}
+		toolMedia = nil
+	}
+
 	for _, m := range opts.Messages {
+		if m.Role() != llm.RoleTool {
+			flushToolMedia()
+		}
+
 		switch m.Role() {
 		case llm.RoleSystem:
 			messages = append(messages, openai.SystemMessage(m.Content()))
@@ -43,7 +67,17 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 					if err != nil {
 						return errors.Wrapf(err, "failed to convert attachment")
 					}
+					if isEmptyText(part) {
+						continue
+					}
 					contentParts = append(contentParts, part)
+				}
+
+				if len(contentParts) == 0 {
+					// Only empty documents, and no text: an empty user
+					// message would be refused upstream with a less clear
+					// error.
+					return errors.Errorf("user message has no content: no text, and its attachments are empty documents")
 				}
 
 				messages = append(messages, openai.UserMessage(contentParts))
@@ -65,8 +99,12 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 				return errors.Errorf("unexpected tool message type '%T'", m)
 			}
 
-			// Tool messages only support text content for now
-			messages = append(messages, openai.ToolMessage(toolMessage.Content(), toolMessage.ID()))
+			message, parts := toolResultMessage(ctx, toolMessage)
+			messages = append(messages, message)
+			if len(parts) > 0 {
+				toolMedia = append(toolMedia, openai.TextContentPart("Attachments of tool call "+toolMessage.ID()+":"))
+				toolMedia = append(toolMedia, parts...)
+			}
 
 		case llm.RoleToolCalls:
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
@@ -100,9 +138,55 @@ func ConfigureMistralMessages(ctx context.Context, opts *llm.ChatCompletionOptio
 		}
 	}
 
+	flushToolMedia()
+
 	params.Messages = messages
 
 	return nil
+}
+
+// toolResultMessage builds the message of a tool result, text only, and
+// returns apart the parts of its attachments, which go in the user message
+// after the run of tool messages.
+//
+// What the provider cannot carry, such as audio or a document other than
+// text, is left out rather than failing the whole request: the caller did
+// not choose what the tool returned. A note appended to the tool's text
+// tells the model something was there.
+func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) (openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionContentPartUnionParam) {
+	content := toolMessage.Content()
+	var parts []openai.ChatCompletionContentPartUnionParam
+
+	for i, attachment := range toolMessage.Attachments() {
+		part, err := convertAttachment(attachment)
+		if err != nil {
+			slog.WarnContext(ctx, "mistral: leaving out a tool result attachment the provider cannot carry",
+				slog.String("tool_call_id", toolMessage.ID()), slog.Int("index", i),
+				slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
+				slog.String("error", err.Error()))
+			if content != "" {
+				content += "\n"
+			}
+			content += llm.OmittedAttachmentNote(attachment)
+			continue
+		}
+		if isEmptyText(part) {
+			continue
+		}
+		parts = append(parts, part)
+	}
+
+	if content == "" {
+		// Some upstreams refuse an empty tool message.
+		if len(parts) > 0 {
+			content = "[the attachments of this result follow in the next message]"
+		} else {
+			// No text, and no attachment, or only empty documents.
+			content = "[the tool returned no content]"
+		}
+	}
+
+	return openai.ToolMessage(content, toolMessage.ID()), parts
 }
 
 // convertAttachment converts an llm.Attachment to OpenAI content part format
@@ -117,13 +201,41 @@ func convertAttachment(attachment llm.Attachment) (openai.ChatCompletionContentP
 	}
 }
 
-// convertImageAttachment converts an image attachment to OpenAI image content part
+// supportedImageMimeTypes are the image formats Mistral vision models
+// accept; an animated GIF is refused upstream but cannot be told apart here.
+var supportedImageMimeTypes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/jpg":  {}, // not registered, sent as image/jpeg
+	"image/webp": {},
+	"image/gif":  {},
+}
+
+// maxImageBytes is the size limit Mistral sets on an image.
+const maxImageBytes = 10 * 1024 * 1024
+
+// convertImageAttachment converts an image attachment to OpenAI image content
+// part, refusing a format or a size Mistral would reject: a tool result's
+// image is then left out instead of failing the request.
 func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionContentPartUnionParam, error) {
+	if _, ok := supportedImageMimeTypes[strings.ToLower(attachment.MimeType())]; !ok {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported image MIME type: %s (supported: png, jpeg, webp, gif)", attachment.MimeType())
+	}
+
 	switch attachment.Source() {
 	case llm.AttachmentSourceBase64:
 		data := attachment.Data()
-		if len(data) > 0 && !hasDataPrefix(data) {
-			data = "data:" + attachment.MimeType() + ";base64," + data
+		if size := decodedSize(base64Payload(data)); size > maxImageBytes {
+			return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("image of %d bytes exceeds the %d bytes limit", size, maxImageBytes)
+		}
+		if len(data) > 0 {
+			// The data URL is rebuilt from the checked MIME type, which
+			// also replaces a type the caller wrote in its own data URL.
+			mimeType := strings.ToLower(attachment.MimeType())
+			if mimeType == "image/jpg" {
+				mimeType = "image/jpeg"
+			}
+			data = "data:" + mimeType + ";base64," + base64Payload(data)
 		}
 
 		return openai.ChatCompletionContentPartUnionParam{
@@ -148,9 +260,48 @@ func convertImageAttachment(attachment llm.Attachment) (openai.ChatCompletionCon
 	}
 }
 
-// convertDocumentAttachment converts a document attachment to OpenAI text content part
+// maxDocumentBytes caps the decoded size of a text document, as the
+// openrouter provider does: a tool result's larger document is left out
+// rather than filling the context or failing the request.
+const maxDocumentBytes = 1 * 1024 * 1024
+
+// convertDocumentAttachment converts a text/* document to a text content
+// part holding its decoded content. Other documents are not supported.
 func convertDocumentAttachment(attachment llm.Attachment) (openai.ChatCompletionContentPartUnionParam, error) {
-	return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("document attachments not yet supported for Mistral")
+	if !strings.HasPrefix(strings.ToLower(attachment.MimeType()), "text/") {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported document MIME type: %s (only text/* types are supported)", attachment.MimeType())
+	}
+	if attachment.Source() != llm.AttachmentSourceBase64 {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("unsupported document source: %s (only base64 is supported)", attachment.Source())
+	}
+
+	payload := base64Payload(attachment.Data())
+	if size := decodedSize(payload); size > maxDocumentBytes {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Errorf("document of %d bytes exceeds the %d bytes limit", size, maxDocumentBytes)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return openai.ChatCompletionContentPartUnionParam{}, errors.Wrap(err, "failed to decode base64 document content")
+	}
+
+	return openai.TextContentPart(string(decoded)), nil
+}
+
+// isEmptyText reports whether part is a text part without text, as an empty
+// document gives: Mistral may refuse it, and nothing is lost leaving it out.
+func isEmptyText(part openai.ChatCompletionContentPartUnionParam) bool {
+	return part.OfText != nil && part.OfText.Text == ""
+}
+
+// base64Payload returns data without its data URL prefix, if any.
+func base64Payload(data string) string {
+	if hasDataPrefix(data) {
+		if _, payload, ok := strings.Cut(data, ","); ok {
+			return payload
+		}
+	}
+	return data
 }
 
 func hasDataPrefix(s string) bool {
@@ -341,4 +492,10 @@ func parseThinkingBlockMap(block map[string]any, index int) *llm.ReasoningDetail
 	}
 
 	return nil
+}
+
+// decodedSize returns the size of the data a base64 payload decodes to,
+// without decoding it.
+func decodedSize(payload string) int {
+	return base64.StdEncoding.DecodedLen(len(payload)) - (len(payload) - len(strings.TrimRight(payload, "=")))
 }

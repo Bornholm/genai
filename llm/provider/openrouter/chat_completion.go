@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"log/slog"
 	"math"
 	"slices"
 	"sync/atomic"
@@ -130,7 +131,7 @@ func withCacheControl(content openrouter.Content, cc *llm.CacheControl) (openrou
 	return content, false
 }
 
-// messageContent builds the content of a user or tool message: its text
+// messageContent builds the content of a user message: its text
 // alone, or its text followed by one or more parts per attachment, each
 // converted by ConvertAttachmentToContent whatever their number.
 func messageContent(m llm.Message) (openrouter.Content, error) {
@@ -174,17 +175,63 @@ func messageContent(m llm.Message) (openrouter.Content, error) {
 
 // buildMessages converts llm.Message slice to openrouter.ChatCompletionMessage slice,
 // handling attachments and reasoning preservation.
-func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletionMessage, error) {
+func buildMessages(ctx context.Context, msgs []llm.Message, model string) ([]openrouter.ChatCompletionMessage, error) {
 	messages := make([]openrouter.ChatCompletionMessage, 0, len(msgs))
 
 	// Create validator for provider-specific validation (Layer 2)
 	validator := NewOpenRouterAttachmentValidator(model)
 
+	// The media of tool results go in a single user message after the last
+	// of a run of tool messages, as the openai provider does: the tool
+	// message content is a string in the Chat Completions reference, and an
+	// assistant message with parallel tool calls must be followed by all its
+	// tool messages, uninterrupted. A label says which tool call each
+	// result's media come from, even for a single result: the mistral
+	// provider needs it, and the two stay alike.
+	// A live call with mistralai/mistral-small-3.2-24b-instruct read an
+	// image sent this way.
+	//
+	// The hint of a tool message whose media were moved goes on the last of
+	// its own media, so that they are cached too.
+	type toolResultMedia struct {
+		toolCallID   string
+		parts        []openrouter.ChatMessagePart
+		cacheControl *llm.CacheControl
+	}
+	var toolMedia []toolResultMedia
+	flushToolMedia := func() {
+		defer func() { toolMedia = nil }()
+		if len(toolMedia) == 0 {
+			return
+		}
+		var parts []openrouter.ChatMessagePart
+		for _, media := range toolMedia {
+			parts = append(parts, openrouter.ChatMessagePart{
+				Type: openrouter.ChatMessagePartTypeText,
+				Text: "Attachments of tool call " + media.toolCallID + ":",
+			})
+			// toolResultParts leaves no empty text part, so the hint
+			// always lands on the last medium.
+			content, _ := withCacheControl(openrouter.Content{Multi: media.parts}, media.cacheControl)
+			parts = append(parts, content.Multi...)
+		}
+		messages = append(messages, openrouter.ChatCompletionMessage{
+			Role:    openrouter.ChatMessageRoleUser,
+			Content: openrouter.Content{Multi: parts},
+		})
+	}
+
 	for _, m := range msgs {
-		// Validate attachments (Layer 2 - provider-specific validation)
-		for _, attachment := range m.Attachments() {
-			if err := validator.ValidateAttachment(attachment); err != nil {
-				return nil, errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
+		if m.Role() != llm.RoleTool {
+			flushToolMedia()
+
+			// Validate attachments (Layer 2 - provider-specific
+			// validation). A tool result's are checked one by one below:
+			// the caller did not choose what a tool returns.
+			for _, attachment := range m.Attachments() {
+				if err := validator.ValidateAttachment(attachment); err != nil {
+					return nil, errors.Wrapf(err, "attachment validation failed for message with role %s", m.Role())
+				}
 			}
 		}
 
@@ -225,14 +272,54 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 			if !ok {
 				return nil, errors.Errorf("unexpected tool message type '%T'", m)
 			}
-			content, err := messageContent(m)
-			if err != nil {
-				return nil, errors.WithStack(err)
+
+			// What the provider cannot carry, such as audio, is left out
+			// rather than failing the whole request: the caller did not
+			// choose what the tool returned. A note appended to the tool's
+			// text tells the model something was there.
+			content := toolMessage.Content()
+			var parts []openrouter.ChatMessagePart
+
+			for i, attachment := range m.Attachments() {
+				attachmentParts, err := toolResultParts(validator, attachment)
+				if err != nil {
+					slog.WarnContext(ctx, "openrouter: leaving out a tool result attachment the provider cannot carry",
+						slog.String("tool_call_id", toolMessage.ID()), slog.Int("index", i),
+						slog.String("type", string(attachment.Type())), slog.String("mime_type", attachment.MimeType()),
+						slog.String("error", err.Error()))
+					if content != "" {
+						content += "\n"
+					}
+					content += llm.OmittedAttachmentNote(attachment)
+					continue
+				}
+
+				parts = append(parts, attachmentParts...)
 			}
+
+			cc := messageCacheControl(m)
+			if len(parts) > 0 {
+				toolMedia = append(toolMedia, toolResultMedia{toolCallID: toolMessage.ID(), parts: parts, cacheControl: cc})
+				if content == "" {
+					// Some upstreams refuse an empty tool message.
+					content = "[the attachments of this result follow in the next message]"
+				}
+			} else if content == "" {
+				// No text, and no attachment, or only empty documents.
+				content = "[the tool returned no content]"
+			}
+
 			message = openrouter.ChatCompletionMessage{
 				Role:       openrouter.ChatMessageRoleTool,
 				ToolCallID: toolMessage.ID(),
-				Content:    content,
+				Content:    openrouter.Content{Text: content},
+			}
+
+			if cc != nil && len(parts) > 0 {
+				// The hint goes after the media, on the user message that
+				// carries them.
+				messages = append(messages, message)
+				continue
 			}
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
@@ -277,6 +364,11 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 			continue
 		}
 
+		// A hint on a tool message turns its text into a single marked part:
+		// unlike media, which are moved out, this part list is how
+		// OpenRouter passes cache_control on to Anthropic, the provider
+		// hints are for, and it is kept on purpose.
+		//
 		// A hint means "cache everything so far". When the message has no
 		// part to carry it, as a tool calls message without text, it goes
 		// on the end of the closest earlier message that has one: unlike
@@ -297,7 +389,29 @@ func buildMessages(msgs []llm.Message, model string) ([]openrouter.ChatCompletio
 		messages = append(messages, message)
 	}
 
+	flushToolMedia()
+
 	return messages, nil
+}
+
+// toolResultParts validates and converts one attachment of a tool result,
+// leaving out the empty text part an empty document gives.
+func toolResultParts(validator *OpenRouterAttachmentValidator, attachment llm.Attachment) ([]openrouter.ChatMessagePart, error) {
+	if err := validator.ValidateAttachment(attachment); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	content, err := ConvertAttachmentToContent(attachment, "")
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	parts := make([]openrouter.ChatMessagePart, 0, len(content.Multi))
+	for _, part := range content.Multi {
+		if part.Type == openrouter.ChatMessagePartTypeText && part.Text == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts, nil
 }
 
 // preserveReasoning copies the reasoning carried by m, if any, onto message.
@@ -391,7 +505,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		}
 	}
 
-	messages, err := buildMessages(opts.Messages, c.model)
+	messages, err := buildMessages(ctx, opts.Messages, c.model)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -564,7 +678,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 	}
 
-	messages, err := buildMessages(opts.Messages, c.model)
+	messages, err := buildMessages(ctx, opts.Messages, c.model)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

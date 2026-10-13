@@ -17,7 +17,7 @@ const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+
 func wireMessages(t *testing.T, msgs ...llm.Message) []map[string]any {
 	t.Helper()
 
-	messages, err := buildMessages(msgs, "anthropic/claude-sonnet-4.5")
+	messages, err := buildMessages(t.Context(), msgs, "anthropic/claude-sonnet-4.5")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,43 +353,33 @@ func partSummaries(t *testing.T, message map[string]any) [][2]any {
 }
 
 func TestBuildMessages_SeveralAttachmentsOfMixedTypes(t *testing.T) {
+	user := llm.NewMultimodalMessage(llm.RoleUser, "Compare them",
+		textAttachment(t, "Some notes."), pngAttachment(t), textAttachment(t, "More notes."))
+	llm.SetCacheControl(user, ephemeral())
+
+	messages := wireMessages(t, user)
+
 	want := [][2]any{
 		{"text", "Compare them"},
 		{"text", "Some notes."},
 		{"image_url", nil},
 		{"text", "More notes."},
 	}
+	assertParts(t, messages[0], want)
+	assertOnlyLastPartCached(t, messages[0])
+}
 
-	for name, build := range map[string]func(attachments ...llm.Attachment) llm.Message{
-		"user": func(attachments ...llm.Attachment) llm.Message {
-			return llm.NewMultimodalMessage(llm.RoleUser, "Compare them", attachments...)
-		},
-		"tool": func(attachments ...llm.Attachment) llm.Message {
-			return llm.NewToolMessage("call_01", llm.NewToolResult("Compare them", attachments...))
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := build(textAttachment(t, "Some notes."), pngAttachment(t), textAttachment(t, "More notes."))
-			llm.SetCacheControl(m, ephemeral())
+func assertParts(t *testing.T, message map[string]any, want [][2]any) {
+	t.Helper()
 
-			messages := wireMessages(t,
-				llm.NewMessage(llm.RoleUser, "Look"),
-				llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
-				m,
-			)
-
-			last := messages[len(messages)-1]
-			got := partSummaries(t, last)
-			if len(got) != len(want) {
-				t.Fatalf("parts = %v, want %v", got, want)
-			}
-			for i := range want {
-				if got[i] != want[i] {
-					t.Errorf("part %d = %v, want %v", i, got[i], want[i])
-				}
-			}
-			assertOnlyLastPartCached(t, last)
-		})
+	got := partSummaries(t, message)
+	if len(got) != len(want) {
+		t.Fatalf("parts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("part %d = %v, want %v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -476,14 +466,11 @@ func TestMessageContent_EmptyDocumentIsLeftOut(t *testing.T) {
 func TestBuildMessages_OnlyAnEmptyDocumentOmitsContent(t *testing.T) {
 	empty := rawAttachment{kind: llm.AttachmentTypeDocument, mimeType: "text/plain", source: llm.AttachmentSourceBase64}
 
-	messages := wireMessages(t,
-		llm.NewMessage(llm.RoleUser, "Read it"),
-		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "read", "{}")),
-		llm.NewToolMessage("call_01", llm.NewToolResult("", empty)),
-	)
+	// A tool message gets a placeholder instead: see
+	// TestBuildMessages_ToolEmptyDocument.
+	messages := wireMessages(t, llm.NewMultimodalMessage(llm.RoleUser, "", empty))
 
-	last := messages[len(messages)-1]
-	if content, ok := last["content"]; ok {
-		t.Errorf("tool message content = %#v, want it omitted rather than null", content)
+	if content, ok := messages[0]["content"]; ok {
+		t.Errorf("user message content = %#v, want it omitted rather than null", content)
 	}
 }
