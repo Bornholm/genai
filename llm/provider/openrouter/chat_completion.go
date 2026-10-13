@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	"io"
 	"log/slog"
 	"math"
 	"slices"
@@ -540,12 +541,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 
 	res, err := c.client.CreateChatCompletion(ctx, req)
 	if err != nil {
-		var reqErr *openrouter.RequestError
-		if errors.As(err, &reqErr) {
-			return nil, errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error()))
-		}
-
-		return nil, errors.WithStack(err)
+		return nil, providerError(err)
 	}
 
 	if len(res.Choices) == 0 {
@@ -777,21 +773,21 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 		stream, err := c.client.CreateChatCompletionStream(ctx, req)
 		if err != nil {
-			var reqErr *openrouter.RequestError
-			if errors.As(err, &reqErr) {
-				sendStreamError(errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error())))
-				return
-			}
-			sendStreamError(errors.WithStack(err))
+			sendStreamError(providerError(err))
 			return
 		}
 		defer stream.Close()
 
+		// The SDK ends its stream with io.EOF whatever stopped it: the [DONE]
+		// event, a dropped connection, a line it could not decode, or ctx. A
+		// finish reason is what tells a complete answer from a cut one, since
+		// OpenRouter always sends one before [DONE].
+		var finished bool
+
 		for {
 			response, err := stream.Recv()
 			if err != nil {
-				if err.Error() == "EOF" {
-					// Stream ended normally
+				if errors.Is(err, io.EOF) {
 					break
 				}
 				sendStreamError(errors.WithStack(err))
@@ -814,6 +810,13 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 			choice := response.Choices[0]
 			delta := choice.Delta
+			if choice.FinishReason == finishReasonError {
+				sendStreamError(errors.WithStack(errStreamFailed))
+				return
+			}
+			if choice.FinishReason != "" {
+				finished = true
+			}
 
 			// Create stream delta
 			var toolCallDeltas []llm.ToolCallDelta
@@ -882,6 +885,15 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				)
 				sendDelta(streamDelta)
 			}
+		}
+
+		if err := ctx.Err(); err != nil {
+			sendStreamError(errors.WithStack(err))
+			return
+		}
+		if !finished {
+			sendStreamError(errors.WithStack(errStreamTruncated))
+			return
 		}
 
 		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
