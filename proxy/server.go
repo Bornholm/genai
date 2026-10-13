@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -77,31 +78,52 @@ func writeProxyResponse(w http.ResponseWriter, res *ProxyResponse) {
 // resolveClient returns the llm.Client to use for req.
 // It tries the hook chain resolvers first, then falls back to DefaultClient,
 // but only when no resolver handles the model: a resolver error may be a
-// refusal, such as a model the user is not allowed to use.
-func (s *Server) resolveClient(r *http.Request, req *ProxyRequest) (client interface{}, model string, apiErr *APIError) {
-	c, m, err := s.chain.ResolveModel(r.Context(), req)
+// refusal, such as a model the user is not allowed to use. Such an error is
+// offered to the error hooks, whose response is returned when one answers.
+func (s *Server) resolveClient(r *http.Request, req *ProxyRequest) (client interface{}, model string, errRes *ProxyResponse, apiErr *APIError) {
+	ctx := r.Context()
+	c, m, err := s.chain.ResolveModel(ctx, req)
 	if err == nil {
-		return c, m, nil
+		return c, m, nil, nil
 	}
 
 	if !errors.Is(err, ErrNoResolver) {
-		slog.ErrorContext(r.Context(), "model resolver error",
+		slog.ErrorContext(ctx, "model resolver error",
 			slog.String("model", req.Model),
 			slog.Any("error", err),
 		)
-		return nil, "", hookAPIError(err, "could not resolve the model")
+		if res, hookErr := s.chain.RunOnError(ctx, req, err); res != nil {
+			return nil, "", res, nil
+		} else if hookErr != nil {
+			slog.ErrorContext(ctx, "error hooks failed", slog.Any("error", hookErr))
+		}
+		return nil, "", nil, hookAPIError(err, "could not resolve the model")
 	}
 
 	if s.options.DefaultClient != nil {
-		return s.options.DefaultClient, req.Model, nil
+		return s.options.DefaultClient, req.Model, nil, nil
 	}
 
-	return nil, "", NewModelNotFoundError(req.Model)
+	return nil, "", nil, NewModelNotFoundError(req.Model)
+}
+
+// authAPIError answers a request the AuthExtractor refused: with the
+// *APIError it failed with, or a generic message otherwise, the cause being
+// logged since it may hold internal details, such as a key server address.
+func authAPIError(ctx context.Context, err error) *APIError {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	slog.WarnContext(ctx, "authentication failed", slog.Any("error", err))
+	return NewUnauthorizedError("authentication failed")
 }
 
 // hookAPIError returns the *APIError a hook or a resolver failed with, so that
 // it can refuse a request with its own status, or a generic internal error
-// otherwise: the cause, already logged, may hold internal details.
+// otherwise: the cause, already logged, may hold internal details. The
+// *APIError is looked up through wrapped errors, so a hook may add context to
+// it without losing the status.
 func hookAPIError(err error, message string) *APIError {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {

@@ -36,7 +36,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	if s.options.AuthExtractor != nil {
 		userID, err := s.options.AuthExtractor(r)
 		if err != nil {
-			writeAPIError(w, NewUnauthorizedError(err.Error()))
+			writeAPIError(w, authAPIError(r.Context(), err))
 			return
 		}
 		req.UserID = userID
@@ -53,7 +53,11 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawClient, resolvedModel, apiErr := s.resolveClient(r, req)
+	rawClient, resolvedModel, errRes, apiErr := s.resolveClient(r, req)
+	if errRes != nil {
+		writeProxyResponse(w, errRes)
+		return
+	}
 	if apiErr != nil {
 		writeAPIError(w, apiErr)
 		return

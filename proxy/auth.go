@@ -34,7 +34,9 @@ func BearerTokenExtractor() AuthExtractor {
 
 // TokenFingerprint returns the userID BearerTokenExtractor gives a token, for
 // instance to key a per-user quota: "sha256:" followed by the first 16
-// hexadecimal digits of the SHA-256 of the token.
+// hexadecimal digits of the SHA-256 of the token. The format is part of the
+// contract: stored usage and quota keys depend on it. It does not protect a
+// guessable token, which an API key is not.
 func TokenFingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return "sha256:" + hex.EncodeToString(sum[:8])

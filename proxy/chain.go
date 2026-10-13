@@ -69,8 +69,12 @@ func (c *HookChain) RunPreRequest(ctx context.Context, req *ProxyRequest) (*Prox
 				slog.String("hook", h.Name()),
 				slog.Any("error", err),
 			)
-			if res, _ := c.RunOnError(ctx, req, errors.WithStack(err)); res != nil {
+			res, hookErr := c.RunOnError(ctx, req, errors.WithStack(err))
+			if res != nil {
 				return res, nil
+			}
+			if hookErr != nil {
+				slog.ErrorContext(ctx, "error hooks failed", slog.Any("error", hookErr))
 			}
 			return nil, errors.Wrapf(err, "pre-request hook %s", h.Name())
 		}

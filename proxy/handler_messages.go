@@ -41,7 +41,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if s.options.AuthExtractor != nil {
 		userID, err := s.options.AuthExtractor(r)
 		if err != nil {
-			writeAnthropicAPIError(w, NewUnauthorizedError(err.Error()))
+			writeAnthropicAPIError(w, authAPIError(r.Context(), err))
 			return
 		}
 		req.UserID = userID
@@ -60,7 +60,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Resolve model → client
-	rawClient, resolvedModel, apiErr := s.resolveClient(r, req)
+	rawClient, resolvedModel, errRes, apiErr := s.resolveClient(r, req)
+	if errRes != nil {
+		writeProxyResponse(w, errRes)
+		return
+	}
 	if apiErr != nil {
 		writeAnthropicAPIError(w, apiErr)
 		return
@@ -146,7 +150,7 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 
 	if s.options.AuthExtractor != nil {
 		if _, err := s.options.AuthExtractor(r); err != nil {
-			writeAnthropicAPIError(w, NewUnauthorizedError(err.Error()))
+			writeAnthropicAPIError(w, authAPIError(r.Context(), err))
 			return
 		}
 	}
