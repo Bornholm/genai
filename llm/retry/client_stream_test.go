@@ -171,3 +171,71 @@ func TestChatCompletionStream_ForwardsANonRetryableError(t *testing.T) {
 		t.Errorf("attempts = %d, want 1: a non-retryable error must not be retried", client.attempts)
 	}
 }
+
+// TestChatCompletionStream_DoesNotRetryAfterForwarding asserts that a retryable
+// error arriving once a chunk went out ends the stream instead of retrying it.
+// A retried call starts its answer over: the consumer would get the first
+// chunks twice, the second time glued to a different answer.
+func TestChatCompletionStream_DoesNotRetryAfterForwarding(t *testing.T) {
+	client := &scriptedStreamClient{
+		scripts: [][]llm.StreamChunk{
+			{llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "Hel")), llm.NewErrorStreamChunk(retryable())},
+			{llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "Hello")), llm.NewCompleteStreamChunk(llm.NewChatCompletionUsage(5, 3, 8))},
+		},
+	}
+
+	stream, err := NewClient(client, time.Millisecond, 2).ChatCompletionStream(context.Background())
+	if err != nil {
+		t.Fatalf("ChatCompletionStream: %v", err)
+	}
+
+	var content string
+	var last llm.StreamChunk
+	for chunk := range stream {
+		if chunk.Delta() != nil {
+			content += chunk.Delta().Content()
+		}
+		last = chunk
+	}
+	if content != "Hel" {
+		t.Errorf("content = %q, want %q: only the first attempt's output may reach the consumer", content, "Hel")
+	}
+	if last == nil || !errors.Is(last.Error(), llm.ErrRateLimit) {
+		t.Errorf("terminal chunk = %v, want the error that cut the stream", last)
+	}
+	if client.attempts != 1 {
+		t.Errorf("attempts = %d, want 1", client.attempts)
+	}
+}
+
+// failingCompletionClient fails every completion with a retryable error.
+type failingCompletionClient struct {
+	scriptedStreamClient
+	calls int
+}
+
+func (c *failingCompletionClient) ChatCompletion(_ context.Context, _ ...llm.ChatCompletionOptionFunc) (llm.ChatCompletionResponse, error) {
+	c.calls++
+	return nil, retryable()
+}
+
+// TestChatCompletion_StopsWaitingWhenTheContextEnds asserts that the backoff
+// between two attempts gives up as soon as the caller does.
+func TestChatCompletion_StopsWaitingWhenTheContextEnds(t *testing.T) {
+	client := &failingCompletionClient{}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := NewClient(client, time.Hour, 3).ChatCompletion(ctx)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want the context deadline", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("returned after %s, want it to stop waiting with the context", elapsed)
+	}
+	if client.calls != 1 {
+		t.Errorf("calls = %d, want 1", client.calls)
+	}
+}

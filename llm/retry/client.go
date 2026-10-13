@@ -58,8 +58,12 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				time.Sleep(backoff)
-				backoff *= 2
+				select {
+				case <-time.After(backoff):
+					backoff *= 2
+				case <-ctx.Done():
+					return nil, errors.WithStack(ctx.Err())
+				}
 				continue
 			}
 
@@ -87,8 +91,12 @@ func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.T
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				time.Sleep(backoff)
-				backoff *= 2
+				select {
+				case <-time.After(backoff):
+					backoff *= 2
+				case <-ctx.Done():
+					return nil, errors.WithStack(ctx.Err())
+				}
 				continue
 			}
 
@@ -116,8 +124,12 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				time.Sleep(backoff)
-				backoff *= 2
+				select {
+				case <-time.After(backoff):
+					backoff *= 2
+				case <-ctx.Done():
+					return nil, errors.WithStack(ctx.Err())
+				}
 				continue
 			}
 
@@ -129,7 +141,11 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 }
 
 // ChatCompletionStream implements llm.Client.
-// Stream errors that are retryable (e.g. 429) trigger a full retry of the call.
+// Stream errors that are retryable (e.g. 429) trigger a full retry of the call,
+// but only while nothing has been forwarded: a retried call starts its answer
+// over, and the consumer would get the chunks already sent a second time,
+// glued to a different answer. An error after the first forwarded chunk ends
+// the stream, as a non-retryable one does.
 // All retries and stream reading happen inside a goroutine; the returned channel
 // carries both data chunks and any eventual non-retryable error chunk.
 func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatCompletionOptionFunc) (<-chan llm.StreamChunk, error) {
@@ -196,6 +212,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			// Use select to respect ctx cancellation — a stalled TCP connection
 			// would otherwise block this goroutine indefinitely.
 			var retryCall bool
+			// forwarded records that this attempt already sent a chunk on: from
+			// then on, a retry would repeat it.
+			forwarded := false
 		streamLoop:
 			for {
 				select {
@@ -204,13 +223,15 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 						break streamLoop
 					}
 					if chunkErr := chunk.Error(); chunkErr != nil {
-						if retries < c.maxRetries && llm.IsRetryable(chunkErr) {
+						if !forwarded && retries < c.maxRetries && llm.IsRetryable(chunkErr) {
 							slog.DebugContext(ctx, "stream chunk error, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", chunkErr))
 							retries++
 							retryCall = true
 							break streamLoop
 						}
-						abandonAttempt(stream) // non-retryable error — forward and stop
+						// Not retryable, out of retries, or too late to retry:
+						// forward and stop.
+						abandonAttempt(stream)
 						sendTerminal(chunk)
 						return
 					}
@@ -223,6 +244,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 						return
 					}
+					forwarded = true
 				case <-ctx.Done():
 					abandonAttempt(stream)
 					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
