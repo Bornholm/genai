@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -205,4 +206,101 @@ func TestAuthExtractorError_RefusesWithItsOwnAPIError(t *testing.T) {
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "missing API key") {
 		t.Errorf("status = %d, body = %s; want the extractor's own 401", w.Code, w.Body.String())
 	}
+}
+
+func TestAPIErrorWithoutStatus_AnswersWith500(t *testing.T) {
+	for _, e := range endpoints {
+		t.Run(e.name, func(t *testing.T) {
+			hook := &stubPreHook{hookName: "acl", err: &APIError{Type: "permission_error", Message: "not allowed"}}
+
+			w := e.serve(NewServer(WithHook(hook), WithDefaultClient(newRecordingClient())))
+
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want %d; body: %s", w.Code, http.StatusInternalServerError, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHookResponseWithoutStatus_AnswersWith500(t *testing.T) {
+	hook := &stubPreHook{hookName: "quota", result: &HookResult{Response: &ProxyResponse{
+		Body: ErrorResponse{Error: APIError{Type: "rate_limit_error", Message: "quota exceeded"}},
+	}}}
+
+	w := endpoints[0].serve(NewServer(WithHook(hook), WithDefaultClient(newRecordingClient())))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+// assertAnthropicError checks that body is an Anthropic error envelope.
+func assertAnthropicError(t *testing.T, body []byte, wantType, wantMessage string) {
+	t.Helper()
+	var got AnthropicErrorResponse
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("body = %s, not JSON: %v", body, err)
+	}
+	if got.Type != "error" || got.Error.Type != wantType || got.Error.Message != wantMessage {
+		t.Errorf("body = %s, want an Anthropic %q error saying %q", body, wantType, wantMessage)
+	}
+}
+
+func TestMessages_HookResponsesUseTheAnthropicEnvelope(t *testing.T) {
+	messages := endpoints[1]
+	quotaExceeded := &HookResult{Response: &ProxyResponse{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       ErrorResponse{Error: APIError{Type: "rate_limit_error", Message: "quota exceeded"}},
+	}}
+
+	t.Run("pre-request refusal", func(t *testing.T) {
+		hook := &stubPreHook{hookName: "quota", result: quotaExceeded}
+
+		w := messages.serve(NewServer(WithHook(hook), WithDefaultClient(newRecordingClient())))
+
+		if w.Code != http.StatusTooManyRequests {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+		}
+		assertAnthropicError(t, w.Body.Bytes(), "rate_limit_error", "quota exceeded")
+	})
+
+	t.Run("error hook after a resolver error", func(t *testing.T) {
+		resolver := &stubResolver{hookName: "acl", err: errors.New("acl store unreachable")}
+		server := NewServer(WithHook(resolver), WithHook(&answeringErrorHook{status: http.StatusServiceUnavailable}), WithDefaultClient(newRecordingClient()))
+
+		w := messages.serve(server)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+		}
+		assertAnthropicError(t, w.Body.Bytes(), "api_error", "answered by the error hook")
+	})
+
+	t.Run("error hook after a stream that failed to open", func(t *testing.T) {
+		client := &erroringStreamClient{err: errors.New("upstream unreachable")}
+		server := NewServer(WithHook(&answeringErrorHook{status: http.StatusServiceUnavailable}), WithDefaultClient(client))
+		r := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewBufferString(
+			`{"model":"gpt-4","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+		w := httptest.NewRecorder()
+
+		server.handleMessages(w, r)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("status = %d, want %d; body: %s", w.Code, http.StatusServiceUnavailable, w.Body.String())
+		}
+		assertAnthropicError(t, w.Body.Bytes(), "api_error", "answered by the error hook")
+	})
+
+	t.Run("other responses are left as is", func(t *testing.T) {
+		hook := &stubPreHook{hookName: "cache", result: &HookResult{Response: &ProxyResponse{
+			StatusCode: http.StatusOK,
+			Body:       map[string]any{"cached": true},
+		}}}
+
+		w := messages.serve(NewServer(WithHook(hook), WithDefaultClient(newRecordingClient())))
+
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"cached":true`) {
+			t.Errorf("status = %d, body = %s; want the hook's response unchanged", w.Code, w.Body.String())
+		}
+	})
 }

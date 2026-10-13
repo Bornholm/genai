@@ -49,7 +49,14 @@ func (s *Server) ListenAndServe() error {
 }
 
 // writeJSON serializes body as JSON and sets the appropriate Content-Type.
+// A status outside 200-599, such as the zero StatusCode of an *APIError or a
+// ProxyResponse a hook left unset, is answered with a 500: net/http panics on
+// a status below 100 and a 1xx is not a final response.
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	if status < 200 || status > 599 {
+		slog.Error("invalid response status, answering with 500", slog.Int("status", status))
+		status = http.StatusInternalServerError
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
@@ -73,6 +80,28 @@ func writeProxyResponse(w http.ResponseWriter, res *ProxyResponse) {
 		}
 	}
 	writeJSON(w, res.StatusCode, res.Body)
+}
+
+// writeAnthropicProxyResponse writes res like writeProxyResponse, but a body
+// holding an OpenAI error envelope, which is how hooks refuse a request, is
+// rewritten in the Anthropic one so that /messages clients can read it.
+func writeAnthropicProxyResponse(w http.ResponseWriter, res *ProxyResponse) {
+	var apiErr *APIError
+	switch body := res.Body.(type) {
+	case ErrorResponse:
+		apiErr = &body.Error
+	case *ErrorResponse:
+		if body != nil {
+			apiErr = &body.Error
+		}
+	}
+	if apiErr == nil {
+		writeProxyResponse(w, res)
+		return
+	}
+	converted := *res
+	converted.Body = anthropicErrorResponse(apiErr)
+	writeProxyResponse(w, &converted)
 }
 
 // resolveClient returns the llm.Client to use for req.

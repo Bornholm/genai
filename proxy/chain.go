@@ -116,8 +116,8 @@ func (c *HookChain) RunPostResponse(ctx context.Context, req *ProxyRequest, res 
 
 // RunOnError iterates error hooks in priority order.
 // The first hook that returns a non-nil Response short-circuits and that
-// response is returned to the caller.  If no hook handles it, a generic 500
-// is returned.
+// response is returned to the caller. If no hook handles it, it returns nil,
+// nil and the caller answers with its own error.
 func (c *HookChain) RunOnError(ctx context.Context, req *ProxyRequest, err error) (*ProxyResponse, error) {
 	for _, h := range c.errorHooks {
 		result, hookErr := h.OnError(ctx, req, err)

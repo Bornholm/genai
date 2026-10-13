@@ -108,6 +108,11 @@ func (e *anthropicStreamEmitter) WriteErrorResponse(w http.ResponseWriter, err e
 	writeAnthropicAPIError(w, apiErrorFromErr(err))
 }
 
+// WriteHookResponse writes an error hook's response in the Anthropic format.
+func (e *anthropicStreamEmitter) WriteHookResponse(w http.ResponseWriter, res *ProxyResponse) {
+	writeAnthropicProxyResponse(w, res)
+}
+
 // EmitError implements streamEmitter.
 func (e *anthropicStreamEmitter) EmitError(w io.Writer, err error) error {
 	apiErr := apiErrorFromErr(err)

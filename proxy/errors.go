@@ -130,11 +130,16 @@ func anthropicErrorType(apiErr *APIError) string {
 
 // writeAnthropicAPIError writes apiErr using the Anthropic error envelope format.
 func writeAnthropicAPIError(w http.ResponseWriter, apiErr *APIError) {
-	writeJSON(w, apiErr.StatusCode, AnthropicErrorResponse{
+	writeJSON(w, apiErr.StatusCode, anthropicErrorResponse(apiErr))
+}
+
+// anthropicErrorResponse wraps apiErr in the Anthropic error envelope.
+func anthropicErrorResponse(apiErr *APIError) AnthropicErrorResponse {
+	return AnthropicErrorResponse{
 		Type: "error",
 		Error: AnthropicError{
 			Type:    anthropicErrorType(apiErr),
 			Message: apiErr.Message,
 		},
-	})
+	}
 }

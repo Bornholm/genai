@@ -55,14 +55,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if shortCircuit != nil {
-		writeProxyResponse(w, shortCircuit)
+		writeAnthropicProxyResponse(w, shortCircuit)
 		return
 	}
 
 	// 6. Resolve model → client
 	rawClient, resolvedModel, errRes, apiErr := s.resolveClient(r, req)
 	if errRes != nil {
-		writeProxyResponse(w, errRes)
+		writeAnthropicProxyResponse(w, errRes)
 		return
 	}
 	if apiErr != nil {
@@ -104,7 +104,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(ctx, "messages completion error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)
 		if errRes != nil {
-			writeProxyResponse(w, errRes)
+			writeAnthropicProxyResponse(w, errRes)
 		} else {
 			writeAnthropicAPIError(w, apiErrorFromErr(err))
 		}
