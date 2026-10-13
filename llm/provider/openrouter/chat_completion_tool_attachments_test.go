@@ -305,3 +305,15 @@ func TestBuildMessages_JPGImageSentAsJPEG(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildMessages_EmptyToolResult(t *testing.T) {
+	messages := wireMessages(t,
+		llm.NewMessage(llm.RoleUser, "Run it"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_01", "run", "{}")),
+		llm.NewToolMessage("call_01", llm.NewToolResult("")),
+	)
+
+	if messages[2]["content"] != "[the tool returned no content]" {
+		t.Errorf("tool content = %#v, want a placeholder text", messages[2]["content"])
+	}
+}

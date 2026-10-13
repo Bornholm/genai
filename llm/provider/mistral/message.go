@@ -176,11 +176,12 @@ func toolResultMessage(ctx context.Context, toolMessage llm.ToolMessage) (openai
 		parts = append(parts, part)
 	}
 
-	if content == "" && len(toolMessage.Attachments()) > 0 {
+	if content == "" {
+		// Some upstreams refuse an empty tool message.
 		if len(parts) > 0 {
 			content = "[the attachments of this result follow in the next message]"
 		} else {
-			// Its only attachments were empty documents.
+			// No text, and no attachment, or only empty documents.
 			content = "[the tool returned no content]"
 		}
 	}

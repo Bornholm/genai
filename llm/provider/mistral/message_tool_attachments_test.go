@@ -330,3 +330,11 @@ func TestSuccessiveToolRunsKeepTheirOwnImages(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyToolResult(t *testing.T) {
+	messages := wireMessages(t, toolTurn(llm.NewToolResult(""))...)
+
+	if messages[2]["content"] != "[the tool returned no content]" {
+		t.Errorf("tool content = %#v, want a placeholder text", messages[2]["content"])
+	}
+}
