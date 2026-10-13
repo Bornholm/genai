@@ -32,8 +32,12 @@ func (c *Client) Text(ctx context.Context, funcs ...extract.TextOptionFunc) (ext
 				slog.DebugContext(ctx, "request failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", errors.WithStack(err)))
 
 				retries++
-				time.Sleep(backoff)
-				backoff *= 2
+				select {
+				case <-time.After(backoff):
+					backoff *= 2
+				case <-ctx.Done():
+					return nil, errors.WithStack(ctx.Err())
+				}
 				continue
 			}
 

@@ -146,3 +146,36 @@ func TestChatCompletion_MapsAnAPIErrorToAnHTTPError(t *testing.T) {
 		t.Errorf("err = %v, want a retryable rate limit error", err)
 	}
 }
+
+// TestChatCompletionStream_CompletesWhenTheContextEndsAfterTheAnswer asserts
+// that a finished answer is reported complete although the caller's context
+// ended before the stream closed: the answer was delivered in full.
+func TestChatCompletionStream_CompletesWhenTheContextEndsAfterTheAnswer(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{helloChunk, finishChunk} {
+			_, _ = w.Write([]byte("data: " + event + "\n\n"))
+		}
+		w.(http.Flusher).Flush()
+		// Hold the stream open, without [DONE], until the caller leaves.
+		<-r.Context().Done()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream, err := client.ChatCompletionStream(ctx, llm.WithMessages(llm.NewMessage(llm.RoleUser, "hi")))
+	if err != nil {
+		t.Fatalf("ChatCompletionStream: %v", err)
+	}
+	var last llm.StreamChunk
+	for chunk := range stream {
+		if chunk.Delta() != nil && chunk.Delta().Content() == "!" {
+			cancel()
+		}
+		last = chunk
+	}
+
+	if last == nil || !last.IsComplete() || last.Error() != nil {
+		t.Fatalf("last chunk = %v, want a completion chunk", last)
+	}
+}

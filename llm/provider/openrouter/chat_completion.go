@@ -776,7 +776,21 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			sendStreamError(providerError(err))
 			return
 		}
-		defer stream.Close()
+		// The SDK reader hands each chunk over on an unbuffered channel without
+		// watching Close: stopping early, on a provider failure, would leave it
+		// blocked on the next line OpenRouter sends. Reading to the end first
+		// releases it; the read ends with the stream or with ctx, which aborts
+		// the response body.
+		defer func() {
+			go func() {
+				for {
+					if _, err := stream.Recv(); err != nil {
+						break
+					}
+				}
+				stream.Close()
+			}()
+		}()
 
 		// The SDK ends its stream with io.EOF whatever stopped it: the [DONE]
 		// event, a dropped connection, a line it could not decode, or ctx. A
@@ -814,7 +828,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				sendStreamError(errors.WithStack(errStreamFailed))
 				return
 			}
-			if choice.FinishReason != "" {
+			if choice.FinishReason != "" || choice.NativeFinishReason != "" {
 				finished = true
 			}
 
@@ -887,11 +901,12 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			}
 		}
 
-		if err := ctx.Err(); err != nil {
-			sendStreamError(errors.WithStack(err))
-			return
-		}
+		// A finished answer is complete even when ctx ended right after it.
 		if !finished {
+			if err := ctx.Err(); err != nil {
+				sendStreamError(errors.WithStack(err))
+				return
+			}
 			sendStreamError(errors.WithStack(errStreamTruncated))
 			return
 		}
