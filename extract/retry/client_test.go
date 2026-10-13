@@ -27,8 +27,8 @@ func TestText_StopsWaitingWhenTheContextEnds(t *testing.T) {
 	start := time.Now()
 	_, err := NewClient(client, time.Hour, 3).Text(ctx)
 
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want the context deadline", err)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, extract.ErrRateLimit) {
+		t.Errorf("err = %v, want the context deadline and the error that was being retried", err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("returned after %s, want it to stop waiting with the context", elapsed)

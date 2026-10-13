@@ -1,6 +1,7 @@
 package openrouter
 
 import (
+	stdcontext "context"
 	"io"
 	"log/slog"
 	"math"
@@ -771,17 +772,21 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 	go func() {
 		defer close(chunks)
 
-		stream, err := c.client.CreateChatCompletionStream(ctx, req)
+		// The SDK reader hands each chunk over on an unbuffered channel without
+		// watching Close: stopping early, on a provider failure, would leave it
+		// blocked on the next line OpenRouter sends, the upstream response open.
+		// Its own context is cancelled on the way out, which aborts the response
+		// body whatever the caller does with ctx, and the stream is read to its
+		// end to release a reader blocked on a send.
+		streamCtx, cancelStream := stdcontext.WithCancel(ctx)
+		stream, err := c.client.CreateChatCompletionStream(streamCtx, req)
 		if err != nil {
+			cancelStream()
 			sendStreamError(providerError(err))
 			return
 		}
-		// The SDK reader hands each chunk over on an unbuffered channel without
-		// watching Close: stopping early, on a provider failure, would leave it
-		// blocked on the next line OpenRouter sends. Reading to the end first
-		// releases it; the read ends with the stream or with ctx, which aborts
-		// the response body.
 		defer func() {
+			cancelStream()
 			go func() {
 				for {
 					if _, err := stream.Recv(); err != nil {
@@ -804,7 +809,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				if errors.Is(err, io.EOF) {
 					break
 				}
-				sendStreamError(errors.WithStack(err))
+				sendStreamError(providerError(err))
 				return
 			}
 
@@ -818,19 +823,25 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				usageReported.Store(true)
 			}
 
+			// An error event without choices lands here too, the SDK having
+			// dropped its error field: the stream then ends without a finish
+			// reason and is reported truncated below.
 			if len(response.Choices) == 0 {
 				continue
 			}
 
+			for _, choice := range response.Choices {
+				if choice.FinishReason == finishReasonError || choice.NativeFinishReason == string(finishReasonError) {
+					sendStreamError(errors.WithStack(errStreamFailed))
+					return
+				}
+				if choice.FinishReason != "" || choice.NativeFinishReason != "" {
+					finished = true
+				}
+			}
+
 			choice := response.Choices[0]
 			delta := choice.Delta
-			if choice.FinishReason == finishReasonError {
-				sendStreamError(errors.WithStack(errStreamFailed))
-				return
-			}
-			if choice.FinishReason != "" || choice.NativeFinishReason != "" {
-				finished = true
-			}
 
 			// Create stream delta
 			var toolCallDeltas []llm.ToolCallDelta
@@ -907,6 +918,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				sendStreamError(errors.WithStack(err))
 				return
 			}
+			// Logged so that a route ending complete answers without a finish
+			// reason, which this would misreport, shows up.
+			slog.WarnContext(ctx, "openrouter stream ended without a finish reason", slog.String("model", c.model))
 			sendStreamError(errors.WithStack(errStreamTruncated))
 			return
 		}

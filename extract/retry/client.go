@@ -2,6 +2,7 @@ package retry
 
 import (
 	"context"
+	stderrors "errors"
 	"log/slog"
 	"time"
 
@@ -36,7 +37,8 @@ func (c *Client) Text(ctx context.Context, funcs ...extract.TextOptionFunc) (ext
 				case <-time.After(backoff):
 					backoff *= 2
 				case <-ctx.Done():
-					return nil, errors.WithStack(ctx.Err())
+					// Both stay visible: the caller left, and why it was waiting.
+					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
 				continue
 			}

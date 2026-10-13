@@ -2,6 +2,7 @@ package retry
 
 import (
 	"context"
+	stderrors "errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -62,7 +63,8 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 				case <-time.After(backoff):
 					backoff *= 2
 				case <-ctx.Done():
-					return nil, errors.WithStack(ctx.Err())
+					// Both stay visible: the caller left, and why it was waiting.
+					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
 				continue
 			}
@@ -95,7 +97,8 @@ func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.T
 				case <-time.After(backoff):
 					backoff *= 2
 				case <-ctx.Done():
-					return nil, errors.WithStack(ctx.Err())
+					// Both stay visible: the caller left, and why it was waiting.
+					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
 				continue
 			}
@@ -128,7 +131,8 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 				case <-time.After(backoff):
 					backoff *= 2
 				case <-ctx.Done():
-					return nil, errors.WithStack(ctx.Err())
+					// Both stay visible: the caller left, and why it was waiting.
+					return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
 				}
 				continue
 			}
@@ -212,8 +216,9 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 			// Use select to respect ctx cancellation — a stalled TCP connection
 			// would otherwise block this goroutine indefinitely.
 			var retryCall bool
-			// forwarded records that this attempt already sent a chunk on: from
-			// then on, a retry would repeat it.
+			// forwarded records that this attempt already sent output on: from
+			// then on, a retry would repeat it. A chunk carrying nothing, such as
+			// the role-only delta streams often open with, leaves it unset.
 			forwarded := false
 		streamLoop:
 			for {
@@ -244,7 +249,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 						sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 						return
 					}
-					forwarded = true
+					forwarded = forwarded || carriesOutput(chunk)
 				case <-ctx.Done():
 					abandonAttempt(stream)
 					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
@@ -330,4 +335,27 @@ func (c *Client) Close() error {
 		return closer.Close()
 	}
 	return nil
+}
+
+// carriesOutput reports whether chunk holds output a consumer shows or acts
+// on: content, tool calls, reasoning or audio.
+func carriesOutput(chunk llm.StreamChunk) bool {
+	delta := chunk.Delta()
+	if delta == nil {
+		return false
+	}
+	if delta.Content() != "" || len(delta.ToolCalls()) > 0 {
+		return true
+	}
+	if r, ok := delta.(llm.ReasoningStreamDelta); ok && (r.Reasoning() != "" || len(r.ReasoningDetails()) > 0) {
+		return true
+	}
+	type audioDelta interface {
+		AudioData() string
+		Transcript() string
+	}
+	if a, ok := delta.(audioDelta); ok && (a.AudioData() != "" || a.Transcript() != "") {
+		return true
+	}
+	return false
 }

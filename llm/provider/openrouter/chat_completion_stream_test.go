@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/revrost/go-openrouter"
@@ -177,5 +178,68 @@ func TestChatCompletionStream_CompletesWhenTheContextEndsAfterTheAnswer(t *testi
 
 	if last == nil || !last.IsComplete() || last.Error() != nil {
 		t.Fatalf("last chunk = %v, want a completion chunk", last)
+	}
+}
+
+func TestChatCompletionStream_ReportsAFailureGivenAsNativeFinishReason(t *testing.T) {
+	failure := `{"choices":[{"index":0,"delta":{"content":""},"native_finish_reason":"error"}]}`
+	client := newTestClient(t, sse(helloChunk, failure, "[DONE]"))
+
+	_, last := collect(t, client)
+
+	if last == nil || !errors.Is(last.Error(), errStreamFailed) {
+		t.Fatalf("last chunk = %v, want the provider failure", last)
+	}
+}
+
+// TestChatCompletionStream_ClosesTheUpstreamOnAProviderFailure asserts that
+// a stream stopped on a provider failure closes its upstream response, even
+// when the caller's context never ends and OpenRouter keeps it open.
+func TestChatCompletionStream_ClosesTheUpstreamOnAProviderFailure(t *testing.T) {
+	failure := `{"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}`
+	closed := make(chan struct{})
+	testDone := make(chan struct{})
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range []string{helloChunk, failure, helloChunk} {
+			_, _ = w.Write([]byte("data: " + event + "\n\n"))
+		}
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+			close(closed)
+		case <-testDone:
+			// Lets the server shut down when the response was left open.
+		}
+	})
+	// Cleanups run last in, first out: this one runs before the server's.
+	t.Cleanup(func() { close(testDone) })
+
+	_, last := collect(t, client)
+	if last == nil || !errors.Is(last.Error(), errStreamFailed) {
+		t.Fatalf("last chunk = %v, want the provider failure", last)
+	}
+
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the upstream response is still open after the stream ended")
+	}
+}
+
+func TestEmbeddings_MapsAnUnparsableErrorToAnHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("<html>upstream unavailable</html>"))
+	}))
+	t.Cleanup(server.Close)
+	config := openrouter.DefaultConfig("test-key")
+	config.BaseURL = server.URL
+
+	_, err := NewEmbeddingsClient(openrouter.NewClientWithConfig(*config), "test/model").Embeddings(context.Background(), []string{"hi"})
+
+	var httpErr *llm.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusServiceUnavailable || !llm.IsRetryable(err) {
+		t.Errorf("err = %v, want a retryable *llm.HTTPError with status 503", err)
 	}
 }

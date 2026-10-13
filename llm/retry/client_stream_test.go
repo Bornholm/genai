@@ -229,13 +229,41 @@ func TestChatCompletion_StopsWaitingWhenTheContextEnds(t *testing.T) {
 	start := time.Now()
 	_, err := NewClient(client, time.Hour, 3).ChatCompletion(ctx)
 
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, want the context deadline", err)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, llm.ErrRateLimit) {
+		t.Errorf("err = %v, want the context deadline and the error that was being retried", err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Errorf("returned after %s, want it to stop waiting with the context", elapsed)
 	}
 	if client.calls != 1 {
 		t.Errorf("calls = %d, want 1", client.calls)
+	}
+}
+
+// TestChatCompletionStream_RetriesAfterAnEmptyFirstChunk asserts that a chunk
+// carrying no output, such as the role-only delta a stream often opens with,
+// does not prevent a retry: the consumer has nothing to see twice.
+func TestChatCompletionStream_RetriesAfterAnEmptyFirstChunk(t *testing.T) {
+	client := &scriptedStreamClient{
+		scripts: [][]llm.StreamChunk{
+			{llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "")), llm.NewErrorStreamChunk(retryable())},
+			{llm.NewStreamChunk(llm.NewStreamDelta(llm.RoleAssistant, "Hello")), llm.NewCompleteStreamChunk(llm.NewChatCompletionUsage(5, 3, 8))},
+		},
+	}
+
+	stream, err := NewClient(client, time.Millisecond, 2).ChatCompletionStream(context.Background())
+	if err != nil {
+		t.Fatalf("ChatCompletionStream: %v", err)
+	}
+
+	var last llm.StreamChunk
+	for chunk := range stream {
+		last = chunk
+	}
+	if last == nil || !last.IsComplete() {
+		t.Errorf("terminal chunk = %v, want the retried call's completion", last)
+	}
+	if client.attempts != 2 {
+		t.Errorf("attempts = %d, want 2", client.attempts)
 	}
 }
