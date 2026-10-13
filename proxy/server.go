@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 )
@@ -74,11 +75,21 @@ func writeProxyResponse(w http.ResponseWriter, res *ProxyResponse) {
 }
 
 // resolveClient returns the llm.Client to use for req.
-// It tries the hook chain resolvers first, then falls back to DefaultClient.
+// It tries the hook chain resolvers first, then falls back to DefaultClient,
+// but only when no resolver handles the model: a resolver error may be a
+// refusal, such as a model the user is not allowed to use.
 func (s *Server) resolveClient(r *http.Request, req *ProxyRequest) (client interface{}, model string, apiErr *APIError) {
 	c, m, err := s.chain.ResolveModel(r.Context(), req)
 	if err == nil {
 		return c, m, nil
+	}
+
+	if !errors.Is(err, ErrNoResolver) {
+		slog.ErrorContext(r.Context(), "model resolver error",
+			slog.String("model", req.Model),
+			slog.Any("error", err),
+		)
+		return nil, "", hookAPIError(err, "could not resolve the model")
 	}
 
 	if s.options.DefaultClient != nil {
@@ -86,4 +97,15 @@ func (s *Server) resolveClient(r *http.Request, req *ProxyRequest) (client inter
 	}
 
 	return nil, "", NewModelNotFoundError(req.Model)
+}
+
+// hookAPIError returns the *APIError a hook or a resolver failed with, so that
+// it can refuse a request with its own status, or a generic internal error
+// otherwise: the cause, already logged, may hold internal details.
+func hookAPIError(err error, message string) *APIError {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	return NewInternalError(message)
 }

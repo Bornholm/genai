@@ -51,7 +51,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// 5. Pre-request hooks
 	shortCircuit, err := s.chain.RunPreRequest(ctx, req)
 	if err != nil {
-		writeAnthropicAPIError(w, NewInternalError(err.Error()))
+		writeAnthropicAPIError(w, hookAPIError(err, "a pre-request hook failed"))
 		return
 	}
 	if shortCircuit != nil {

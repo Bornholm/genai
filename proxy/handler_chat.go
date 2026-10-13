@@ -55,7 +55,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 5. Pre-request hooks
 	shortCircuit, err := s.chain.RunPreRequest(ctx, req)
 	if err != nil {
-		writeAPIError(w, NewInternalError(err.Error()))
+		writeAPIError(w, hookAPIError(err, "a pre-request hook failed"))
 		return
 	}
 	if shortCircuit != nil {
