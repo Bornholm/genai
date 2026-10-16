@@ -304,3 +304,37 @@ func TestMessages_HookResponsesUseTheAnthropicEnvelope(t *testing.T) {
 		}
 	})
 }
+
+func TestBackendError_KeepsItsCauseOutOfTheResponse(t *testing.T) {
+	for _, e := range endpoints {
+		t.Run(e.name, func(t *testing.T) {
+			client := &mockChatClient{err: errors.New("dial tcp 10.0.3.7:443: connect: connection refused")}
+
+			w := e.serve(NewServer(WithDefaultClient(client)))
+
+			if w.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+			}
+			if strings.Contains(w.Body.String(), "10.0.3.7") {
+				t.Errorf("body = %s, want the backend error kept out of the response", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestBackendError_KeepsAnAPIError(t *testing.T) {
+	for _, e := range endpoints {
+		t.Run(e.name, func(t *testing.T) {
+			client := &mockChatClient{err: &APIError{StatusCode: http.StatusTooManyRequests, Type: "rate_limit_error", Message: "slow down"}}
+
+			w := e.serve(NewServer(WithDefaultClient(client)))
+
+			if w.Code != http.StatusTooManyRequests {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+			}
+			if !strings.Contains(w.Body.String(), "slow down") {
+				t.Errorf("body = %s, want the message of the *APIError", w.Body.String())
+			}
+		})
+	}
+}

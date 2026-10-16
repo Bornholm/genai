@@ -271,9 +271,10 @@ func TestStreamChatCompletion_RecordsUsageOnUpstreamError(t *testing.T) {
 
 	// The client must see the error and never the normal end of stream: a
 	// "[DONE]" here would let it treat a truncated answer as a whole one.
+	// The cause stays in the logs: the event says the provider failed.
 	body := w.Body.String()
-	if !strings.Contains(body, "upstream exploded") {
-		t.Errorf("response body does not carry the error event:\n%s", body)
+	if !strings.Contains(body, "the provider could not answer the request") || strings.Contains(body, "upstream exploded") {
+		t.Errorf("response body does not carry a generic error event:\n%s", body)
 	}
 	if strings.Contains(body, "[DONE]") {
 		t.Errorf("response body ends with [DONE] although the stream was cut short:\n%s", body)

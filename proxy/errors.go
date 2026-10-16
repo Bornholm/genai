@@ -10,7 +10,10 @@ import (
 // apiErrorFromErr maps a backend LLM error to an *APIError, preserving the
 // upstream HTTP status code when the provider returned an *llm.HTTPError. A
 // request the provider rejects before sending it is the client's fault, as a
-// 400 from the upstream would be.
+// 400 from the upstream would be. An *APIError is meant for the client and is
+// returned as is. Any other error, such as a failed dial to
+// the upstream, gets a generic message: its text may hold internal details,
+// such as an address, and the handlers log it.
 func apiErrorFromErr(err error) *APIError {
 	var httpErr *llm.HTTPError
 	if errors.As(err, &httpErr) {
@@ -21,12 +24,17 @@ func apiErrorFromErr(err error) *APIError {
 		}
 	}
 
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+
 	var validationErr llm.ValidationError
 	if errors.As(err, &validationErr) {
 		return NewBadRequestError(validationErr.Error())
 	}
 
-	return NewInternalError(err.Error())
+	return NewInternalError("the provider could not answer the request")
 }
 
 func httpErrorType(statusCode int) string {
