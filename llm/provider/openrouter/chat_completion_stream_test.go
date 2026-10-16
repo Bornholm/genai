@@ -247,8 +247,8 @@ func TestEmbeddings_MapsAnUnparsableErrorToAnHTTPError(t *testing.T) {
 // isProviderFailure reports whether err is the error of an answer the provider
 // failed to produce.
 func isProviderFailure(err error) bool {
-	var httpErr *llm.HTTPError
-	return errors.As(err, &httpErr) && httpErr.Body == errProviderFailed().(*llm.HTTPError).Body
+	var httpErr, want *llm.HTTPError
+	return errors.As(err, &httpErr) && errors.As(errProviderFailed(), &want) && httpErr.Body == want.Body
 }
 
 func TestChatCompletionStream_ReportsAFailureWhateverItsCase(t *testing.T) {

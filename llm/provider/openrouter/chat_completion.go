@@ -784,7 +784,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// blocked on the next line OpenRouter sends, the upstream response open.
 		// Its own context is cancelled on the way out, which aborts the response
 		// body whatever the caller does with ctx, and the stream is read to its
-		// end to release a reader blocked on a send.
+		// end to release a reader blocked on a send, unless the loop below
+		// already read it to its end.
 		streamCtx, cancelStream := stdcontext.WithCancel(ctx)
 		stream, err := c.client.CreateChatCompletionStream(streamCtx, req)
 		if err != nil {
@@ -792,8 +793,14 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			sendStreamError(providerError(err))
 			return
 		}
+		var readToEnd bool
 		defer func() {
 			cancelStream()
+			if readToEnd {
+				// The reader closed its channel, so it is not blocked on a send.
+				stream.Close()
+				return
+			}
 			go func() {
 				// Bounded like llm.DrainStream: the cancellation is expected to
 				// end the read, and a reader it does not stop is logged rather
@@ -828,6 +835,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			response, err := stream.Recv()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
+					readToEnd = true
 					break
 				}
 				sendStreamError(providerError(err))

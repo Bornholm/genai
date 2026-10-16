@@ -321,3 +321,20 @@ func TestBackendError_KeepsItsCauseOutOfTheResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestBackendError_KeepsAnAPIError(t *testing.T) {
+	for _, e := range endpoints {
+		t.Run(e.name, func(t *testing.T) {
+			client := &mockChatClient{err: &APIError{StatusCode: http.StatusTooManyRequests, Type: "rate_limit_error", Message: "slow down"}}
+
+			w := e.serve(NewServer(WithDefaultClient(client)))
+
+			if w.Code != http.StatusTooManyRequests {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusTooManyRequests)
+			}
+			if !strings.Contains(w.Body.String(), "slow down") {
+				t.Errorf("body = %s, want the message of the *APIError", w.Body.String())
+			}
+		})
+	}
+}
