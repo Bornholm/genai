@@ -80,7 +80,12 @@ func (c *DiscoveryClient) page(ctx context.Context, pageToken string) (*modelLis
 
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBody))
-		return nil, errors.WithStack(llm.RateLimitError(res.StatusCode, string(raw)))
+		err := llm.RateLimitError(res.StatusCode, string(raw))
+		var httpErr *llm.HTTPError
+		if errors.As(err, &httpErr) {
+			httpErr.Header = res.Header
+		}
+		return nil, errors.WithStack(err)
 	}
 
 	var page modelList

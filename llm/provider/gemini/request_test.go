@@ -103,6 +103,23 @@ func TestBuildRequest_ConvertsAConversationWithParallelToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildRequest_UserTextAfterToolResultsOpensATurn(t *testing.T) {
+	body := wire(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Ping?"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "ping", "")),
+		llm.NewToolMessage("call_1", llm.NewToolResult("pong")),
+		llm.NewMessage(llm.RoleUser, "Now answer."),
+	))
+
+	contents := body["contents"].([]any)
+	if len(contents) != 4 {
+		t.Fatalf("contents = %v, want the tool results and the user text in two turns", contents)
+	}
+	if text := contents[3].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"]; text != "Now answer." {
+		t.Errorf("last turn = %v", contents[3])
+	}
+}
+
 func TestBuildRequest_PlaceholderSignatureForAForeignToolCall(t *testing.T) {
 	body := wire(t, llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "Ping?"),
@@ -173,20 +190,29 @@ func TestBuildThinking(t *testing.T) {
 	budget := 2048
 
 	cases := map[string]struct {
-		opts     *llm.ReasoningOptions
-		budget   int
-		thoughts bool
+		opts      *llm.ReasoningOptions
+		maxTokens int
+		budget    int
+		thoughts  bool
 	}{
 		"disabled":         {opts: &llm.ReasoningOptions{Enabled: &disabled}, budget: 0},
 		"budget":           {opts: &llm.ReasoningOptions{MaxTokens: &budget}, budget: 2048, thoughts: true},
 		"effort, no max":   {opts: llm.NewReasoningOptions(llm.ReasoningEffortLow), budget: 1024, thoughts: true},
 		"enabled, dynamic": {opts: &llm.ReasoningOptions{Enabled: &enabled}, budget: dynamicBudget, thoughts: true},
-		"excluded":         {opts: &llm.ReasoningOptions{MaxTokens: &budget, Exclude: true}, budget: 2048},
+		// Thoughts still come back, for their signatures; only the caller
+		// does not see them.
+		"excluded":        {opts: &llm.ReasoningOptions{MaxTokens: &budget, Exclude: true}, budget: 2048, thoughts: true},
+		"effort, bounded": {opts: llm.NewReasoningOptions(llm.ReasoningEffortXHigh), maxTokens: 65536, budget: maxEffortBudget, thoughts: true},
+		"effort, floored": {opts: llm.NewReasoningOptions(llm.ReasoningEffortLow), maxTokens: 300, budget: minEffortBudget, thoughts: true},
 	}
 
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			config := buildThinking(c.opts, nil)
+			var maxTokens *int
+			if c.maxTokens > 0 {
+				maxTokens = &c.maxTokens
+			}
+			config := buildThinking(c.opts, maxTokens)
 			if config == nil || *config.ThinkingBudget != c.budget || config.IncludeThoughts != c.thoughts {
 				t.Errorf("config = %+v, want budget %d thoughts %v", config, c.budget, c.thoughts)
 			}

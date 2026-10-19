@@ -199,11 +199,14 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 	), nil
 }
 
-// responseFailure returns the error of a failed response, nil otherwise. An
-// incomplete response is not a failure: like a chat completion cut by its
-// length limit, it returns what was produced.
+// responseFailure returns the error of a failed response, nil otherwise. A
+// gateway may answer a 200 carrying only an error object, without a status:
+// the error is the failure then too. An incomplete response is not a
+// failure: like a chat completion cut by its length limit, it returns what
+// was produced.
 func responseFailure(res *response) error {
-	if res.Status != "failed" {
+	failed := res.Status == "failed" || (res.Error != nil && (res.Error.Code != "" || res.Error.Message != ""))
+	if !failed {
 		return nil
 	}
 	code, message := "", "the response failed"

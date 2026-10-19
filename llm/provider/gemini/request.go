@@ -126,12 +126,20 @@ const dynamicBudget = -1
 // effortBudgets is the thinking budget of each effort level when no
 // max_output_tokens is set to take a share of.
 var effortBudgets = map[llm.ReasoningEffort]int{
-	llm.ReasoningEffortMinimal: 512,
+	llm.ReasoningEffortMinimal: minEffortBudget,
 	llm.ReasoningEffortLow:     1024,
 	llm.ReasoningEffortMedium:  8192,
-	llm.ReasoningEffortHigh:    24576,
-	llm.ReasoningEffortXHigh:   32768,
+	llm.ReasoningEffortHigh:    16384,
+	llm.ReasoningEffortXHigh:   maxEffortBudget,
 }
+
+// minEffortBudget and maxEffortBudget bound a budget derived from an effort
+// level to the range every thinking model accepts: Flash-Lite needs at least
+// 512 tokens, Flash takes at most 24576.
+const (
+	minEffortBudget = 512
+	maxEffortBudget = 24576
+)
 
 // effortRatios is the share of max_tokens each effort stands for, as
 // documented on llm.ReasoningEffort.
@@ -212,10 +220,13 @@ func buildRequest(opts *llm.ChatCompletionOptions) (*request, error) {
 	return req, nil
 }
 
-// buildThinking maps llm.ReasoningOptions to a thinking budget. An effort
-// level becomes a share of max_output_tokens, or a fixed budget when none is
-// set; reasoning enabled without either lets the model choose. The budget is
-// what Gemini 2.5 takes, and what Gemini 3 still accepts in place of its
+// buildThinking maps llm.ReasoningOptions to a thinking budget. An explicit
+// budget is sent as is. An effort level becomes a share of
+// max_output_tokens, or a fixed budget when none is set, bounded to what
+// every thinking model accepts; reasoning enabled without either lets the
+// model choose. Disabled reasoning is a zero budget, which the models that
+// cannot stop thinking (2.5 Pro, Gemini 3) refuse. The budget is what
+// Gemini 2.5 takes, and what Gemini 3 still accepts in place of its
 // thinking levels.
 func buildThinking(opts *llm.ReasoningOptions, maxOutputTokens *int) *thinkingConfig {
 	if opts == nil {
@@ -235,6 +246,7 @@ func buildThinking(opts *llm.ReasoningOptions, maxOutputTokens *int) *thinkingCo
 		}
 		if maxOutputTokens != nil && *maxOutputTokens > 0 {
 			budget = int(float64(*maxOutputTokens) * effortRatios[effort])
+			budget = min(max(budget, minEffortBudget), maxEffortBudget)
 		} else {
 			budget = effortBudgets[effort]
 		}
@@ -244,16 +256,21 @@ func buildThinking(opts *llm.ReasoningOptions, maxOutputTokens *int) *thinkingCo
 		return nil
 	}
 
+	// Thoughts are asked for even when excluded, and only withheld from
+	// the caller: the signatures of a turn must come back whatever the
+	// caller wants to read.
 	return &thinkingConfig{
 		ThinkingBudget:  &budget,
-		IncludeThoughts: budget != 0 && !opts.Exclude,
+		IncludeThoughts: budget != 0,
 	}
 }
 
 // buildContents converts genai messages: system messages are hoisted into
-// the system instruction, the rest becomes user and model turns, a message
-// joining the previous turn when it has the same role, so that the answers
-// to parallel function calls share one turn as the API requires.
+// the system instruction, the rest becomes user and model turns. Tool
+// results join the previous turn when it holds tool results, so that the
+// answers to parallel function calls share one turn as the API requires; a
+// user message after them opens a turn of its own. Model messages that
+// follow each other share one turn.
 //
 // Cache hints are dropped: the API caches prompt prefixes on its own.
 func buildContents(msgs []llm.Message) (*content, []content, error) {
@@ -265,15 +282,20 @@ func buildContents(msgs []llm.Message) (*content, []content, error) {
 		names = map[string]string{}
 	)
 
-	add := func(role string, parts []part) {
+	// toolTurn marks the index of the last turn when it holds tool results.
+	toolTurn := -1
+	add := func(role string, parts []part, toolResults bool) {
 		if len(parts) == 0 {
 			return
 		}
-		if n := len(contents); n > 0 && contents[n-1].Role == role {
+		if n := len(contents); n > 0 && contents[n-1].Role == role && (toolTurn == n-1) == toolResults {
 			contents[n-1].Parts = append(contents[n-1].Parts, parts...)
 			return
 		}
 		contents = append(contents, content{Role: role, Parts: parts})
+		if toolResults {
+			toolTurn = len(contents) - 1
+		}
 	}
 
 	for _, m := range msgs {
@@ -302,7 +324,7 @@ func buildContents(msgs []llm.Message) (*content, []content, error) {
 				}
 				parts = append(parts, p)
 			}
-			add("user", parts)
+			add("user", parts, false)
 
 		case llm.RoleAssistant:
 			if len(m.Attachments()) > 0 {
@@ -312,7 +334,7 @@ func buildContents(msgs []llm.Message) (*content, []content, error) {
 				return nil, nil, llm.NewValidationError("messages", "assistant message has no content to send")
 			}
 			signatures := thoughtSignatures(m)
-			add("model", []part{{Text: m.Content(), ThoughtSignature: signatures[""]}})
+			add("model", []part{{Text: m.Content(), ThoughtSignature: signatures[""]}}, false)
 
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
@@ -337,12 +359,14 @@ func buildContents(msgs []llm.Message) (*content, []content, error) {
 					FunctionCall:     &functionCall{ID: tc.ID(), Name: tc.Name(), Args: args},
 					ThoughtSignature: signatures[tc.ID()],
 				}
+				// Google validates the signature of the first function call
+				// of a step only: parallel calls after it carry none.
 				if i == 0 && p.ThoughtSignature == "" {
 					p.ThoughtSignature = skipSignature
 				}
 				parts = append(parts, p)
 			}
-			add("model", parts)
+			add("model", parts, false)
 
 		case llm.RoleTool:
 			toolMessage, ok := m.(llm.ToolMessage)
@@ -353,7 +377,7 @@ func buildContents(msgs []llm.Message) (*content, []content, error) {
 			if !known {
 				return nil, nil, llm.NewValidationError("messages", fmt.Sprintf("tool result '%s' answers no earlier tool call", toolMessage.ID()))
 			}
-			add("user", toolResultParts(toolMessage, name))
+			add("user", toolResultParts(toolMessage, name), true)
 
 		default:
 			return nil, nil, errors.Errorf("unsupported message role '%s'", m.Role())

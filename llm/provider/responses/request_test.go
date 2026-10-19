@@ -101,6 +101,21 @@ func TestBuildRequest_ConvertsAConversationWithToolsAndReasoning(t *testing.T) {
 	}
 }
 
+func TestBuildRequest_AsksForEncryptedReasoningOnlyWithReasoning(t *testing.T) {
+	disabled := false
+	for name, funcs := range map[string][]llm.ChatCompletionOptionFunc{
+		"no reasoning":       nil,
+		"disabled reasoning": {llm.WithReasoning(&llm.ReasoningOptions{Enabled: &disabled})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := wire(t, append(funcs, llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))...)
+			if include, ok := body["include"]; ok {
+				t.Errorf("include = %v, want none: models without reasoning refuse it", include)
+			}
+		})
+	}
+}
+
 func TestBuildRequest_ConvertsAttachments(t *testing.T) {
 	image, _ := llm.NewImageAttachment("image/png", "aGVsbG8=", false)
 	remote, _ := llm.NewImageAttachment("image/jpeg", "https://example.com/cat.jpg", true)

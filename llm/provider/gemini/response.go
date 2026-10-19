@@ -142,15 +142,18 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 			}
 			continue
 		case p.Thought:
+			// Thoughts are not replayed, so neither is their signature.
 			reasoning.WriteString(p.Text)
 		default:
 			if p.Text != "" {
 				answered = true
 			}
 			text.WriteString(p.Text)
-		}
-		if p.ThoughtSignature != "" {
-			details = append(details, signatureDetail("", p.ThoughtSignature, len(details)))
+			// The text is replayed as one part: it takes the signature of
+			// the last signed text part, which is where the API puts it.
+			if p.ThoughtSignature != "" {
+				details = append(details, signatureDetail("", p.ThoughtSignature, len(details)))
+			}
 		}
 	}
 

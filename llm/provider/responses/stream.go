@@ -115,6 +115,9 @@ func (e *streamEmitter) handle(data []byte) bool {
 	case "response.output_text.delta", "response.refusal.delta":
 		e.textSent[event.OutputIndex] = true
 		if event.Delta != "" {
+			// A gateway may stream a message without announcing its item:
+			// text sent is an answer, whatever comes next.
+			e.answered = true
 			e.send(llm.NewStreamDelta(llm.RoleAssistant, event.Delta))
 		}
 
@@ -142,7 +145,7 @@ func (e *streamEmitter) handle(data []byte) bool {
 	case "response.completed", "response.incomplete":
 		e.recordUsage(event.Response)
 		if !e.answered {
-			e.sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(llm.ErrNoMessage)))
+			e.fail(errors.WithStack(llm.ErrNoMessage))
 			return true
 		}
 		e.sendTerminal(llm.NewCompleteStreamChunk(newUsage(e.usage)))

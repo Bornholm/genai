@@ -9,15 +9,20 @@
 // Where the Responses API departs from the shared genai options, the
 // provider absorbs the difference:
 //
-//   - Requests are not stored (store: false) and ask for the encrypted
-//     content of reasoning items, which come back as reasoning details
-//     (format "openai-responses-v1") and are replayed on the next turn.
-//     Reasoning from another provider cannot be replayed and is dropped.
-//   - Reasoning takes an effort level only. A token budget is mapped to the
-//     effort whose share of max_output_tokens it is closest to, or by
-//     absolute thresholds when no max_output_tokens is set. The readable
-//     reasoning is the summary the API returns, or the raw reasoning text of
-//     the models that return it; Exclude stops asking for a summary.
+//   - Requests are not stored (store: false). When reasoning is asked for,
+//     they also ask for the encrypted content of reasoning items, which
+//     comes back as reasoning details (format "openai-responses-v1") and is
+//     replayed on the next turn: models without reasoning refuse that
+//     request. A reasoning model left to its default effort therefore
+//     reasons without its reasoning being replayed. Reasoning from another
+//     provider cannot be replayed and is dropped.
+//   - Reasoning takes an effort level only, sent as given, as the openai
+//     provider does: "none" and "xhigh" are refused by the models that do
+//     not know them. A token budget is mapped to the effort whose share of
+//     max_output_tokens it is closest to, or by absolute thresholds when no
+//     max_output_tokens is set. The readable reasoning is the summary the
+//     API returns, or the raw reasoning text of the models that return it;
+//     Exclude stops asking for a summary.
 //   - Tools are sent in non-strict mode: strict mode requires every
 //     property to be required, which genai's tool schemas do not promise.
 //   - The seed and cache hints are dropped: the API has neither, prompt

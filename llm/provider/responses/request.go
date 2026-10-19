@@ -105,7 +105,6 @@ func buildRequest(opts *llm.ChatCompletionOptions, model string, stream bool) (*
 		MaxOutputTokens: opts.MaxCompletionTokens,
 		PromptCacheKey:  opts.SessionID,
 		Store:           false,
-		Include:         []string{includeEncryptedReasoning},
 		Stream:          stream,
 		extra:           opts.ExtraFields,
 	}
@@ -131,6 +130,11 @@ func buildRequest(opts *llm.ChatCompletionOptions, model string, stream bool) (*
 	}
 
 	req.Reasoning = buildReasoning(opts.Reasoning, opts.MaxCompletionTokens)
+	// Models without reasoning refuse to return encrypted content: it is
+	// only asked for when reasoning is.
+	if req.Reasoning != nil && req.Reasoning.Effort != string(llm.ReasoningEffortNone) {
+		req.Include = []string{includeEncryptedReasoning}
+	}
 
 	if opts.ResponseFormat == llm.ResponseFormatJSON {
 		format := textFormat{Type: "json_object"}

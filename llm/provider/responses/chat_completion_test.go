@@ -92,6 +92,13 @@ func TestChatCompletion_ReportsUpstreamErrors(t *testing.T) {
 			status:    http.StatusBadGateway,
 			retryable: true,
 		},
+		"error body without a status": {
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"error":{"code":"context_length_exceeded","message":"too long"}}`)
+			},
+			status: http.StatusBadRequest,
+		},
 	}
 
 	for name, c := range cases {
@@ -266,6 +273,20 @@ func TestChatCompletionStream_TakesWholeItemsFromAGateway(t *testing.T) {
 	}
 }
 
+func TestChatCompletionStream_TextDeltasWithoutTheirItemAreAnAnswer(t *testing.T) {
+	server := streamServer(t,
+		`{"type":"response.output_text.delta","output_index":0,"delta":"Hello."}`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+
+	if got.content != "Hello." || !got.terminal.IsComplete() {
+		t.Errorf("content %q, terminal %v", got.content, got.terminal)
+	}
+}
+
 func TestChatCompletionStream_HidesExcludedReasoningButKeepsItsDetails(t *testing.T) {
 	server := streamServer(t,
 		`{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"Secret."}`,
@@ -315,8 +336,9 @@ func TestChatCompletionStream_EndsOnFailures(t *testing.T) {
 		},
 		"nothing produced": {
 			events: []string{
-				`{"type":"response.completed","response":{"status":"completed","output":[]}}`,
+				`{"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":40,"total_tokens":50}}}`,
 			},
+			usage:     10,
 			noMessage: true,
 		},
 	}
@@ -328,14 +350,11 @@ func TestChatCompletionStream_EndsOnFailures(t *testing.T) {
 
 			got := collect(t, server)
 			err := got.terminal.Error()
-			if c.noMessage {
-				if !errors.Is(err, llm.ErrNoMessage) {
-					t.Fatalf("error = %v, want ErrNoMessage", err)
-				}
-				return
-			}
 			var httpErr *llm.HTTPError
-			if !errors.As(err, &httpErr) || httpErr.StatusCode != c.status {
+			switch {
+			case c.noMessage && !errors.Is(err, llm.ErrNoMessage):
+				t.Fatalf("error = %v, want ErrNoMessage", err)
+			case !c.noMessage && (!errors.As(err, &httpErr) || httpErr.StatusCode != c.status):
 				t.Fatalf("error = %v, want status %d", err, c.status)
 			}
 			if c.usage > 0 && (got.terminal.Usage() == nil || got.terminal.Usage().PromptTokens() != c.usage) {

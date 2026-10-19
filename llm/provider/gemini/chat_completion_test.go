@@ -20,7 +20,7 @@ func TestChatCompletion_ReadsThoughtsToolCallsSignaturesAndUsage(t *testing.T) {
 		path, key = r.URL.Path, r.Header.Get("x-goog-api-key")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[
-			{"text":"Considering the cities.","thought":true},
+			{"text":"Considering the cities.","thought":true,"thoughtSignature":"sig-thought"},
 			{"text":"Checking both."},
 			{"functionCall":{"name":"weather","args":{"city":"Paris"}},"thoughtSignature":"sig-1"},
 			{"functionCall":{"id":"fc-2","name":"weather","args":{"city":"Lyon"}}}

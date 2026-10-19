@@ -84,6 +84,7 @@ func (e *streamEmitter) part(p part) {
 		e.signature(id, p.ThoughtSignature)
 		return
 	case p.Thought:
+		// Thoughts are not replayed, so neither is their signature.
 		if p.Text != "" && !e.excludeReasoning {
 			e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", p.Text, nil))
 		}
@@ -92,8 +93,8 @@ func (e *streamEmitter) part(p part) {
 			e.answered = true
 			e.send(llm.NewStreamDelta(llm.RoleAssistant, p.Text))
 		}
+		e.signature("", p.ThoughtSignature)
 	}
-	e.signature("", p.ThoughtSignature)
 }
 
 // signature emits a thought signature as a reasoning detail.
