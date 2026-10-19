@@ -15,6 +15,7 @@ type Client struct {
 	transcription   llm.TranscriptionClient
 	imageGeneration llm.ImageGenerationClient
 	decision        llm.DecisionClient
+	discovery       llm.DiscoveryClient
 }
 
 // ChatCompletion implements llm.Client.
@@ -110,6 +111,24 @@ func (c *Client) Decision(ctx context.Context, state any, questions llm.Question
 	return response, nil
 }
 
+// Models implements [llm.DiscoveryClient].
+//
+// Like ImageGeneration, that interface is deliberately NOT part of
+// [llm.Client]: callers reach it with a type assertion on the concrete
+// client returned by Create.
+func (c *Client) Models(ctx context.Context) ([]llm.ModelInfo, error) {
+	if c.discovery == nil {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+
+	models, err := c.discovery.Models(ctx)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return models, nil
+}
+
 func NewClient(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient, transcription llm.TranscriptionClient) *Client {
 	return &Client{
 		chatCompletion: chatCompletion,
@@ -135,6 +154,15 @@ func NewClientWithDecision(chatCompletion llm.ChatCompletionClient, embeddings l
 	return client
 }
 
+// NewClientWithDiscovery builds a client that also lists the provider's
+// models. Kept separate from NewClientWithDecision so existing callers keep
+// compiling.
+func NewClientWithDiscovery(chatCompletion llm.ChatCompletionClient, embeddings llm.EmbeddingsClient, transcription llm.TranscriptionClient, imageGeneration llm.ImageGenerationClient, decision llm.DecisionClient, discovery llm.DiscoveryClient) *Client {
+	client := NewClientWithDecision(chatCompletion, embeddings, transcription, imageGeneration, decision)
+	client.discovery = discovery
+	return client
+}
+
 // Close releases the underlying clients that implement io.Closer, such as
 // plugin clients holding a configured instance in a plugin process. Clients
 // without a Close are left alone. Every closer is called even when one
@@ -142,7 +170,7 @@ func NewClientWithDecision(chatCompletion llm.ChatCompletionClient, embeddings l
 // gets closed once per capability, so its Close must tolerate repeats.
 func (c *Client) Close() error {
 	var first error
-	for _, sub := range []any{c.chatCompletion, c.embeddings, c.transcription, c.imageGeneration, c.decision} {
+	for _, sub := range []any{c.chatCompletion, c.embeddings, c.transcription, c.imageGeneration, c.decision, c.discovery} {
 		closer, ok := sub.(io.Closer)
 		if !ok {
 			continue
@@ -171,5 +199,6 @@ var (
 	_ llm.MessagesRelayClient   = &Client{}
 	_ llm.ImageGenerationClient = &Client{}
 	_ llm.DecisionClient        = &Client{}
+	_ llm.DiscoveryClient       = &Client{}
 	_ io.Closer                 = &Client{}
 )

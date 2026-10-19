@@ -1,8 +1,8 @@
 // Package anthropic implements the genai chat completion client for the
 // Anthropic Messages API, on top of the official Go SDK.
 //
-// Only chat completion is registered: Anthropic exposes no embeddings,
-// transcription or image generation endpoint.
+// Only chat completion and model discovery are registered: Anthropic exposes
+// no embeddings, transcription or image generation endpoint.
 //
 // Where the Messages API departs from the shared genai options, the
 // provider absorbs the difference instead of surfacing a remote 400:
@@ -54,17 +54,7 @@ func init() {
 		Name,
 		defaultOptions,
 		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
-			// The SDK would otherwise fall back on the host's ambient
-			// identity (ANTHROPIC_API_KEY, auth token, on-disk profiles,
-			// workload identity federation). A gateway carrying one account
-			// per provider must fail on a missing key, not bill the host.
-			client := anthropicsdk.NewClient(
-				option.WithoutEnvironmentDefaults(),
-				option.WithBaseURL(normalizeBaseURL(opts.BaseURL)),
-				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
-				option.WithAPIKey(opts.APIKey),
-				option.WithHTTPClient(httpClient),
-			)
+			client := newSDKClient(opts)
 
 			maxTokens := opts.MaxTokens
 			if maxTokens <= 0 {
@@ -75,6 +65,30 @@ func init() {
 			chat.relay = &relayTarget{baseURL: normalizeBaseURL(opts.BaseURL), apiKey: opts.APIKey}
 			return chat, nil
 		},
+	)
+
+	provider.RegisterDiscovery(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.DiscoveryClient, error) {
+			return NewDiscoveryClient(newSDKClient(opts)), nil
+		},
+	)
+}
+
+// newSDKClient builds the SDK client for the configured account.
+//
+// The SDK would otherwise fall back on the host's ambient identity
+// (ANTHROPIC_API_KEY, auth token, on-disk profiles, workload identity
+// federation). A gateway carrying one account per provider must fail on a
+// missing key, not bill the host.
+func newSDKClient(opts *Options) anthropicsdk.Client {
+	return anthropicsdk.NewClient(
+		option.WithoutEnvironmentDefaults(),
+		option.WithBaseURL(normalizeBaseURL(opts.BaseURL)),
+		option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
+		option.WithAPIKey(opts.APIKey),
+		option.WithHTTPClient(httpClient),
 	)
 }
 

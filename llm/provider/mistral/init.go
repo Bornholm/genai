@@ -62,4 +62,20 @@ func init() {
 			return genai.NewTranscriptionClient(client, opts.Model), nil
 		},
 	)
+
+	provider.RegisterDiscovery(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.DiscoveryClient, error) {
+			options := []option.RequestOption{
+				option.WithBaseURL(opts.BaseURL),
+				option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
+			}
+			if opts.APIKey != "" {
+				options = append(options, option.WithAPIKey(opts.APIKey))
+			}
+			client := openaisdk.NewClient(options...)
+			return genai.NewDiscoveryClient(client), nil
+		},
+	)
 }
