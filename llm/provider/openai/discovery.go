@@ -12,7 +12,9 @@ import (
 )
 
 // DiscoveryClient lists models through the OpenAI models API (GET /models).
-// Any OpenAI-compatible gateway serving that route works as well.
+// Any OpenAI-compatible gateway serving that route works as well, as long as
+// it returns its whole list at once: the route is not paginated, so no
+// cursor is ever sent and a gateway capping the page loses the rest.
 type DiscoveryClient struct {
 	client openaisdk.Client
 }

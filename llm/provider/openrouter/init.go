@@ -58,7 +58,7 @@ func init() {
 		Name,
 		defaultOptions,
 		func(ctx context.Context, opts *Options) (llm.DiscoveryClient, error) {
-			return NewDiscoveryClient(opts.BaseURL, opts.APIKey), nil
+			return NewDiscoveryClient(nil, opts.BaseURL, opts.APIKey), nil
 		},
 	)
 }

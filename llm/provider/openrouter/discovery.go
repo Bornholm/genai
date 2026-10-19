@@ -2,6 +2,8 @@ package openrouter
 
 import (
 	"context"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -44,12 +46,16 @@ func (c *DiscoveryClient) Models(ctx context.Context) ([]llm.ModelInfo, error) {
 	return models, nil
 }
 
-// NewDiscoveryClient lists the models served at baseURL; an empty baseURL
-// keeps the SDK's default, the production API.
-func NewDiscoveryClient(baseURL, apiKey string) *DiscoveryClient {
+// NewDiscoveryClient lists the models served at baseURL, the API root
+// (".../api/v1"); an empty baseURL keeps the SDK's default, the production
+// API. A nil httpClient keeps the SDK's.
+func NewDiscoveryClient(httpClient *http.Client, baseURL, apiKey string) *DiscoveryClient {
 	config := openrouter.DefaultConfig(apiKey)
-	if baseURL != "" {
+	if baseURL = strings.TrimSuffix(baseURL, "/"); baseURL != "" {
 		config.BaseURL = baseURL
+	}
+	if httpClient != nil {
+		config.HTTPClient = httpClient
 	}
 	return &DiscoveryClient{client: openrouter.NewClientWithConfig(*config)}
 }
