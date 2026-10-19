@@ -14,7 +14,7 @@ import (
 // Le parsing s'effectue en deux passes :
 //  1. Identification du provider via {prefix}CHAT_COMPLETION_PROVIDER (ou
 //     EMBEDDINGS_PROVIDER, TRANSCRIPTION_PROVIDER, IMAGE_GENERATION_PROVIDER,
-//     DECISION_PROVIDER)
+//     DECISION_PROVIDER, DISCOVERY_PROVIDER)
 //  2. Peuplement des options spécifiques au provider via {prefix}{TYPE}_{PROVIDER_UPPER}_*
 //
 // Si le provider n'est pas enregistré et qu'aucun fallback (voir provider.RegisterFallback)
@@ -78,6 +78,16 @@ func With(variableNamePrefix string, envFiles ...string) provider.OptionFunc {
 			return errors.Wrap(err, "could not resolve decision options")
 		}
 		opts.Decision = decisionResolved
+
+		// Discovery
+		discoveryResolved, err := resolveOptions(
+			variableNamePrefix+"DISCOVERY_",
+			provider.NewDiscoveryProviderOptions,
+		)
+		if err != nil {
+			return errors.Wrap(err, "could not resolve discovery options")
+		}
+		opts.Discovery = discoveryResolved
 
 		return nil
 	}

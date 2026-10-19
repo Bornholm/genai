@@ -53,4 +53,12 @@ func init() {
 			return NewImageGenerationClient(nil, opts.BaseURL, opts.APIKey, opts.Model), nil
 		},
 	)
+
+	provider.RegisterDiscovery(
+		Name,
+		defaultOptions,
+		func(ctx context.Context, opts *Options) (llm.DiscoveryClient, error) {
+			return NewDiscoveryClient(nil, opts.BaseURL, opts.APIKey), nil
+		},
+	)
 }

@@ -29,6 +29,7 @@ type Options struct {
 	Transcription   *ResolvedClientOptions
 	ImageGeneration *ResolvedClientOptions
 	Decision        *ResolvedClientOptions
+	Discovery       *ResolvedClientOptions
 }
 
 // Validator est une interface optionnelle que les structs d'options peuvent implémenter.
@@ -150,6 +151,27 @@ func WithImageGeneration[T any](name Name, opts T) OptionFunc {
 func WithDecision[T any](name Name, opts T) OptionFunc {
 	return func(o *Options) error {
 		o.Decision = &ResolvedClientOptions{
+			Provider: name,
+			Specific: &opts,
+		}
+		return nil
+	}
+}
+
+// WithDiscovery returns an OptionFunc that configures model discovery options
+// for a specific provider. Discovery ignores the model of the options. The
+// opts value is copied to ensure immutability of the original.
+//
+// Example:
+//
+//	client, err := provider.Create(ctx,
+//	    provider.WithDiscovery("openai", openai.Options{
+//	        CommonOptions: provider.CommonOptions{APIKey: "sk-..."},
+//	    }),
+//	)
+func WithDiscovery[T any](name Name, opts T) OptionFunc {
+	return func(o *Options) error {
+		o.Discovery = &ResolvedClientOptions{
 			Provider: name,
 			Specific: &opts,
 		}

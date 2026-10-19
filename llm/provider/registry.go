@@ -37,6 +37,7 @@ const (
 	CapabilityTranscription   Capability = "transcription"
 	CapabilityImageGeneration Capability = "image_generation"
 	CapabilityDecision        Capability = "decision"
+	CapabilityDiscovery       Capability = "discovery"
 )
 
 // FallbackEntry is what a FallbackFunc returns for a provider it can serve.
@@ -68,6 +69,7 @@ type Registry struct {
 	transcriptionEntries   map[Name]providerEntry
 	imageGenerationEntries map[Name]providerEntry
 	decisionEntries        map[Name]providerEntry
+	discoveryEntries       map[Name]providerEntry
 
 	fallbacksMu sync.RWMutex
 	fallbacks   []FallbackFunc
@@ -94,6 +96,8 @@ func (r *Registry) entries(capability Capability) map[Name]providerEntry {
 		return r.imageGenerationEntries
 	case CapabilityDecision:
 		return r.decisionEntries
+	case CapabilityDiscovery:
+		return r.discoveryEntries
 	default:
 		return nil
 	}
@@ -202,6 +206,28 @@ func RegisterDecision[T any](
 	}
 }
 
+// RegisterDiscovery registers a provider able to list the models it serves,
+// in the global registry.
+func RegisterDiscovery[T any](
+	name Name,
+	newOptions func() *T,
+	factory func(ctx context.Context, opts *T) (llm.DiscoveryClient, error),
+) {
+	defaultRegistry.discoveryEntries[name] = providerEntry{
+		newOptions: func() any { return newOptions() },
+		createClient: func(ctx context.Context, opts any) (any, error) {
+			return factory(ctx, opts.(*T))
+		},
+	}
+}
+
+// NewDiscoveryProviderOptions returns a fresh options value (with its
+// defaults) for the given discovery provider, or nil when neither a
+// registration nor a fallback (see RegisterFallback) knows it.
+func NewDiscoveryProviderOptions(name Name) any {
+	return defaultRegistry.newOptions(CapabilityDiscovery, name)
+}
+
 // NewDecisionProviderOptions retourne une instance d'options (avec les defaults)
 // pour le provider de décision donné, ou nil si ni une inscription ni un
 // fallback (voir RegisterFallback) ne le connaît.
@@ -290,12 +316,18 @@ func (r *Registry) Create(ctx context.Context, funcs ...OptionFunc) (llm.Client,
 	}
 	created = append(created, decision)
 
-	if chatCompletion == nil && embeddings == nil && transcription == nil && imageGeneration == nil && decision == nil {
+	discovery, err := createClientFromResolved[llm.DiscoveryClient](ctx, r, CapabilityDiscovery, opts.Discovery)
+	if err != nil && !errors.Is(err, ErrNotConfigured) {
+		return nil, errors.WithStack(err)
+	}
+	created = append(created, discovery)
+
+	if chatCompletion == nil && embeddings == nil && transcription == nil && imageGeneration == nil && decision == nil && discovery == nil {
 		return nil, errors.WithStack(ErrNotConfigured)
 	}
 
 	success = true
-	return NewClientWithDecision(chatCompletion, embeddings, transcription, imageGeneration, decision), nil
+	return NewClientWithDiscovery(chatCompletion, embeddings, transcription, imageGeneration, decision, discovery), nil
 }
 
 // createClientFromResolved crée un client T à partir des options résolues.
@@ -343,6 +375,7 @@ func newRegistry() *Registry {
 		transcriptionEntries:   map[Name]providerEntry{},
 		imageGenerationEntries: map[Name]providerEntry{},
 		decisionEntries:        map[Name]providerEntry{},
+		discoveryEntries:       map[Name]providerEntry{},
 	}
 }
 
