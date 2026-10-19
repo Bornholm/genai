@@ -38,12 +38,7 @@ func (c *EmbeddingsClient) Embeddings(ctx context.Context, inputs []string, func
 	slog.DebugContext(ctx, "embeddings completed", slog.Duration("duration", time.Since(before)))
 
 	if err != nil {
-		var reqErr *openrouter.RequestError
-		if errors.As(err, &reqErr) {
-			return nil, errors.WithStack(llm.RateLimitError(reqErr.HTTPStatusCode, reqErr.Error()))
-		}
-
-		return nil, errors.WithStack(err)
+		return nil, providerError(err)
 	}
 
 	embeddings := make([][]float64, 0)

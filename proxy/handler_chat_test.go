@@ -26,7 +26,7 @@ func (m *mockChatClient) ChatCompletionStream(_ context.Context, _ ...llm.ChatCo
 }
 
 func (m *mockChatClient) Embeddings(_ context.Context, _ []string, _ ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
-	return nil, nil
+	return nil, m.err
 }
 
 func (m *mockChatClient) Transcription(_ context.Context, _ []byte, _ ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
