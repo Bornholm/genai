@@ -200,4 +200,16 @@ func TestBuildReasoning(t *testing.T) {
 	}
 }
 
+func TestToolCallArguments_ReplaysMalformedArgumentsAsAnEmptyObject(t *testing.T) {
+	for _, parameters := range []any{nil, "", `{"a":1}{"b":2}`, []byte("{")} {
+		got, err := toolCallArguments(parameters)
+		if err != nil || got != "{}" {
+			t.Errorf("toolCallArguments(%q) = %q, %v", parameters, got, err)
+		}
+	}
+	if got, _ := toolCallArguments(`{"city":"Paris"}`); got != `{"city":"Paris"}` {
+		t.Errorf("valid arguments must be kept, got %q", got)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

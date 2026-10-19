@@ -220,18 +220,20 @@ func replayedReasoning(m llm.Message) []inputItem {
 }
 
 // toolCallArguments renders the tool call parameters, kept as a JSON string
-// by genai, as the arguments string of a function call.
+// by genai, as the arguments string of a function call. Invalid JSON, as
+// some models emit, is replayed as an empty object, as the openai provider
+// does: the API would reject the whole request.
 func toolCallArguments(parameters any) (string, error) {
 	switch typed := parameters.(type) {
 	case nil:
 		return "{}", nil
 	case string:
-		if typed == "" {
+		if !json.Valid([]byte(typed)) {
 			return "{}", nil
 		}
 		return typed, nil
 	case []byte:
-		if len(typed) == 0 {
+		if !json.Valid(typed) {
 			return "{}", nil
 		}
 		return string(typed), nil

@@ -160,8 +160,10 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 	for _, item := range res.Output {
 		switch item.Type {
 		case "message":
-			answered = true
-			content.WriteString(messageText(item))
+			if text := messageText(item); text != "" {
+				answered = true
+				content.WriteString(text)
+			}
 		case "reasoning":
 			if text := reasoningText(item); text != "" {
 				reasoning = append(reasoning, text)

@@ -121,16 +121,25 @@ func TestChatCompletion_ReportsUpstreamErrors(t *testing.T) {
 }
 
 func TestChatCompletion_EmptyOutputIsNoMessage(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[]}]}`)
-	}))
-	defer server.Close()
+	outputs := map[string]string{
+		"reasoning only": `[{"type":"reasoning","id":"rs_1","summary":[]}]`,
+		"empty message":  `[{"type":"message","content":[]}]`,
+	}
 
-	_, err := NewChatCompletionClient(nil, server.URL, "", "gpt-test").
-		ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
-	if !errors.Is(err, llm.ErrNoMessage) {
-		t.Fatalf("error = %v, want ErrNoMessage", err)
+	for name, output := range outputs {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"status":"completed","output":`+output+`}`)
+			}))
+			defer server.Close()
+
+			_, err := NewChatCompletionClient(nil, server.URL, "", "gpt-test").
+				ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+			if !errors.Is(err, llm.ErrNoMessage) {
+				t.Fatalf("error = %v, want ErrNoMessage", err)
+			}
+		})
 	}
 }
 
@@ -270,6 +279,37 @@ func TestChatCompletionStream_TakesWholeItemsFromAGateway(t *testing.T) {
 	}
 	if !got.terminal.IsComplete() {
 		t.Errorf("terminal = %v", got.terminal)
+	}
+}
+
+func TestChatCompletionStream_AnEmptyDeltaLeavesTheTextToTheItem(t *testing.T) {
+	server := streamServer(t,
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","content":[]}}`,
+		`{"type":"response.output_text.delta","output_index":0,"delta":""}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"Hello."}]}}`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+
+	if got.content != "Hello." || !got.terminal.IsComplete() {
+		t.Errorf("content %q, terminal %v", got.content, got.terminal)
+	}
+}
+
+func TestChatCompletionStream_AnEmptyMessageIsNoMessage(t *testing.T) {
+	server := streamServer(t,
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","content":[]}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[]}}`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+
+	if !errors.Is(got.terminal.Error(), llm.ErrNoMessage) {
+		t.Errorf("terminal = %v, want ErrNoMessage", got.terminal)
 	}
 }
 

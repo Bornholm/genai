@@ -174,7 +174,8 @@ func getProviderAndModel(envPrefix string) (provider, model string) {
 	providerEnv := envPrefix + "CHAT_COMPLETION_PROVIDER"
 	provider = os.Getenv(providerEnv)
 
-	modelEnv := envPrefix + "CHAT_COMPLETION_" + strings.ToUpper(provider) + "_MODEL"
+	// Hyphens become underscores, as in llm/provider/env.
+	modelEnv := envPrefix + "CHAT_COMPLETION_" + strings.ReplaceAll(strings.ToUpper(provider), "-", "_") + "_MODEL"
 	model = os.Getenv(modelEnv)
 
 	return provider, model

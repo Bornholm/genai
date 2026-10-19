@@ -145,12 +145,17 @@ func (c *ChatCompletionClient) post(ctx context.Context, method string, req *req
 
 // modelPath returns the resource name of a model, accepting the bare ID
 // ("gemini-2.5-flash") as well as the resource name the API lists
-// ("models/gemini-2.5-flash").
+// ("models/gemini-2.5-flash"). Each segment is escaped on its own, so that
+// a gateway's "vendor/model" ID keeps its slash.
 func modelPath(model string) string {
-	if strings.HasPrefix(model, "models/") {
-		return model
+	if !strings.HasPrefix(model, "models/") {
+		model = "models/" + model
 	}
-	return "models/" + url.PathEscape(model)
+	segments := strings.Split(model, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // excludeReasoning reports whether the caller asked not to see the

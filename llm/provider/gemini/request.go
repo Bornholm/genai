@@ -252,6 +252,10 @@ func buildThinking(opts *llm.ReasoningOptions, maxOutputTokens *int) *thinkingCo
 		}
 	case opts.Enabled != nil && *opts.Enabled:
 		budget = dynamicBudget
+	case opts.Exclude:
+		// The model keeps its default budget; its thoughts are still asked
+		// for, for their signatures.
+		return &thinkingConfig{IncludeThoughts: true}
 	default:
 		return nil
 	}
@@ -440,7 +444,9 @@ func thoughtSignatures(m llm.Message) map[string]string {
 }
 
 // toolCallArgs decodes the tool call parameters, kept as a JSON string by
-// genai, into the object a function call carries.
+// genai, into the object a function call carries. Arguments that are not a
+// JSON object, as some models emit, are replayed as an empty object, as the
+// openai provider does: rejecting them would block the conversation.
 func toolCallArgs(parameters any) (map[string]any, error) {
 	var raw []byte
 	switch typed := parameters.(type) {
@@ -463,11 +469,8 @@ func toolCallArgs(parameters any) (map[string]any, error) {
 		return map[string]any{}, nil
 	}
 	var args map[string]any
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if args == nil {
-		args = map[string]any{}
+	if err := json.Unmarshal(raw, &args); err != nil || args == nil {
+		return map[string]any{}, nil
 	}
 	return args, nil
 }

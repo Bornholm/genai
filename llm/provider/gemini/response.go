@@ -95,6 +95,19 @@ func newCallID() string {
 	return "call_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
+// callArguments renders the arguments of a function call as genai keeps
+// them, a JSON object: a call without arguments has an empty one.
+func callArguments(args map[string]any) string {
+	if args == nil {
+		return "{}"
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
 // signatureDetail keeps a thought signature for the next turn, under the ID
 // of the function call it came with, or an empty ID for a text part.
 func signatureDetail(id, signature string, index int) llm.ReasoningDetail {
@@ -135,7 +148,7 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 			if id == "" {
 				id = newCallID()
 			}
-			args, _ := json.Marshal(p.FunctionCall.Args)
+			args := callArguments(p.FunctionCall.Args)
 			toolCalls = append(toolCalls, llm.NewToolCall(id, p.FunctionCall.Name, string(args)))
 			if p.ThoughtSignature != "" {
 				details = append(details, signatureDetail(id, p.ThoughtSignature, len(details)))

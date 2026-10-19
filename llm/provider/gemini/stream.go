@@ -75,7 +75,7 @@ func (e *streamEmitter) part(p part) {
 		if id == "" {
 			id = newCallID()
 		}
-		args, _ := json.Marshal(p.FunctionCall.Args)
+		args := callArguments(p.FunctionCall.Args)
 		index := e.toolCount
 		e.toolCount++
 		e.send(llm.NewStreamDelta(llm.RoleAssistant, "",

@@ -97,8 +97,6 @@ func (e *streamEmitter) handle(data []byte) bool {
 			return false
 		}
 		switch event.Item.Type {
-		case "message":
-			e.answered = true
 		case "function_call":
 			e.answered = true
 			index := e.toolIndex(event.OutputIndex)
@@ -113,10 +111,11 @@ func (e *streamEmitter) handle(data []byte) bool {
 		}
 
 	case "response.output_text.delta", "response.refusal.delta":
-		e.textSent[event.OutputIndex] = true
 		if event.Delta != "" {
 			// A gateway may stream a message without announcing its item:
-			// text sent is an answer, whatever comes next.
+			// text sent is an answer, whatever comes next. An empty delta
+			// sends nothing, so the finished item may still carry the text.
+			e.textSent[event.OutputIndex] = true
 			e.answered = true
 			e.send(llm.NewStreamDelta(llm.RoleAssistant, event.Delta))
 		}
@@ -186,10 +185,12 @@ func (e *streamEmitter) handle(data []byte) bool {
 func (e *streamEmitter) itemDone(outputIndex int, item outputItem) {
 	switch item.Type {
 	case "message":
-		e.answered = true
+		// A message without text is no answer: the stream then ends on
+		// ErrNoMessage, which a retry handles.
 		if !e.textSent[outputIndex] {
 			e.textSent[outputIndex] = true
 			if text := messageText(item); text != "" {
+				e.answered = true
 				e.send(llm.NewStreamDelta(llm.RoleAssistant, text))
 			}
 		}

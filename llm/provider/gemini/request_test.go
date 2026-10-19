@@ -206,6 +206,10 @@ func TestBuildThinking(t *testing.T) {
 		"effort, floored": {opts: llm.NewReasoningOptions(llm.ReasoningEffortLow), maxTokens: 300, budget: minEffortBudget, thoughts: true},
 	}
 
+	if config := buildThinking(&llm.ReasoningOptions{Exclude: true}, nil); config == nil || config.ThinkingBudget != nil || !config.IncludeThoughts {
+		t.Errorf("excluded alone must keep the default budget and ask for thoughts, got %+v", config)
+	}
+
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			var maxTokens *int
@@ -217,5 +221,40 @@ func TestBuildThinking(t *testing.T) {
 				t.Errorf("config = %+v, want budget %d thoughts %v", config, c.budget, c.thoughts)
 			}
 		})
+	}
+}
+
+func TestBuildRequest_ReplaysMalformedArgumentsAsAnEmptyObject(t *testing.T) {
+	body := wire(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Ping?"),
+		llm.NewToolCallsMessage(llm.NewToolCall("call_1", "ping", `{"a":1}{"b":2}`)),
+		llm.NewToolMessage("call_1", llm.NewToolResult("pong")),
+	))
+
+	call := body["contents"].([]any)[1].(map[string]any)["parts"].([]any)[0].(map[string]any)["functionCall"].(map[string]any)
+	if args, ok := call["args"].(map[string]any); !ok || len(args) != 0 {
+		t.Errorf("call = %v", call)
+	}
+}
+
+func TestModelPath(t *testing.T) {
+	cases := map[string]string{
+		"gemini-2.5-flash":        "models/gemini-2.5-flash",
+		"models/gemini-2.5-flash": "models/gemini-2.5-flash",
+		"vendor/model name":       "models/vendor/model%20name",
+	}
+	for model, want := range cases {
+		if got := modelPath(model); got != want {
+			t.Errorf("modelPath(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
+func TestCallArguments(t *testing.T) {
+	if got := callArguments(nil); got != "{}" {
+		t.Errorf("a call without arguments must have an empty object, got %q", got)
+	}
+	if got := callArguments(map[string]any{"city": "Paris"}); got != `{"city":"Paris"}` {
+		t.Errorf("got %q", got)
 	}
 }
