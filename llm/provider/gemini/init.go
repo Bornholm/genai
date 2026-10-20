@@ -49,7 +49,7 @@ func init() {
 		Name,
 		defaultOptions,
 		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
-			return NewChatCompletionClient(nil, baseURL(opts), opts.APIKey, opts.Model), nil
+			return NewChatCompletionClient(opts.HTTPClient(nil), baseURL(opts), opts.APIKey, opts.Model), nil
 		},
 	)
 
@@ -57,7 +57,7 @@ func init() {
 		Name,
 		defaultOptions,
 		func(ctx context.Context, opts *Options) (llm.DiscoveryClient, error) {
-			return NewDiscoveryClient(nil, baseURL(opts), opts.APIKey), nil
+			return NewDiscoveryClient(opts.HTTPClient(nil), baseURL(opts), opts.APIKey), nil
 		},
 	)
 }

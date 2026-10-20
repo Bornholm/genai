@@ -44,7 +44,6 @@ import (
 	"github.com/bornholm/genai/llm/provider"
 	"github.com/bornholm/genai/llm/provider/openai"
 	openaisdk "github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
 )
 
 const Name provider.Name = "openai-responses"
@@ -54,7 +53,7 @@ func init() {
 		Name,
 		defaultOptions,
 		func(ctx context.Context, opts *Options) (llm.ChatCompletionClient, error) {
-			return NewChatCompletionClient(nil, baseURL(opts), opts.APIKey, opts.Model), nil
+			return NewChatCompletionClient(opts.HTTPClient(nil), baseURL(opts), opts.APIKey, opts.Model), nil
 		},
 	)
 
@@ -86,12 +85,7 @@ func baseURL(opts *Options) string {
 }
 
 func newSDKClient(opts *Options) openaisdk.Client {
-	options := []option.RequestOption{
-		option.WithBaseURL(baseURL(opts)),
-		option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
-	}
-	if opts.APIKey != "" {
-		options = append(options, option.WithAPIKey(opts.APIKey))
-	}
-	return openaisdk.NewClient(options...)
+	common := opts.CommonOptions
+	common.BaseURL = baseURL(opts)
+	return openai.NewSDKClient(common)
 }

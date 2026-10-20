@@ -28,6 +28,7 @@ func TestConformance(t *testing.T) {
 			BaseURL: os.Getenv("CONFORMANCE_GEMINI_BASE_URL"),
 			APIKey:  apiKey,
 			Model:   chatModel,
+			Headers: conformance.HeadersFromEnv("CONFORMANCE_GEMINI_HEADERS"),
 		},
 	}))
 	if err != nil {

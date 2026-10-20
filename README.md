@@ -135,9 +135,10 @@ See the package documentation of `llm/provider/responses` and
 
 Some gateways route on a session ID per conversation, or ask clients to
 identify themselves. OpenCode Go refuses a request without a
-`x-opencode-session` header. The `openai`, `mistral` and `anthropic`
-providers can add fixed headers to every request, replacing the SDK's own,
-and send the `SessionID` chat completion option in a header of your choice:
+`x-opencode-session` header. The `openai`, `mistral`, `anthropic`,
+`openai-responses` and `gemini` providers can add fixed headers to every
+request, replacing the SDK's own, and send the `SessionID` chat completion
+option in a header of your choice:
 
 ```bash
 GENAI_CHAT_COMPLETION_OPENAI_HEADERS=User-Agent:my-agent/1.0
