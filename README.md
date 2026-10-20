@@ -151,6 +151,12 @@ by `provider.Create`. A caller holding a provider client directly, or
 relaying a request, puts it on the context with `llm.ContextWithSessionID`.
 A request without a session ID carries no session header.
 
+The proxy takes the session ID from the header a coding agent names its
+conversation in: `X-Session-Id`, `X-Claude-Code-Session-Id` (Claude Code),
+`session_id` (Codex) or `X-Opencode-Session` (OpenCode). A pre-request hook
+can set or replace it through `ProxyRequest.SessionID`. It reaches relayed
+Messages requests too.
+
 ### Audio transcription
 
 The same client can be configured for audio transcription (speech-to-text):
