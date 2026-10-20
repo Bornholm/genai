@@ -25,6 +25,8 @@
 //     max_output_tokens is set. The readable reasoning is the summary the
 //     API returns, or the raw reasoning text of the models that return it;
 //     Exclude stops asking for a summary.
+//   - The temperature is dropped while reasoning is on: OpenAI's reasoning
+//     models refuse it then. Without reasoning options it is sent as given.
 //   - Tools are sent in non-strict mode: strict mode requires every
 //     property to be required, which genai's tool schemas do not promise.
 //   - The seed and cache hints are dropped: the API has neither, prompt

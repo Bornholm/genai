@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"testing"
+
+	"github.com/bornholm/genai/llm"
 )
 
 // Feature flags declare which capabilities the provider under test supports.
@@ -23,8 +25,9 @@ const (
 
 // Suite runs a set of conformance tests against an llm.Client.
 type Suite struct {
-	client   any
-	features Feature
+	client        any
+	features      Feature
+	noTemperature bool
 }
 
 // Option configures a Suite.
@@ -34,6 +37,15 @@ type Option func(*Suite)
 func WithFeatures(f Feature) Option {
 	return func(s *Suite) {
 		s.features = f
+	}
+}
+
+// WithoutTemperature stops the suite from asking for a temperature of 0,
+// for models that refuse any temperature, such as OpenAI's reasoning
+// models.
+func WithoutTemperature() Option {
+	return func(s *Suite) {
+		s.noTemperature = true
 	}
 }
 
@@ -50,43 +62,51 @@ func (s *Suite) has(f Feature) bool {
 	return s.features&f != 0
 }
 
+// temperature is the option every chat test adds to its request.
+func (s *Suite) temperature() llm.ChatCompletionOptionFunc {
+	if s.noTemperature {
+		return func(*llm.ChatCompletionOptions) {}
+	}
+	return llm.WithTemperature(0)
+}
+
 // Run executes all enabled feature tests as subtests of t.
 func (s *Suite) Run(t *testing.T) {
 	t.Helper()
 
 	if s.has(FeatureChatCompletion) {
 		t.Run("ChatCompletion", func(t *testing.T) {
-			testChatCompletion(t, s.client)
+			testChatCompletion(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureStreaming) {
 		t.Run("Streaming", func(t *testing.T) {
-			testStreaming(t, s.client)
+			testStreaming(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureToolCalls) {
 		t.Run("ToolCalls", func(t *testing.T) {
-			testToolCalls(t, s.client)
+			testToolCalls(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureJSON) {
 		t.Run("JSON", func(t *testing.T) {
-			testJSONResponse(t, s.client)
+			testJSONResponse(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureMultimodal) {
 		t.Run("Multimodal", func(t *testing.T) {
-			testMultimodal(t, s.client)
+			testMultimodal(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureReasoning) {
 		t.Run("Reasoning", func(t *testing.T) {
-			testReasoning(t, s.client)
+			testReasoning(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureCaching) {
 		t.Run("Caching", func(t *testing.T) {
-			testCaching(t, s.client)
+			testCaching(t, s.client, s.temperature())
 		})
 	}
 	if s.has(FeatureEmbeddings) {

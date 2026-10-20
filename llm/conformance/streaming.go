@@ -8,7 +8,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testStreaming(t *testing.T, client any) {
+func testStreaming(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	streamClient, ok := client.(llm.ChatCompletionStreamingClient)
@@ -23,7 +23,7 @@ func testStreaming(t *testing.T, client any) {
 			llm.WithMessages(
 				llm.NewMessage(llm.RoleUser, "Count from 1 to 5, one number per line, nothing else."),
 			),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletionStream error: %v", err)

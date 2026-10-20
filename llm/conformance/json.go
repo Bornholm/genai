@@ -8,7 +8,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testJSONResponse(t *testing.T, client any) {
+func testJSONResponse(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)
@@ -38,7 +38,7 @@ func testJSONResponse(t *testing.T, client any) {
 				llm.NewMessage(llm.RoleUser, "Create a JSON object for a person named Alice who is 30 years old."),
 			),
 			llm.WithJSONResponse(schema),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletion error: %v", err)

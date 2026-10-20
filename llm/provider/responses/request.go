@@ -134,6 +134,9 @@ func buildRequest(opts *llm.ChatCompletionOptions, model string, stream bool) (*
 	// only asked for when reasoning is.
 	if req.Reasoning != nil && req.Reasoning.Effort != string(llm.ReasoningEffortNone) {
 		req.Include = []string{includeEncryptedReasoning}
+		// OpenAI's reasoning models refuse any temperature while they
+		// reason, as the Messages API does with thinking.
+		req.Temperature = nil
 	}
 
 	if opts.ResponseFormat == llm.ResponseFormatJSON {

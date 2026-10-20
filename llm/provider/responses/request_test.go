@@ -116,6 +116,25 @@ func TestBuildRequest_AsksForEncryptedReasoningOnlyWithReasoning(t *testing.T) {
 	}
 }
 
+func TestBuildRequest_DropsTheTemperatureOnlyWhileReasoning(t *testing.T) {
+	disabled := false
+	for name, tc := range map[string]struct {
+		funcs []llm.ChatCompletionOptionFunc
+		want  bool
+	}{
+		"no reasoning":       {nil, true},
+		"disabled reasoning": {[]llm.ChatCompletionOptionFunc{llm.WithReasoning(&llm.ReasoningOptions{Enabled: &disabled})}, true},
+		"reasoning":          {[]llm.ChatCompletionOptionFunc{llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow))}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := wire(t, append(tc.funcs, llm.WithTemperature(0.2), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))...)
+			if _, ok := body["temperature"]; ok != tc.want {
+				t.Errorf("temperature sent = %v, want %v", ok, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildRequest_ConvertsAttachments(t *testing.T) {
 	image, _ := llm.NewImageAttachment("image/png", "aGVsbG8=", false)
 	remote, _ := llm.NewImageAttachment("image/jpeg", "https://example.com/cat.jpg", true)

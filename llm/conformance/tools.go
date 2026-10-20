@@ -24,7 +24,7 @@ var weatherTool = llm.NewFuncTool(
 	nil,
 )
 
-func testToolCalls(t *testing.T, client any) {
+func testToolCalls(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)
@@ -41,7 +41,7 @@ func testToolCalls(t *testing.T, client any) {
 			),
 			llm.WithTools(weatherTool),
 			llm.WithToolChoice(llm.ToolChoiceRequired),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletion error: %v", err)
@@ -69,7 +69,7 @@ func testToolCalls(t *testing.T, client any) {
 			),
 			llm.WithTools(weatherTool),
 			llm.WithToolChoice(llm.ToolChoiceRequired),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("first turn error: %v", err)
@@ -89,7 +89,7 @@ func testToolCalls(t *testing.T, client any) {
 				toolResultMsg,
 			),
 			llm.WithTools(weatherTool),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("second turn error: %v", err)
