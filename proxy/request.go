@@ -23,6 +23,13 @@ type ProxyRequest struct {
 	Model   string      // model requested by the client
 	UserID  string      // extracted identity (API key, header, JWT…)
 	Headers http.Header // original headers
+	// SessionID names the conversation the request belongs to, for gateways
+	// that route on it. The proxy reads it from the session header of a
+	// coding agent (X-Session-Id, X-Claude-Code-Session-Id, session_id,
+	// X-Opencode-Session) and a hook may set or replace it. A chat
+	// completion or message request then passes it upstream, see
+	// llm.WithSessionID and llm.ContextWithSessionID.
+	SessionID string
 	// Body is the raw request body. On a relayed Messages request (see
 	// llm.MessagesRelayClient) Body is what goes upstream, as the hooks leave
 	// it, and ChatOptions is not read at all: a hook that only rewrites

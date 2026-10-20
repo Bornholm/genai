@@ -34,6 +34,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Type:        RequestTypeChatCompletion,
 		Model:       model,
 		Headers:     r.Header,
+		SessionID:   sessionIDFromHeaders(r.Header),
 		Body:        json.RawMessage(rawBody),
 		ChatOptions: chatOpts,
 		Metadata:    make(map[string]any),
@@ -74,8 +75,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Use potentially updated options from req
-	opts := req.ChatOptions
+	// 7. Use potentially updated options and session from req
+	r, opts := withSession(r, req)
+	ctx = r.Context()
 
 	if stream {
 		streamingClient, ok := rawClient.(llm.ChatCompletionStreamingClient)
