@@ -27,7 +27,7 @@ func cacheablePrefix() string {
 // testCaching checks that an explicit cache hint on a long prefix is
 // honoured by the provider: the second call with the same prefix must be
 // served from the cache, which the usage reports as cached tokens.
-func testCaching(t *testing.T, client any) {
+func testCaching(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)
@@ -45,7 +45,7 @@ func testCaching(t *testing.T, client any) {
 				llm.NewMessageWithCacheControl(llm.RoleSystem, prefix, cc),
 				llm.NewMessage(llm.RoleUser, question),
 			),
-			llm.WithTemperature(0),
+			temperature,
 			llm.WithMaxCompletionTokens(64),
 		)
 		if err != nil {

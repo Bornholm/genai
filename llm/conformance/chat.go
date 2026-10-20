@@ -8,7 +8,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testChatCompletion(t *testing.T, client any) {
+func testChatCompletion(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)
@@ -23,7 +23,7 @@ func testChatCompletion(t *testing.T, client any) {
 			llm.WithMessages(
 				llm.NewMessage(llm.RoleUser, "Say exactly the word: hello"),
 			),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletion error: %v", err)
@@ -45,7 +45,7 @@ func testChatCompletion(t *testing.T, client any) {
 				llm.NewMessage(llm.RoleSystem, "You are a bot that only ever replies with the single word PONG. Never say anything else."),
 				llm.NewMessage(llm.RoleUser, "PING"),
 			),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletion error: %v", err)
@@ -60,7 +60,7 @@ func testChatCompletion(t *testing.T, client any) {
 			llm.WithMessages(
 				llm.NewMessage(llm.RoleUser, "My name is Alice. Just say OK."),
 			),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("first turn error: %v", err)
@@ -72,7 +72,7 @@ func testChatCompletion(t *testing.T, client any) {
 				res1.Message(),
 				llm.NewMessage(llm.RoleUser, "What is my name? Reply with only the name."),
 			),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("second turn error: %v", err)

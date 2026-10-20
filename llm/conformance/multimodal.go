@@ -27,7 +27,7 @@ func redSquarePNG() string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-func testMultimodal(t *testing.T, client any) {
+func testMultimodal(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)
@@ -51,7 +51,7 @@ func testMultimodal(t *testing.T, client any) {
 					att,
 				),
 			),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletion error: %v", err)
