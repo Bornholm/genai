@@ -17,6 +17,10 @@ import (
 // maxErrorBody caps how much of a rejected request's body is kept.
 const maxErrorBody = 1 << 20
 
+// maxResponseBody caps the body of a complete response, as the SSE reader
+// caps a stream's lines.
+const maxResponseBody = 16 << 20
+
 // ChatCompletionClient talks to the Gemini API (models/{model}:generateContent).
 type ChatCompletionClient struct {
 	httpClient *http.Client
@@ -45,7 +49,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 	defer res.Body.Close()
 
 	var body response
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(res.Body, maxResponseBody)).Decode(&body); err != nil {
 		return nil, errors.WithStack(llm.RateLimitError(http.StatusBadGateway, "malformed response: "+err.Error()))
 	}
 

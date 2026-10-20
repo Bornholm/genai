@@ -15,7 +15,9 @@
 //     replayed on the next turn: models without reasoning refuse that
 //     request. A reasoning model left to its default effort therefore
 //     reasons without its reasoning being replayed. Reasoning from another
-//     provider cannot be replayed and is dropped.
+//     provider cannot be replayed and is dropped. The reasoning items of a
+//     turn are replayed together, before its message and function calls:
+//     genai does not keep where each one stood in the output.
 //   - Reasoning takes an effort level only, sent as given, as the openai
 //     provider does: "none" and "xhigh" are refused by the models that do
 //     not know them. A token budget is mapped to the effort whose share of

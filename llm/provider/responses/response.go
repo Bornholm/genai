@@ -113,6 +113,32 @@ func reasoningText(item outputItem) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// textPart is one part of readable reasoning and its text.
+type textPart struct {
+	part reasoningPart
+	text string
+}
+
+// reasoningParts returns the parts reasoningText joins, each with the part
+// its deltas stream under.
+func reasoningParts(outputIndex int, item outputItem) []textPart {
+	var parts []textPart
+	for i, c := range item.Content {
+		if c.Type == "reasoning_text" && c.Text != "" {
+			parts = append(parts, textPart{reasoningPart{outputIndex: outputIndex, index: i, raw: true}, c.Text})
+		}
+	}
+	if len(parts) > 0 {
+		return parts
+	}
+	for i, s := range item.Summary {
+		if s.Text != "" {
+			parts = append(parts, textPart{reasoningPart{outputIndex: outputIndex, index: i}, s.Text})
+		}
+	}
+	return parts
+}
+
 // reasoningDetails returns the details that let a later turn replay a
 // reasoning item: one summary detail per summary part and the encrypted
 // content, all carrying the item ID. index is the index of the first one.

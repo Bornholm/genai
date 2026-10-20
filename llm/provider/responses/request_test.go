@@ -184,6 +184,7 @@ func TestBuildReasoning(t *testing.T) {
 		"budget share":             {opts: &llm.ReasoningOptions{MaxTokens: budget(800)}, maxTokens: budget(1000), effort: "high", summary: "auto"},
 		"budget without a max":     {opts: &llm.ReasoningOptions{MaxTokens: budget(16000)}, effort: "high", summary: "auto"},
 		"small budget without max": {opts: &llm.ReasoningOptions{MaxTokens: budget(1024)}, effort: "low", summary: "auto"},
+		"budget over effort":       {opts: &llm.ReasoningOptions{Effort: ptr(llm.ReasoningEffortLow), MaxTokens: budget(16000)}, effort: "high", summary: "auto"},
 	}
 
 	for name, c := range cases {
@@ -201,7 +202,7 @@ func TestBuildReasoning(t *testing.T) {
 }
 
 func TestToolCallArguments_ReplaysMalformedArgumentsAsAnEmptyObject(t *testing.T) {
-	for _, parameters := range []any{nil, "", `{"a":1}{"b":2}`, []byte("{")} {
+	for _, parameters := range []any{nil, "", `{"a":1}{"b":2}`, []byte("{"), "[1,2]", "42"} {
 		got, err := toolCallArguments(parameters)
 		if err != nil || got != "{}" {
 			t.Errorf("toolCallArguments(%q) = %q, %v", parameters, got, err)
@@ -213,3 +214,20 @@ func TestToolCallArguments_ReplaysMalformedArgumentsAsAnEmptyObject(t *testing.T
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestBuildRequest_SkipsATurnWithoutAnOutputItem(t *testing.T) {
+	details := []llm.ReasoningDetail{
+		{ID: "rs_1", Type: llm.ReasoningDetailTypeEncrypted, Data: "gAAA", Format: reasoningFormat},
+	}
+
+	body := wire(t, llm.WithMessages(
+		llm.NewMessage(llm.RoleUser, "Hi"),
+		llm.NewAssistantReasoningMessage("", "thinking", details),
+		llm.NewMessage(llm.RoleUser, "Again?"),
+	))
+
+	input := body["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("input = %v, want the two user messages only", input)
+	}
+}

@@ -157,7 +157,8 @@ func buildRequest(opts *llm.ChatCompletionOptions, model string, stream bool) (*
 // buildReasoning maps llm.ReasoningOptions to the reasoning configuration.
 // The API only takes an effort level: a token budget is converted to the
 // level whose share of max_output_tokens it is closest to, or by absolute
-// thresholds when no max_output_tokens is set.
+// thresholds when no max_output_tokens is set. A budget wins over an
+// effort, as on the gemini and anthropic providers.
 func buildReasoning(opts *llm.ReasoningOptions, maxOutputTokens *int) *reasoning {
 	if opts == nil {
 		return nil
@@ -167,10 +168,10 @@ func buildReasoning(opts *llm.ReasoningOptions, maxOutputTokens *int) *reasoning
 	switch {
 	case opts.Enabled != nil && !*opts.Enabled:
 		effort = llm.ReasoningEffortNone
-	case opts.Effort != nil:
-		effort = *opts.Effort
 	case opts.MaxTokens != nil:
 		effort = effortForBudget(*opts.MaxTokens, maxOutputTokens)
+	case opts.Effort != nil:
+		effort = *opts.Effort
 	case opts.Enabled != nil && *opts.Enabled:
 		effort = llm.ReasoningEffortMedium
 	default:

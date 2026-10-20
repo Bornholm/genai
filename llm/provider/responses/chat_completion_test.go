@@ -298,6 +298,50 @@ func TestChatCompletionStream_AnEmptyDeltaLeavesTheTextToTheItem(t *testing.T) {
 	}
 }
 
+func TestChatCompletionStream_TakesTheOutputFromTheTerminalEvent(t *testing.T) {
+	server := streamServer(t,
+		`{"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hello."}]}]}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+
+	if got.content != "Hello." || !got.terminal.IsComplete() {
+		t.Errorf("content %q, terminal %v", got.content, got.terminal)
+	}
+}
+
+func TestChatCompletionStream_IgnoresDone(t *testing.T) {
+	server := streamServer(t,
+		`{"type":"response.output_text.delta","output_index":0,"delta":"Hello."}`,
+		`[DONE]`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+
+	if got.content != "Hello." || !got.terminal.IsComplete() {
+		t.Errorf("content %q, terminal %v", got.content, got.terminal)
+	}
+}
+
+func TestChatCompletionStream_TakesTheReasoningPartsNoDeltaCarried(t *testing.T) {
+	server := streamServer(t,
+		`{"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"First."}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"First."},{"type":"summary_text","text":"Second."}]}}`,
+		`{"type":"response.output_text.delta","output_index":1,"delta":"Hello."}`,
+		`{"type":"response.completed","response":{"status":"completed"}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+
+	if got.reasoning != "First.\n\nSecond." {
+		t.Errorf("reasoning = %q", got.reasoning)
+	}
+}
+
 func TestChatCompletionStream_AnEmptyMessageIsNoMessage(t *testing.T) {
 	server := streamServer(t,
 		`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","content":[]}}`,

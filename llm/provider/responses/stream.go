@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -58,8 +59,10 @@ type streamEmitter struct {
 	argumentsWhole map[int]bool
 	// textSent marks the message items whose text was streamed.
 	textSent map[int]bool
-	// reasoningSent marks the reasoning items whose readable text was streamed.
-	reasoningSent map[int]bool
+	// reasoningSent marks the parts of readable reasoning that were streamed.
+	reasoningSent map[reasoningPart]bool
+	// itemsDone marks the items whose done event was handled.
+	itemsDone map[int]bool
 
 	lastReasoning *reasoningPart
 	detailCount   int
@@ -78,13 +81,20 @@ func newStreamEmitter(ctx context.Context, chunks chan<- llm.StreamChunk, exclud
 		argumentsSent:    map[int]bool{},
 		argumentsWhole:   map[int]bool{},
 		textSent:         map[int]bool{},
-		reasoningSent:    map[int]bool{},
+		reasoningSent:    map[reasoningPart]bool{},
+		itemsDone:        map[int]bool{},
 	}
 }
 
 // handle processes the data of one event and reports whether it ended the
 // stream.
 func (e *streamEmitter) handle(data []byte) bool {
+	// Chat Completions gateways end their streams with [DONE]: the end of
+	// the stream decides whether it was complete.
+	if string(bytes.TrimSpace(data)) == "[DONE]" {
+		return false
+	}
+
 	var event streamEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		e.fail(errors.WithStack(llm.RateLimitError(http.StatusBadGateway, "malformed stream event: "+err.Error())))
@@ -143,6 +153,14 @@ func (e *streamEmitter) handle(data []byte) bool {
 
 	case "response.completed", "response.incomplete":
 		e.recordUsage(event.Response)
+		if !e.answered && event.Response != nil {
+			// A gateway may ship the output only on the terminal event.
+			for i, item := range event.Response.Output {
+				if !e.itemsDone[i] {
+					e.itemDone(i, item)
+				}
+			}
+		}
 		if !e.answered {
 			e.fail(errors.WithStack(llm.ErrNoMessage))
 			return true
@@ -183,6 +201,7 @@ func (e *streamEmitter) handle(data []byte) bool {
 // itemDone takes from a finished item what its deltas did not carry, and
 // emits the details of a reasoning item.
 func (e *streamEmitter) itemDone(outputIndex int, item outputItem) {
+	e.itemsDone[outputIndex] = true
 	switch item.Type {
 	case "message":
 		// A message without text is no answer: the stream then ends on
@@ -214,10 +233,10 @@ func (e *streamEmitter) itemDone(outputIndex int, item outputItem) {
 		}
 
 	case "reasoning":
-		if !e.reasoningSent[outputIndex] {
-			// No delta came for this item: its text, if any, is here.
-			if text := reasoningText(item); text != "" {
-				e.reasoning(reasoningPart{outputIndex: outputIndex}, text)
+		// The parts no delta carried are here.
+		for _, p := range reasoningParts(outputIndex, item) {
+			if !e.reasoningSent[p.part] && !e.reasoningKindSent(outputIndex, !p.part.raw) {
+				e.reasoning(p.part, p.text)
 			}
 		}
 		details := reasoningDetails(item, e.detailCount)
@@ -235,7 +254,7 @@ func (e *streamEmitter) reasoning(part reasoningPart, delta string) {
 	if delta == "" {
 		return
 	}
-	e.reasoningSent[part.outputIndex] = true
+	e.reasoningSent[part] = true
 	if e.excludeReasoning {
 		return
 	}
@@ -244,6 +263,18 @@ func (e *streamEmitter) reasoning(part reasoningPart, delta string) {
 	}
 	e.lastReasoning = &part
 	e.send(llm.NewReasoningStreamDelta(llm.RoleAssistant, "", delta, nil))
+}
+
+// reasoningKindSent reports whether a part of the given kind, raw text or
+// summary, was streamed for a reasoning item: the readable reasoning is one
+// or the other, never both.
+func (e *streamEmitter) reasoningKindSent(outputIndex int, raw bool) bool {
+	for part := range e.reasoningSent {
+		if part.outputIndex == outputIndex && part.raw == raw {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *streamEmitter) toolIndex(outputIndex int) int {

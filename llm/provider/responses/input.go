@@ -95,14 +95,15 @@ func buildInput(msgs []llm.Message) ([]inputItem, error) {
 			if len(m.Attachments()) > 0 {
 				return nil, errors.New("assistant messages cannot have attachments")
 			}
-			reasoningItems := replayedReasoning(m)
-			if m.Content() == "" && len(reasoningItems) == 0 {
-				return nil, llm.NewValidationError("messages", "assistant message has no content to send")
+			// An assistant turn without text has nothing to replay: its
+			// reasoning items, without the output item they preceded, would
+			// be refused.
+			content := m.Content()
+			if content == "" {
+				continue
 			}
-			items = append(items, reasoningItems...)
-			if content := m.Content(); content != "" {
-				items = append(items, inputItem{Type: "message", Role: "assistant", Content: content})
-			}
+			items = append(items, replayedReasoning(m)...)
+			items = append(items, inputItem{Type: "message", Role: "assistant", Content: content})
 
 		case llm.RoleToolCalls:
 			if len(m.Attachments()) > 0 {
@@ -111,6 +112,9 @@ func buildInput(msgs []llm.Message) ([]inputItem, error) {
 			toolCallsMessage, ok := m.(llm.ToolCallsMessage)
 			if !ok {
 				return nil, errors.Errorf("unexpected tool calls message type '%T'", m)
+			}
+			if m.Content() == "" && len(toolCallsMessage.ToolCalls()) == 0 {
+				continue
 			}
 			items = append(items, replayedReasoning(m)...)
 			if content := m.Content(); content != "" {
@@ -220,23 +224,17 @@ func replayedReasoning(m llm.Message) []inputItem {
 }
 
 // toolCallArguments renders the tool call parameters, kept as a JSON string
-// by genai, as the arguments string of a function call. Invalid JSON, as
-// some models emit, is replayed as an empty object, as the openai provider
-// does: the API would reject the whole request.
+// by genai, as the arguments string of a function call. Arguments that are
+// not a JSON object, as some models emit, are replayed as an empty object,
+// as the openai provider does: the API would reject the whole request.
 func toolCallArguments(parameters any) (string, error) {
 	switch typed := parameters.(type) {
 	case nil:
 		return "{}", nil
 	case string:
-		if !json.Valid([]byte(typed)) {
-			return "{}", nil
-		}
-		return typed, nil
+		return objectOrEmpty([]byte(typed)), nil
 	case []byte:
-		if !json.Valid(typed) {
-			return "{}", nil
-		}
-		return string(typed), nil
+		return objectOrEmpty(typed), nil
 	default:
 		raw, err := json.Marshal(typed)
 		if err != nil {
@@ -331,4 +329,14 @@ var supportedImageMimeTypes = map[string]bool{
 	"image/jpeg": true,
 	"image/gif":  true,
 	"image/webp": true,
+}
+
+// objectOrEmpty returns raw when it is a JSON object, an empty object
+// otherwise.
+func objectOrEmpty(raw []byte) string {
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return "{}"
+	}
+	return string(raw)
 }
