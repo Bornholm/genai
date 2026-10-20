@@ -13,6 +13,16 @@ type CommonOptions struct {
 	Model   string `env:"MODEL"`
 	BaseURL string `env:"BASE_URL"`
 	APIKey  string `env:"API_KEY"`
+
+	// Headers are added to every request the provider sends, replacing the
+	// SDK's own (User-Agent included). From the environment:
+	// "Name:value,Other-Name:value", so a value cannot hold a comma.
+	Headers map[string]string `env:"HEADERS"`
+
+	// SessionHeader names the header that carries the session ID of the
+	// conversation (llm.WithSessionID), for gateways that route on it, such
+	// as x-opencode-session on OpenCode Go. Empty sends no session header.
+	SessionHeader string `env:"SESSION_HEADER"`
 }
 
 // ResolvedClientOptions transporte le provider identifié et ses options spécifiques

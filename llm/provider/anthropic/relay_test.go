@@ -39,8 +39,32 @@ const relayRequest = `{"model":"org/alias","max_tokens":64,"stream":true,` +
 
 func newRelayClient(baseURL string) *ChatCompletionClient {
 	c := NewChatCompletionClient(anthropicsdk.NewClient(), "claude-real", 0)
-	c.relay = &relayTarget{baseURL: normalizeBaseURL(baseURL), apiKey: "provider-key"}
+	c.relay = &relayTarget{baseURL: normalizeBaseURL(baseURL), apiKey: "provider-key", client: httpClient}
 	return c
+}
+
+func TestRelayMessages_SendsTheSessionIDOfTheContext(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, relayFixture)
+	}))
+	defer srv.Close()
+
+	c := newRelayClient(srv.URL + "/v1")
+	c.relay.client = provider.CommonOptions{SessionHeader: "x-opencode-session"}.HTTPClient(httpClient)
+
+	ctx := llm.ContextWithSessionID(context.Background(), "session-1")
+	chunks, err := c.RelayMessages(ctx, []byte(relayRequest), http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect(t, chunks)
+
+	if got.Get("X-Opencode-Session") != "session-1" {
+		t.Errorf("session header = %q", got.Get("X-Opencode-Session"))
+	}
 }
 
 func collect(t *testing.T, chunks <-chan llm.StreamChunk) []llm.StreamChunk {

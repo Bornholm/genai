@@ -107,6 +107,25 @@ is not replayable, as only Anthropic-signed thinking blocks are accepted
 back. See the package documentation of `llm/provider/anthropic` for the
 full list.
 
+### Gateway headers
+
+Some gateways route on a session ID per conversation, or ask clients to
+identify themselves. OpenCode Go refuses a request without a
+`x-opencode-session` header. The `openai`, `mistral` and `anthropic`
+providers can add fixed headers to every request, replacing the SDK's own,
+and send the `SessionID` chat completion option in a header of your choice:
+
+```bash
+GENAI_CHAT_COMPLETION_OPENAI_HEADERS=User-Agent:my-agent/1.0
+GENAI_CHAT_COMPLETION_OPENAI_SESSION_HEADER=x-opencode-session
+```
+
+`HEADERS` reads as `Name:value,Other-Name:value`, so a value cannot hold a
+comma. The session ID comes from `llm.WithSessionID` when the client is built
+by `provider.Create`. A caller holding a provider client directly, or
+relaying a request, puts it on the context with `llm.ContextWithSessionID`.
+A request without a session ID carries no session header.
+
 ### Audio transcription
 
 The same client can be configured for audio transcription (speech-to-text):

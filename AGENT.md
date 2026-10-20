@@ -45,6 +45,8 @@ Import `_ "github.com/bornholm/genai/llm/provider/all"` to load all providers at
 
 Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and optionally `APIKey`. Environment variable prefixes: `CHAT_COMPLETION_PROVIDER`, `CHAT_COMPLETION_BASE_URL`, `EMBEDDINGS_*`, `TRANSCRIPTION_*`, `IMAGE_GENERATION_*`, `DECISION_*`, `DISCOVERY_*`, etc.
 
+`provider.CommonOptions` also carries `Headers` (`HEADERS`, fixed headers that replace the SDK's own) and `SessionHeader` (`SESSION_HEADER`, the header that carries the `SessionID` chat completion option). A factory takes them into account by building its HTTP client with `opts.HTTPClient(base)`; `openai`, `mistral` and `anthropic` (including the Messages relay) do. The session ID travels on the context (`llm.ContextWithSessionID`), which `provider.Client` sets from the chat completion options.
+
 ### Resilience Wrappers (`llm/circuitbreaker/`, `llm/ratelimit/`, `llm/retry/`)
 
 Wrap any `llm.Client` with circuit breaker, rate limiting, or retry logic — these implement the four interfaces of `llm.Client` only. The optional capabilities (`ImageGenerationClient`, `DecisionClient`, `DiscoveryClient`) do not survive the wrapping: assert them on the client returned by `provider.Create`, before wrapping it.

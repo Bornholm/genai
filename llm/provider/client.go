@@ -24,7 +24,7 @@ func (c *Client) ChatCompletion(ctx context.Context, funcs ...llm.ChatCompletion
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
 
-	response, err := c.chatCompletion.ChatCompletion(ctx, funcs...)
+	response, err := c.chatCompletion.ChatCompletion(withSessionID(ctx, funcs), funcs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -39,12 +39,18 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 		return nil, errors.WithStack(llm.ErrUnavailable)
 	}
 
-	stream, err := streamingClient.ChatCompletionStream(ctx, funcs...)
+	stream, err := streamingClient.ChatCompletionStream(withSessionID(ctx, funcs), funcs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	return stream, nil
+}
+
+// withSessionID puts the SessionID option on the context, where the HTTP
+// client of a provider configured with a session header reads it.
+func withSessionID(ctx context.Context, funcs []llm.ChatCompletionOptionFunc) context.Context {
+	return llm.ContextWithSessionID(ctx, llm.NewChatCompletionOptions(funcs...).SessionID)
 }
 
 // Embeddings implements llm.Client.
