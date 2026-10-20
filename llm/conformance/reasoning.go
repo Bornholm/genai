@@ -7,7 +7,7 @@ import (
 	"github.com/bornholm/genai/llm"
 )
 
-func testReasoning(t *testing.T, client any) {
+func testReasoning(t *testing.T, client any, temperature llm.ChatCompletionOptionFunc) {
 	t.Helper()
 
 	chatClient, ok := client.(llm.ChatCompletionClient)
@@ -23,7 +23,7 @@ func testReasoning(t *testing.T, client any) {
 				llm.NewMessage(llm.RoleUser, "What is 17 × 23? Show your work."),
 			),
 			llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
-			llm.WithTemperature(0),
+			temperature,
 		)
 		if err != nil {
 			t.Fatalf("ChatCompletion error: %v", err)

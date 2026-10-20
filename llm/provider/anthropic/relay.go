@@ -32,6 +32,7 @@ var httpClient = &http.Client{
 type relayTarget struct {
 	baseURL string // normalized, with a trailing slash
 	apiKey  string
+	client  *http.Client
 }
 
 // SupportsMessagesRelay reports whether the client knows its upstream, see
@@ -71,7 +72,7 @@ func (c *ChatCompletionClient) RelayMessages(ctx context.Context, body []byte, h
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("accept", "text/event-stream")
 
-	res, err := httpClient.Do(req)
+	res, err := c.relay.client.Do(req)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

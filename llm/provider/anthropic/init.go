@@ -62,7 +62,7 @@ func init() {
 			}
 
 			chat := NewChatCompletionClient(client, opts.Model, maxTokens)
-			chat.relay = &relayTarget{baseURL: normalizeBaseURL(opts.BaseURL), apiKey: opts.APIKey}
+			chat.relay = &relayTarget{baseURL: normalizeBaseURL(opts.BaseURL), apiKey: opts.APIKey, client: opts.HTTPClient(httpClient)}
 			return chat, nil
 		},
 	)
@@ -88,7 +88,7 @@ func newSDKClient(opts *Options) anthropicsdk.Client {
 		option.WithBaseURL(normalizeBaseURL(opts.BaseURL)),
 		option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
 		option.WithAPIKey(opts.APIKey),
-		option.WithHTTPClient(httpClient),
+		option.WithHTTPClient(opts.HTTPClient(httpClient)),
 	)
 }
 

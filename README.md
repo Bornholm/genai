@@ -8,7 +8,7 @@ GenAI is a Go library that abstracts away the complexity of working with multipl
 
 ## Features
 
-- Multi-provider support - Use OpenAI (or any OpenAI compatible API), Anthropic, OpenRouter, Mistral, Ollama and other providers with the same interface
+- Multi-provider support - Use OpenAI (Chat Completions or Responses, or any OpenAI compatible API), Anthropic, Gemini, OpenRouter, Mistral, Ollama and other providers with the same interface
 - Unified API - Simple and consistent API for all providers
 - Chat Completions - Create conversational AI experiences with ease
 - Audio Transcription - Transcribe audio files (speech-to-text) with OpenAI, Mistral (Voxtral) or OpenRouter
@@ -106,6 +106,56 @@ asks for a JSON object otherwise). Reasoning recorded by another provider
 is not replayable, as only Anthropic-signed thinking blocks are accepted
 back. See the package documentation of `llm/provider/anthropic` for the
 full list.
+
+Models served through the OpenAI Responses API only, or by a gateway that
+exposes it, use the `openai-responses` provider. Requests are not stored:
+the encrypted reasoning comes back in the reasoning details and is replayed
+on the next turn.
+
+```bash
+GENAI_CHAT_COMPLETION_PROVIDER=openai-responses
+GENAI_CHAT_COMPLETION_OPENAI_RESPONSES_API_KEY=<your_api_key>
+GENAI_CHAT_COMPLETION_OPENAI_RESPONSES_MODEL=gpt-5-mini
+```
+
+Gemini models use the `gemini` provider, which talks to the Gemini API
+(`generateContent`) and replays the thought signatures Gemini 3 requires on
+function calls:
+
+```bash
+GENAI_CHAT_COMPLETION_PROVIDER=gemini
+GENAI_CHAT_COMPLETION_GEMINI_API_KEY=<your_api_key>
+GENAI_CHAT_COMPLETION_GEMINI_MODEL=gemini-2.5-flash
+```
+
+See the package documentation of `llm/provider/responses` and
+`llm/provider/gemini` for what each provider adapts.
+
+### Gateway headers
+
+Some gateways route on a session ID per conversation, or ask clients to
+identify themselves. OpenCode Go refuses a request without a
+`x-opencode-session` header. The `openai`, `mistral`, `anthropic`,
+`openai-responses` and `gemini` providers can add fixed headers to every
+request, replacing the SDK's own, and send the `SessionID` chat completion
+option in a header of your choice:
+
+```bash
+GENAI_CHAT_COMPLETION_OPENAI_HEADERS=User-Agent:my-agent/1.0
+GENAI_CHAT_COMPLETION_OPENAI_SESSION_HEADER=x-opencode-session
+```
+
+`HEADERS` reads as `Name:value,Other-Name:value`, so a value cannot hold a
+comma. The session ID comes from `llm.WithSessionID` when the client is built
+by `provider.Create`. A caller holding a provider client directly, or
+relaying a request, puts it on the context with `llm.ContextWithSessionID`.
+A request without a session ID carries no session header.
+
+The proxy takes the session ID from the header a coding agent names its
+conversation in: `X-Session-Id`, `X-Claude-Code-Session-Id` (Claude Code),
+`session_id` (Codex) or `X-Opencode-Session` (OpenCode). A pre-request hook
+can set or replace it through `ProxyRequest.SessionID`. It reaches relayed
+Messages requests too.
 
 ### Audio transcription
 
