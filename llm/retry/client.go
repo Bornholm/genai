@@ -74,6 +74,34 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	}
 }
 
+// Decision implements llm.DecisionClient. An evaluation has no side effect
+// upstream, so a failed one is replayed like an embeddings call.
+func (c *Client) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	backoff := c.baseDelay
+	retries := 0
+
+	for {
+		res, err := llm.Decide(ctx, c.client, state, questions, funcs...)
+		if err == nil {
+			return res, nil
+		}
+		if retries >= c.maxRetries || !llm.IsRetryable(err) {
+			return nil, errors.WithStack(err)
+		}
+		slog.DebugContext(ctx, "decision failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
+		retries++
+		if !wait(ctx, backoff) {
+			return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
+		}
+		backoff *= 2
+	}
+}
+
+// SupportsDecision reports on the wrapped client, see llm.SupportsDecision.
+func (c *Client) SupportsDecision() bool {
+	return llm.SupportsDecision(c.client)
+}
+
 // Transcription implements llm.Client.
 func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
 	backoff := c.baseDelay

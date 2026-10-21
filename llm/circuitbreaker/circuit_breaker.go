@@ -175,9 +175,37 @@ func (c *Client) SupportsMessagesRelay() bool {
 	return llm.SupportsMessagesRelay(c.client)
 }
 
+// Decision implements llm.DecisionClient with circuit breaker protection.
+// A client that cannot decide answers without counting as a failure.
+func (c *Client) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	if !llm.SupportsDecision(c.client) {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+
+	var response llm.DecisionResponse
+	var err error
+
+	breakerErr := c.breaker.Execute(func() error {
+		response, err = llm.Decide(ctx, c.client, state, questions, funcs...)
+		return errors.WithStack(err)
+	})
+
+	if breakerErr != nil {
+		return nil, errors.WithStack(breakerErr)
+	}
+
+	return response, errors.WithStack(err)
+}
+
+// SupportsDecision reports on the wrapped client, see llm.SupportsDecision.
+func (c *Client) SupportsDecision() bool {
+	return llm.SupportsDecision(c.client)
+}
+
 var (
 	_ llm.Client              = &Client{}
 	_ llm.MessagesRelayClient = &Client{}
+	_ llm.DecisionClient      = &Client{}
 )
 
 // Close releases the wrapped client when it implements io.Closer, so that a

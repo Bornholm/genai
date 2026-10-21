@@ -117,6 +117,12 @@ func (c *Client) Decision(ctx context.Context, state any, questions llm.Question
 	return response, nil
 }
 
+// SupportsDecision reports whether a decision client was configured, see
+// [llm.SupportsDecision]: Decision exists whatever the configuration.
+func (c *Client) SupportsDecision() bool {
+	return c.decision != nil
+}
+
 // Models implements [llm.DiscoveryClient].
 //
 // Like ImageGeneration, that interface is deliberately NOT part of

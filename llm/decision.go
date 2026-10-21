@@ -25,6 +25,31 @@ type DecisionClient interface {
 	Decision(ctx context.Context, state any, questions Questions, funcs ...DecisionOptionFunc) (DecisionResponse, error)
 }
 
+// SupportsDecision reports whether client can evaluate decisions.
+//
+// A decorator has a Decision method whatever it wraps, and so does the
+// provider client, whatever capabilities it was configured with: both also
+// implement SupportsDecision() bool to report on what they hold. A
+// decorator without either method hides the capability.
+func SupportsDecision(client any) bool {
+	if _, ok := client.(DecisionClient); !ok {
+		return false
+	}
+	if s, ok := client.(interface{ SupportsDecision() bool }); ok {
+		return s.SupportsDecision()
+	}
+	return true
+}
+
+// Decide evaluates through client, or returns ErrUnavailable when it cannot.
+// It is how a decorator delegates to the client it wraps.
+func Decide(ctx context.Context, client any, state any, questions Questions, funcs ...DecisionOptionFunc) (DecisionResponse, error) {
+	if !SupportsDecision(client) {
+		return nil, errors.WithStack(ErrUnavailable)
+	}
+	return client.(DecisionClient).Decision(ctx, state, questions, funcs...)
+}
+
 // Questions maps an id you choose to the question asked under it. The
 // matching answer comes back under the same id. Ids are not part of the
 // evaluation itself, they only pair questions with answers.

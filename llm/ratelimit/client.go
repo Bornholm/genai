@@ -51,6 +51,23 @@ func (c *Client) SupportsMessagesRelay() bool {
 	return llm.SupportsMessagesRelay(c.client)
 }
 
+// Decision implements llm.DecisionClient under the chat limit: an evaluation
+// is a model call like a completion, on the same upstream quota.
+func (c *Client) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	if !llm.SupportsDecision(c.client) {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+	if err := c.chatLimiter.Wait(ctx); err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return llm.Decide(ctx, c.client, state, questions, funcs...)
+}
+
+// SupportsDecision reports on the wrapped client, see llm.SupportsDecision.
+func (c *Client) SupportsDecision() bool {
+	return llm.SupportsDecision(c.client)
+}
+
 // Embeddings implements llm.Client.
 func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.EmbeddingsOptionFunc) (llm.EmbeddingsResponse, error) {
 	if err := c.embeddingsLimiter.Wait(ctx); err != nil {

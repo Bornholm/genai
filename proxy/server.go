@@ -33,6 +33,7 @@ func NewServer(funcs ...OptionFunc) *Server {
 	s.mux.HandleFunc("GET /models", s.handleModels)
 	s.mux.HandleFunc("POST /messages", s.handleMessages)
 	s.mux.HandleFunc("POST /messages/count_tokens", s.handleCountTokens)
+	s.mux.HandleFunc("POST /decisions", s.handleDecisions)
 
 	return s
 }
