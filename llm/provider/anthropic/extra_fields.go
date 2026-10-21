@@ -1,10 +1,14 @@
 package anthropic
 
 import (
+	"context"
+	"encoding/json"
 	"log/slog"
+	"maps"
 	"slices"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
 // openAIOnlyFields lists OpenAI request fields the Messages API has no
@@ -43,14 +47,17 @@ var openAIOnlyFields = map[string]struct{}{
 //
 //   - stop becomes stop_sequences.
 //   - user becomes metadata.user_id.
-//   - top_p is kept unless thinking is on or a temperature is set: the API
-//     restricts it under thinking, and some models refuse both together.
-//   - the object form of tool_choice, which names a function, forces that
-//     tool, or falls back to auto under thinking as ToolChoiceRequired does.
+//   - top_p is kept unless thinking is on, where the API restricts it, as the
+//     temperature is. A model refusing it next to a temperature answers 400:
+//     the caller sent both.
+//   - the object form of tool_choice sets the tool choice: OpenAI's, which
+//     names a function, or the Messages API's own. A named tool must be one
+//     of the request's tools. Under thinking, forcing a tool falls back to
+//     auto, as ToolChoiceRequired does.
 //   - parallel_tool_calls false disables parallel tool use.
 //   - metadata and service_tier exist on both APIs with different values, so
 //     they are kept only when the Messages API accepts them.
-func configureExtraFields(params *anthropicsdk.MessageNewParams, extra map[string]any, thinking bool) {
+func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewParams, extra map[string]any, thinking bool) {
 	if len(extra) == 0 {
 		return
 	}
@@ -89,7 +96,7 @@ func configureExtraFields(params *anthropicsdk.MessageNewParams, extra map[strin
 
 		case "top_p":
 			topP, ok := asFloat(value)
-			if !ok || thinking || params.Temperature.Valid() {
+			if !ok || thinking {
 				drop(key)
 				continue
 			}
@@ -126,34 +133,78 @@ func configureExtraFields(params *anthropicsdk.MessageNewParams, extra map[strin
 
 	if len(dropped) > 0 {
 		slices.Sort(dropped)
-		slog.Debug("dropped request fields the anthropic messages api does not accept", slog.Any("fields", dropped))
+		slog.DebugContext(ctx, "dropped request fields the anthropic messages api does not accept", slog.Any("fields", dropped))
 	}
 
 	if len(remaining) > 0 {
+		// A field missing from the lists above reaches the API as is, and a
+		// 400 on it is told apart from the logs.
+		forwarded := slices.Sorted(maps.Keys(remaining))
+		slog.DebugContext(ctx, "forwarding request fields verbatim to the anthropic messages api", slog.Any("fields", forwarded))
 		params.SetExtraFields(remaining)
 	}
 }
 
-// configureToolChoice forces the function an OpenAI tool_choice object names,
-// {"type":"function","function":{"name":...}}, and reports whether it did.
-// The string forms reach buildParams as llm.ToolChoice and are not seen here.
+// configureToolChoice sets the tool choice a tool_choice object gives, and
+// reports whether it could. OpenAI's object names a function,
+// {"type":"function","function":{"name":...}}; the Messages API's own is
+// {"type":"auto"|"any"|"none"} or {"type":"tool","name":...}. The string forms
+// reach buildParams as llm.ToolChoice and are not seen here. A tool the request
+// does not declare is refused, which leaves the tool choice buildParams set.
 func configureToolChoice(params *anthropicsdk.MessageNewParams, value any, thinking bool) bool {
 	choice, ok := value.(map[string]any)
-	if !ok || choice["type"] != "function" || len(params.Tools) == 0 {
+	if !ok || len(params.Tools) == 0 {
 		return false
 	}
-	function, _ := choice["function"].(map[string]any)
-	name := asString(function["name"])
+
+	var disable param.Opt[bool]
+	if d, ok := choice["disable_parallel_tool_use"].(bool); ok {
+		disable = anthropicsdk.Bool(d)
+	}
+	auto := anthropicsdk.ToolChoiceUnionParam{OfAuto: &anthropicsdk.ToolChoiceAutoParam{DisableParallelToolUse: disable}}
+
+	switch choice["type"] {
+	case "auto":
+		params.ToolChoice = auto
+	case "none":
+		params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfNone: &anthropicsdk.ToolChoiceNoneParam{}}
+	case "any":
+		// With extended thinking the API only accepts auto or none.
+		if thinking {
+			params.ToolChoice = auto
+			return true
+		}
+		params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAny: &anthropicsdk.ToolChoiceAnyParam{DisableParallelToolUse: disable}}
+	case "function", "tool":
+		name := asString(choice["name"])
+		if function, ok := choice["function"].(map[string]any); ok {
+			name = asString(function["name"])
+		}
+		if !declaresTool(params, name) {
+			return false
+		}
+		if thinking {
+			params.ToolChoice = auto
+			return true
+		}
+		params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfTool: &anthropicsdk.ToolChoiceToolParam{Name: name, DisableParallelToolUse: disable}}
+	default:
+		return false
+	}
+	return true
+}
+
+// declaresTool reports whether the request declares a tool of that name.
+func declaresTool(params *anthropicsdk.MessageNewParams, name string) bool {
 	if name == "" {
 		return false
 	}
-	// With extended thinking the API only accepts auto or none.
-	if thinking {
-		params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAuto: &anthropicsdk.ToolChoiceAutoParam{}}
-		return true
+	for _, tool := range params.Tools {
+		if tool.OfTool != nil && tool.OfTool.Name == name {
+			return true
+		}
 	}
-	params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfTool: &anthropicsdk.ToolChoiceToolParam{Name: name}}
-	return true
+	return false
 }
 
 // disableParallelToolUse applies parallel_tool_calls false to the tool choice,
@@ -185,28 +236,34 @@ func disableParallelToolUse(params *anthropicsdk.MessageNewParams, value any) bo
 	return true
 }
 
-// stringList reads OpenAI's stop, a string or an array of strings.
+// stringList reads OpenAI's stop, a string or an array of strings. Empty
+// strings are left out, the Messages API refusing an empty stop sequence.
 func stringList(value any) ([]string, bool) {
+	var items []any
 	switch v := value.(type) {
 	case string:
-		if v == "" {
+		items = []any{v}
+	case []string:
+		for _, item := range v {
+			items = append(items, item)
+		}
+	case []any:
+		items = v
+	default:
+		return nil, false
+	}
+
+	list := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
 			return nil, false
 		}
-		return []string{v}, true
-	case []string:
-		return v, len(v) > 0
-	case []any:
-		list := make([]string, 0, len(v))
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
+		if s != "" {
 			list = append(list, s)
 		}
-		return list, len(list) > 0
 	}
-	return nil, false
+	return list, len(list) > 0
 }
 
 // metadataUserID reads a metadata object the Messages API accepts, one whose
@@ -228,6 +285,13 @@ func asFloat(value any) (float64, bool) {
 		return float64(v), true
 	case int:
 		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
 	}
 	return 0, false
 }

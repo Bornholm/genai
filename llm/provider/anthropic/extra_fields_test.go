@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -77,8 +78,8 @@ func TestBuildParams_ExtraFields_TopPFollowsTheSamplingRules(t *testing.T) {
 			llm.WithTemperature(0.5),
 			llm.WithExtraFields(map[string]any{"top_p": 0.9}),
 		)
-		if _, ok := body["top_p"]; ok {
-			t.Errorf("top_p = %v, want it dropped next to a temperature", body["top_p"])
+		if body["top_p"] != 0.9 || body["temperature"] != 0.5 {
+			t.Errorf("top_p = %v, temperature = %v, want both kept", body["top_p"], body["temperature"])
 		}
 	})
 
@@ -157,5 +158,104 @@ func TestBuildParams_ExtraFields_ToolChoiceUnderThinking(t *testing.T) {
 	)
 	if got := body["tool_choice"]; !reflect.DeepEqual(got, map[string]any{"type": "auto"}) {
 		t.Errorf("tool_choice = %v, want auto under thinking", got)
+	}
+}
+
+func TestBuildParams_ExtraFields_MessagesToolChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		choice map[string]any
+		want   map[string]any
+	}{
+		{"none", map[string]any{"type": "none"}, map[string]any{"type": "none"}},
+		{"auto", map[string]any{"type": "auto", "disable_parallel_tool_use": true},
+			map[string]any{"type": "auto", "disable_parallel_tool_use": true}},
+		{"any", map[string]any{"type": "any"}, map[string]any{"type": "any"}},
+		{"tool", map[string]any{"type": "tool", "name": "weather"}, map[string]any{"type": "tool", "name": "weather"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := marshalParams(t,
+				llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+				llm.WithTools(weatherTool()),
+				llm.WithToolChoice(llm.ToolChoiceRequired),
+				llm.WithExtraFields(map[string]any{"tool_choice": tc.choice}),
+			)
+			if got := body["tool_choice"]; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("tool_choice = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildParams_ExtraFields_ToolChoiceNamingAnUndeclaredTool(t *testing.T) {
+	for _, choice := range []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "forecast"}},
+		{"type": "tool", "name": "forecast"},
+	} {
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithTools(weatherTool()),
+			llm.WithToolChoice(llm.ToolChoiceRequired),
+			llm.WithExtraFields(map[string]any{"tool_choice": choice}),
+		)
+		if got := body["tool_choice"]; !reflect.DeepEqual(got, map[string]any{"type": "any"}) {
+			t.Errorf("tool_choice = %v for %v, want the typed choice kept", got, choice)
+		}
+	}
+}
+
+func TestBuildParams_ExtraFields_DropsMalformedValues(t *testing.T) {
+	for _, tc := range []struct {
+		key   string
+		value any
+		wire  string
+	}{
+		{"stop", []any{}, "stop_sequences"},
+		{"stop", []any{"END", 1}, "stop_sequences"},
+		{"stop", []any{""}, "stop_sequences"},
+		{"stop", 42, "stop_sequences"},
+		{"user", 42, "metadata"},
+		{"metadata", map[string]any{"user_id": "u1", "team": "a"}, "metadata"},
+		{"metadata", map[string]any{"team": "a"}, "metadata"},
+		{"top_p", "0.9", "top_p"},
+		{"service_tier", "priority", "service_tier"},
+		{"parallel_tool_calls", "no", "tool_choice"},
+		{"tool_choice", map[string]any{"type": "allowed_tools"}, "tool_choice"},
+	} {
+		without := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithTools(weatherTool()),
+		)
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithTools(weatherTool()),
+			llm.WithExtraFields(map[string]any{tc.key: tc.value}),
+		)
+		if _, ok := body[tc.key]; ok && tc.key != tc.wire {
+			t.Errorf("%s = %v reached the request body: %v", tc.key, tc.value, body)
+		}
+		if got, want := body[tc.wire], without[tc.wire]; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v set %s = %v, want %v", tc.key, tc.value, tc.wire, got, want)
+		}
+	}
+}
+
+func TestBuildParams_ExtraFields_StopLeavesOutEmptyEntries(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"stop": []any{"END", ""}}),
+	)
+	if got := body["stop_sequences"]; !reflect.DeepEqual(got, []any{"END"}) {
+		t.Errorf("stop_sequences = %v, want [END]", got)
+	}
+}
+
+func TestBuildParams_ExtraFields_TopPAsAJSONNumber(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"top_p": json.Number("0.9")}),
+	)
+	if got := body["top_p"]; got != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", got)
 	}
 }

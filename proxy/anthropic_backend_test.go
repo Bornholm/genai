@@ -102,12 +102,13 @@ func TestAnthropicBackend_TranslatesOpenAIFields(t *testing.T) {
 	}
 }
 
-func TestAnthropicBackend_KeepsStopSequencesOnMessages(t *testing.T) {
+func TestAnthropicBackend_KeepsSamplingFieldsOnMessages(t *testing.T) {
 	server, upstreamBody := newAnthropicBackend(t)
 
 	reqBody := `{"model":"claude-sonnet-5","max_tokens":100,
 		"messages":[{"role":"user","content":"hi"}],
 		"stop_sequences":["END"],
+		"temperature":0.5,
 		"top_p":0.9}`
 	w := httptest.NewRecorder()
 	server.handleMessages(w, buildMessagesRequest(t, "/v1/messages", reqBody))
@@ -123,7 +124,7 @@ func TestAnthropicBackend_KeepsStopSequencesOnMessages(t *testing.T) {
 	if got := body["stop_sequences"]; !reflect.DeepEqual(got, []any{"END"}) {
 		t.Errorf("stop_sequences = %v, want [END]", got)
 	}
-	if got := body["top_p"]; got != 0.9 {
-		t.Errorf("top_p = %v, want 0.9", got)
+	if body["top_p"] != 0.9 || body["temperature"] != 0.5 {
+		t.Errorf("top_p = %v, temperature = %v, want both kept", body["top_p"], body["temperature"])
 	}
 }

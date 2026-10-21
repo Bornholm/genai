@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -34,7 +35,7 @@ var effortRatios = map[llm.ReasoningEffort]float64{
 
 // buildParams converts genai chat completion options to Messages API
 // parameters.
-func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens int64) (*anthropicsdk.MessageNewParams, error) {
+func buildParams(ctx context.Context, opts *llm.ChatCompletionOptions, model string, defaultMaxTokens int64) (*anthropicsdk.MessageNewParams, error) {
 	params := &anthropicsdk.MessageNewParams{
 		Model:     model,
 		MaxTokens: defaultMaxTokens,
@@ -111,7 +112,7 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 	params.System = system
 	params.Messages = messages
 
-	configureExtraFields(params, opts.ExtraFields, thinking)
+	configureExtraFields(ctx, params, opts.ExtraFields, thinking)
 
 	return params, nil
 }
