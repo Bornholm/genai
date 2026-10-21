@@ -111,9 +111,7 @@ func buildParams(opts *llm.ChatCompletionOptions, model string, defaultMaxTokens
 	params.System = system
 	params.Messages = messages
 
-	if len(opts.ExtraFields) > 0 {
-		params.SetExtraFields(opts.ExtraFields)
-	}
+	configureExtraFields(params, opts.ExtraFields, thinking)
 
 	return params, nil
 }
