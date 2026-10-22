@@ -30,6 +30,18 @@ func (c *recordingClient) Embeddings(ctx context.Context, inputs []string, funcs
 	return c.mockChatClient.Embeddings(ctx, inputs, funcs...)
 }
 
+func (c *recordingClient) Decision(_ context.Context, _ any, _ llm.Questions, _ ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	c.called = true
+	return llm.NewDecisionResponse("jev", map[string]llm.Answer{"q": llm.NewNoulAnswer(1)}, nil), nil
+}
+
+// failingClient fails every call with its error, decisions included.
+type failingClient struct{ mockChatClient }
+
+func (c *failingClient) Decision(_ context.Context, _ any, _ llm.Questions, _ ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	return nil, c.err
+}
+
 func newRecordingClient() *recordingClient {
 	return &recordingClient{mockChatClient: mockChatClient{
 		response: llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, "Hello!"), llm.NewChatCompletionUsage(5, 3, 8)),
@@ -51,6 +63,8 @@ var endpoints = []endpoint{
 		`{"model":"gpt-4","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`},
 	{"embeddings", (*Server).handleEmbeddings, "/v1/embeddings",
 		`{"model":"gpt-4","input":"hi"}`},
+	{"decisions", (*Server).handleDecisions, "/v1/decisions",
+		`{"model":"jev","state":"s","questions":{"q":{"type":"noul","instructions":"ok?"}}}`},
 }
 
 func (e endpoint) serve(s *Server) *httptest.ResponseRecorder {
@@ -308,7 +322,7 @@ func TestMessages_HookResponsesUseTheAnthropicEnvelope(t *testing.T) {
 func TestBackendError_KeepsItsCauseOutOfTheResponse(t *testing.T) {
 	for _, e := range endpoints {
 		t.Run(e.name, func(t *testing.T) {
-			client := &mockChatClient{err: errors.New("dial tcp 10.0.3.7:443: connect: connection refused")}
+			client := &failingClient{mockChatClient{err: errors.New("dial tcp 10.0.3.7:443: connect: connection refused")}}
 
 			w := e.serve(NewServer(WithDefaultClient(client)))
 
@@ -325,7 +339,7 @@ func TestBackendError_KeepsItsCauseOutOfTheResponse(t *testing.T) {
 func TestBackendError_KeepsAnAPIError(t *testing.T) {
 	for _, e := range endpoints {
 		t.Run(e.name, func(t *testing.T) {
-			client := &mockChatClient{err: &APIError{StatusCode: http.StatusTooManyRequests, Type: "rate_limit_error", Message: "slow down"}}
+			client := &failingClient{mockChatClient{err: &APIError{StatusCode: http.StatusTooManyRequests, Type: "rate_limit_error", Message: "slow down"}}}
 
 			w := e.serve(NewServer(WithDefaultClient(client)))
 

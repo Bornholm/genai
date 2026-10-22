@@ -49,7 +49,7 @@ Each provider's `ClientOptions` requires `Provider`, `BaseURL`, `Model`, and opt
 
 ### Resilience Wrappers (`llm/circuitbreaker/`, `llm/ratelimit/`, `llm/retry/`)
 
-Wrap any `llm.Client` with circuit breaker, rate limiting, or retry logic — these implement the four interfaces of `llm.Client` only. The optional capabilities (`ImageGenerationClient`, `DecisionClient`, `DiscoveryClient`) do not survive the wrapping: assert them on the client returned by `provider.Create`, before wrapping it.
+Wrap any `llm.Client` with circuit breaker, rate limiting, or retry logic — these implement the four interfaces of `llm.Client`, the Messages relay and `DecisionClient`. A decorator has a `RelayMessages` and a `Decision` method whatever it wraps, so it reports on the wrapped client through `SupportsMessagesRelay()` and `SupportsDecision()`: check a capability with `llm.SupportsMessagesRelay` / `llm.SupportsDecision`, never a bare type assertion, and delegate with `llm.RelayMessages` / `llm.Decide`. `ImageGenerationClient` and `DiscoveryClient` do not survive the wrapping: assert them on the client returned by `provider.Create`, before wrapping it.
 
 ### Agent Framework (`agent/`, `agent/loop/`)
 

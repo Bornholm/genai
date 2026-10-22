@@ -15,6 +15,12 @@ const (
 	RequestTypeModels         RequestType = "models"
 	RequestTypeMessage        RequestType = "message"
 	RequestTypeCountTokens    RequestType = "count_tokens"
+	// RequestTypeDecision evaluates a state against typed questions, see
+	// llm.DecisionClient. Body holds the request in the TypeSafe wire format,
+	// and the state and questions sent upstream are read from it once the
+	// pre-request hooks have run. The model is req.Model, as on the other
+	// routes, whatever the body names.
+	RequestTypeDecision RequestType = "decision"
 )
 
 // ProxyRequest encapsulates any request transiting through the proxy.

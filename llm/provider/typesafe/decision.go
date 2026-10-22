@@ -169,9 +169,7 @@ func (c *DecisionClient) Decision(ctx context.Context, state any, questions llm.
 	// 429 and 529 (overloaded) both ask for a backoff: RateLimitError tags
 	// the first, and llm.IsRetryable already covers the 5xx range, so any
 	// retry keyed on llm.IsRetryable handles both without knowing this
-	// endpoint. Note that llm/retry does not forward DecisionClient, no
-	// more than it forwards ImageGenerationClient: wrapping a client there
-	// strips the capability, so the backoff is the caller's to apply.
+	// endpoint, llm/retry included, which forwards DecisionClient.
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, errors.WithStack(llm.RateLimitError(resp.StatusCode, errorMessage(raw)))
 	}
@@ -316,7 +314,9 @@ func encodeQuestion(question llm.Question) (any, error) {
 type decisionResponse struct {
 	Model   string                   `json:"model"`
 	Answers map[string]answerPayload `json:"answers"`
-	Usage   usagePayload             `json:"usage"`
+	// Usage is nil when the upstream reports none: zeroed counts would
+	// read as a free call.
+	Usage *usagePayload `json:"usage"`
 }
 
 type usagePayload struct {
@@ -329,7 +329,10 @@ type usagePayload struct {
 	Cost *float64 `json:"cost"`
 }
 
-func (u usagePayload) toUsage() llm.DecisionUsage {
+func (u *usagePayload) toUsage() llm.DecisionUsage {
+	if u == nil {
+		return nil
+	}
 	total := u.TotalTokens
 	if total == 0 {
 		total = u.InputTokens + u.OutputTokens

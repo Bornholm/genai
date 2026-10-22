@@ -12,10 +12,13 @@ import (
 // calibrated probabilities rather than free text.
 //
 // Like [ImageGenerationClient], it is deliberately NOT a member of [Client]:
-// adding a method there breaks every existing implementation. Callers
-// discover the capability with a type assertion:
+// adding a method there breaks every existing implementation. A type
+// assertion is not enough to discover the capability, since decorators
+// implement the interface whatever they wrap: callers check it with
+// [SupportsDecision] and call through [Decide].
 //
-//	if decider, ok := client.(llm.DecisionClient); ok {
+//	if llm.SupportsDecision(client) {
+//	    res, err := llm.Decide(ctx, client, state, questions)
 //	    // ...
 //	}
 //
@@ -23,6 +26,31 @@ import (
 // questions, and one answer per question under the same names.
 type DecisionClient interface {
 	Decision(ctx context.Context, state any, questions Questions, funcs ...DecisionOptionFunc) (DecisionResponse, error)
+}
+
+// SupportsDecision reports whether client can evaluate decisions.
+//
+// A decorator has a Decision method whatever it wraps, and so does the
+// provider client, whatever capabilities it was configured with: both also
+// implement SupportsDecision() bool to report on what they hold. A
+// decorator without either method hides the capability.
+func SupportsDecision(client any) bool {
+	if _, ok := client.(DecisionClient); !ok {
+		return false
+	}
+	if s, ok := client.(interface{ SupportsDecision() bool }); ok {
+		return s.SupportsDecision()
+	}
+	return true
+}
+
+// Decide evaluates through client, or returns ErrUnavailable when it cannot.
+// It is how a decorator delegates to the client it wraps.
+func Decide(ctx context.Context, client any, state any, questions Questions, funcs ...DecisionOptionFunc) (DecisionResponse, error) {
+	if !SupportsDecision(client) {
+		return nil, errors.WithStack(ErrUnavailable)
+	}
+	return client.(DecisionClient).Decision(ctx, state, questions, funcs...)
 }
 
 // Questions maps an id you choose to the question asked under it. The

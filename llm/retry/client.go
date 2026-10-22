@@ -74,6 +74,37 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 	}
 }
 
+// Decision implements llm.DecisionClient. An evaluation has no side effect
+// upstream, so a failed one is replayed like an embeddings call.
+func (c *Client) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	if !llm.SupportsDecision(c.client) {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
+	backoff := c.baseDelay
+	retries := 0
+
+	for {
+		res, err := llm.Decide(ctx, c.client, state, questions, funcs...)
+		if err == nil {
+			return res, nil
+		}
+		if retries >= c.maxRetries || !llm.IsRetryable(err) {
+			return nil, errors.WithStack(err)
+		}
+		slog.DebugContext(ctx, "decision failed, will retry", slog.Int("retries", retries), slog.Duration("backoff", backoff), slog.Any("error", err))
+		retries++
+		if !wait(ctx, backoff) {
+			return nil, errors.WithStack(stderrors.Join(ctx.Err(), err))
+		}
+		backoff *= 2
+	}
+}
+
+// SupportsDecision reports on the wrapped client, see llm.SupportsDecision.
+func (c *Client) SupportsDecision() bool {
+	return llm.SupportsDecision(c.client)
+}
+
 // Transcription implements llm.Client.
 func (c *Client) Transcription(ctx context.Context, audio []byte, funcs ...llm.TranscriptionOptionFunc) (llm.TranscriptionResponse, error) {
 	backoff := c.baseDelay
@@ -318,7 +349,11 @@ func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int, funcs
 	}
 }
 
-var _ llm.Client = &Client{}
+var (
+	_ llm.Client              = &Client{}
+	_ llm.MessagesRelayClient = &Client{}
+	_ llm.DecisionClient      = &Client{}
+)
 
 // Close releases the wrapped client when it implements io.Closer, so that a
 // plugin client stays releasable behind this decorator. The decorator owns

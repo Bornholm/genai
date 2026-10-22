@@ -207,19 +207,20 @@ GENAI_DECISION_OPENROUTER_MODEL=~typesafe/jev-latest
 ```
 
 Like image generation, decisions are an optional capability: `llm.DecisionClient`
-is not part of `llm.Client`, so it is reached with a type assertion. A client
-from `provider.Create` always satisfies the interface, so the assertion only
-catches a wrapped client, since `llm/retry`, `llm/ratelimit` and
-`llm/circuitbreaker` do not forward the capability. A client built without a
-decision provider fails at the call with `llm.ErrUnavailable`.
+is not part of `llm.Client`. A client from `provider.Create` and the
+`llm/retry`, `llm/ratelimit` and `llm/circuitbreaker` decorators always have a
+`Decision` method, so check the capability with `llm.SupportsDecision`, which
+asks them about what they actually hold. A client that cannot decide fails at
+the call with `llm.ErrUnavailable`. Decisions go through the chat limit of
+`llm/ratelimit`, and `llm/retry` replays a failed one. `llm/tokenlimit`,
+`llm/hook` and the go-plugin provider host do not carry the capability yet.
 
 ```go
-decider, ok := client.(llm.DecisionClient)
-if !ok {
+if !llm.SupportsDecision(client) {
   log.Fatal("[FATAL] client does not support decisions")
 }
 
-res, err := decider.Decision(ctx, "Help! My payouts have been failing for 3 days.", llm.Questions{
+res, err := llm.Decide(ctx, client, "Help! My payouts have been failing for 3 days.", llm.Questions{
   "is_urgent": llm.NoulQuestion{
     Instructions: "Does this convey urgency?",
     True:         "Explicitly time-sensitive",
@@ -254,6 +255,20 @@ log.Printf("[URGENT] %.2f", urgent.Noul())
 slice: a long question carrying the data it refers to is expressed as a map
 holding the question in one field and the data in the others, referenced by
 name in backticks.
+
+The proxy serves decisions on `POST /decisions`, in the TypeSafe wire format
+that OpenRouter's decisions endpoint shares: `{"model", "state", "questions"}`
+in, `{"model", "answers", "usage"}` out. A client of either service points
+its endpoint URL at the proxy's `/decisions`: the payload is shared, the
+path is not. The hooks see a `RequestTypeDecision` request, and the input
+and output tokens as prompt and completion tokens, with the cost when the
+upstream reports one. That cost stays out of the response body, and the
+usage is left out when the upstream reports none. A pre-request hook may
+rewrite `Body`: the state and questions sent upstream are read from it once
+the hooks have run, while the model stays the one in `req.Model`, as on the
+other routes. The session read from the client's headers reaches the hooks
+and the upstream context, but no decision client sends it upstream yet. A
+model whose client cannot decide is answered with a 400.
 
 ## Examples
 
