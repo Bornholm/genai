@@ -31,8 +31,8 @@ func TestBuildParams_ExtraFields_TranslatesOpenAIFields(t *testing.T) {
 	if got := body["stop_sequences"]; !reflect.DeepEqual(got, []any{"END", "STOP"}) {
 		t.Errorf("stop_sequences = %v, want [END STOP]", got)
 	}
-	if got := body["metadata"]; !reflect.DeepEqual(got, map[string]any{"user_id": "u1"}) {
-		t.Errorf("metadata = %v, want the user as user_id", got)
+	if got := body["metadata"]; !reflect.DeepEqual(got, map[string]any{"user_id": "sha256:bb82030dbc2bcaba"}) {
+		t.Errorf("metadata = %v, want the fingerprint of the user as user_id", got)
 	}
 	if got := body["top_p"]; got != 0.9 {
 		t.Errorf("top_p = %v, want 0.9", got)
@@ -215,7 +215,6 @@ func TestBuildParams_ExtraFields_DropsMalformedValues(t *testing.T) {
 		{"stop", []any{""}, "stop_sequences"},
 		{"stop", 42, "stop_sequences"},
 		{"user", 42, "metadata"},
-		{"metadata", map[string]any{"user_id": "u1", "team": "a"}, "metadata"},
 		{"metadata", map[string]any{"team": "a"}, "metadata"},
 		{"top_p", "0.9", "top_p"},
 		{"service_tier", "priority", "service_tier"},
@@ -257,5 +256,53 @@ func TestBuildParams_ExtraFields_TopPAsAJSONNumber(t *testing.T) {
 	)
 	if got := body["top_p"]; got != 0.9 {
 		t.Errorf("top_p = %v, want 0.9", got)
+	}
+}
+
+func TestBuildParams_ExtraFields_KeepsTheUserIDOfAnOpenAIMetadata(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"metadata": map[string]any{"user_id": "u2", "team": "a"}}),
+	)
+	if got := body["metadata"]; !reflect.DeepEqual(got, map[string]any{"user_id": "u2"}) {
+		t.Errorf("metadata = %v, want only its user_id", got)
+	}
+}
+
+func TestBuildParams_ExtraFields_TopK(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"top_k": 40}),
+	)
+	if got := body["top_k"]; got != float64(40) {
+		t.Errorf("top_k = %v, want 40", got)
+	}
+
+	budget := 2048
+	enabled := true
+	body = marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithMaxCompletionTokens(8192),
+		llm.WithReasoning(&llm.ReasoningOptions{MaxTokens: &budget, Enabled: &enabled}),
+		llm.WithExtraFields(map[string]any{"top_k": 40}),
+	)
+	if _, ok := body["top_k"]; ok {
+		t.Errorf("top_k = %v, want it dropped under thinking", body["top_k"])
+	}
+}
+
+func TestBuildParams_ExtraFields_DropsFieldsTheProxyMaps(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{
+			"max_completion_tokens": 10,
+			"reasoning_effort":      "low",
+			"response_format":       map[string]any{"type": "json_object"},
+		}),
+	)
+	for _, key := range []string{"max_completion_tokens", "reasoning_effort", "response_format"} {
+		if _, ok := body[key]; ok {
+			t.Errorf("%s reached the request body: %v", key, body)
+		}
 	}
 }

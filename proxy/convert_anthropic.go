@@ -143,10 +143,18 @@ func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts
 			case "none":
 				opts = append(opts, llm.WithToolChoice(llm.ToolChoiceNone))
 			case "tool":
-				slog.Debug("anthropic tool_choice forcing a specific tool is not supported, falling back to required",
-					slog.Any("name", toolChoice["name"]),
-				)
+				// llm.ToolChoice cannot name a tool. The OpenAI object form,
+				// which extra fields follow, carries the name: the openai
+				// provider forwards it and the anthropic one translates it.
 				opts = append(opts, llm.WithToolChoice(llm.ToolChoiceRequired))
+				if name, _ := toolChoice["name"].(string); name != "" {
+					opts = append(opts, llm.WithExtraFields(map[string]any{
+						"tool_choice": map[string]any{"type": "function", "function": map[string]any{"name": name}},
+					}))
+				}
+			}
+			if disable, _ := toolChoice["disable_parallel_tool_use"].(bool); disable {
+				opts = append(opts, llm.WithExtraFields(map[string]any{"parallel_tool_calls": false}))
 			}
 		}
 	} else if len(req.Tools) > 0 {

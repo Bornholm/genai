@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"maps"
@@ -37,6 +39,11 @@ var openAIOnlyFields = map[string]struct{}{
 	"stream_options":     {},
 	"functions":          {},
 	"function_call":      {},
+	// The proxy maps these to typed options, but a caller setting them as
+	// extra fields would send them as they are.
+	"max_completion_tokens": {},
+	"reasoning_effort":      {},
+	"response_format":       {},
 }
 
 // configureExtraFields sets the Messages API counterpart of the OpenAI fields
@@ -46,7 +53,10 @@ var openAIOnlyFields = map[string]struct{}{
 // thinking is whether buildParams enabled it.
 //
 //   - stop becomes stop_sequences.
-//   - user becomes metadata.user_id.
+//   - user becomes metadata.user_id, as a fingerprint: the API asks for an
+//     opaque identifier, and OpenAI's user is often an email or a login. The
+//     fingerprint has the format of the proxy's TokenFingerprint. A
+//     metadata.user_id the caller sets is sent as it is.
 //   - top_p is kept unless thinking is on, where the API restricts it, as the
 //     temperature is. A model refusing it next to a temperature answers 400:
 //     the caller sent both.
@@ -55,8 +65,11 @@ var openAIOnlyFields = map[string]struct{}{
 //     of the request's tools. Under thinking, forcing a tool falls back to
 //     auto, as ToolChoiceRequired does.
 //   - parallel_tool_calls false disables parallel tool use.
-//   - metadata and service_tier exist on both APIs with different values, so
-//     they are kept only when the Messages API accepts them.
+//   - top_k, an Anthropic field, is forwarded unless thinking is on, where the
+//     API refuses it.
+//   - metadata and service_tier exist on both APIs with different values.
+//     Only metadata.user_id is kept, OpenAI's other tags dropped, and
+//     service_tier only with a value the Messages API accepts.
 func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewParams, extra map[string]any, thinking bool) {
 	if len(extra) == 0 {
 		return
@@ -83,16 +96,31 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 				continue
 			}
 			if !params.Metadata.UserID.Valid() {
-				params.Metadata.UserID = anthropicsdk.String(user)
+				params.Metadata.UserID = anthropicsdk.String(userFingerprint(user))
 			}
 
 		case "metadata":
-			userID, ok := metadataUserID(value)
-			if !ok {
-				drop(key)
+			metadata, _ := value.(map[string]any)
+			for tag := range metadata {
+				if tag != "user_id" {
+					drop(key + "." + tag)
+				}
+			}
+			userID := asString(metadata["user_id"])
+			if userID == "" {
+				if len(metadata) == 0 {
+					drop(key)
+				}
 				continue
 			}
 			params.Metadata.UserID = anthropicsdk.String(userID)
+
+		case "top_k":
+			if thinking {
+				drop(key)
+				continue
+			}
+			remaining[key] = value
 
 		case "top_p":
 			topP, ok := asFloat(value)
@@ -266,15 +294,13 @@ func stringList(value any) ([]string, bool) {
 	return list, len(list) > 0
 }
 
-// metadataUserID reads a metadata object the Messages API accepts, one whose
-// only field is user_id. OpenAI's metadata is a map of arbitrary tags.
-func metadataUserID(value any) (string, bool) {
-	metadata, ok := value.(map[string]any)
-	if !ok || len(metadata) != 1 {
-		return "", false
-	}
-	userID := asString(metadata["user_id"])
-	return userID, userID != ""
+// userFingerprint is "sha256:" followed by the first 16 hexadecimal digits of
+// the SHA-256 of user, the format of the proxy's TokenFingerprint. It keeps
+// the identifier stable without sending it: a guessable one, such as an email,
+// is pseudonymised rather than protected.
+func userFingerprint(user string) string {
+	sum := sha256.Sum256([]byte(user))
+	return "sha256:" + hex.EncodeToString(sum[:8])
 }
 
 func asFloat(value any) (float64, bool) {

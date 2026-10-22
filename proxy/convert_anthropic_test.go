@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -312,6 +313,30 @@ func TestParseMessagesRequest_Thinking(t *testing.T) {
 	}
 	if compiled.Reasoning.Enabled == nil || !*compiled.Reasoning.Enabled {
 		t.Errorf("reasoning enabled = %v, want true", compiled.Reasoning.Enabled)
+	}
+}
+
+func TestParseMessagesRequest_NamedToolChoiceTravelsInTheOpenAIForm(t *testing.T) {
+	body := json.RawMessage(`{
+		"model": "m",
+		"max_tokens": 100,
+		"tool_choice": {"type": "tool", "name": "calculator", "disable_parallel_tool_use": true},
+		"tools": [{"name": "calculator", "input_schema": {"type": "object"}}],
+		"messages": [{"role": "user", "content": "Hi"}]
+	}`)
+
+	_, _, opts, err := ParseMessagesRequest(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	extra := llm.NewChatCompletionOptions(opts...).ExtraFields
+	want := map[string]any{"type": "function", "function": map[string]any{"name": "calculator"}}
+	if got := extra["tool_choice"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("tool_choice = %v, want %v", got, want)
+	}
+	if got := extra["parallel_tool_calls"]; got != false {
+		t.Errorf("parallel_tool_calls = %v, want false", got)
 	}
 }
 

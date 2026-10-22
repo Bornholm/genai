@@ -93,8 +93,8 @@ func TestAnthropicBackend_TranslatesOpenAIFields(t *testing.T) {
 	if got := body["stop_sequences"]; !reflect.DeepEqual(got, []any{"END"}) {
 		t.Errorf("stop_sequences = %v, want [END]", got)
 	}
-	if got := body["metadata"]; !reflect.DeepEqual(got, map[string]any{"user_id": "u1"}) {
-		t.Errorf("metadata = %v, want the user as user_id", got)
+	if got := body["metadata"]; !reflect.DeepEqual(got, map[string]any{"user_id": TokenFingerprint("u1")}) {
+		t.Errorf("metadata = %v, want the fingerprint of the user as user_id", got)
 	}
 	want := map[string]any{"type": "tool", "name": "weather", "disable_parallel_tool_use": true}
 	if got := body["tool_choice"]; !reflect.DeepEqual(got, want) {
@@ -126,5 +126,25 @@ func TestAnthropicBackend_KeepsSamplingFieldsOnMessages(t *testing.T) {
 	}
 	if body["top_p"] != 0.9 || body["temperature"] != 0.5 {
 		t.Errorf("top_p = %v, temperature = %v, want both kept", body["top_p"], body["temperature"])
+	}
+}
+
+func TestAnthropicBackend_KeepsANamedToolChoiceOnMessages(t *testing.T) {
+	server, upstreamBody := newAnthropicBackend(t)
+
+	reqBody := `{"model":"claude-sonnet-5","max_tokens":100,
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"name":"weather","input_schema":{"type":"object"}}],
+		"tool_choice":{"type":"tool","name":"weather","disable_parallel_tool_use":true}}`
+	w := httptest.NewRecorder()
+	server.handleMessages(w, buildMessagesRequest(t, "/v1/messages", reqBody))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	want := map[string]any{"type": "tool", "name": "weather", "disable_parallel_tool_use": true}
+	if got := upstreamBody()["tool_choice"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("tool_choice = %v, want %v", got, want)
 	}
 }
