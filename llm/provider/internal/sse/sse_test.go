@@ -40,3 +40,11 @@ func TestReader_ReadsLongLines(t *testing.T) {
 		t.Fatalf("got %d bytes, %v", len(event.Data), err)
 	}
 }
+
+func TestReader_SkipsEventsWithEmptyData(t *testing.T) {
+	r := NewReader(strings.NewReader("data:\n\nevent: ping\ndata: \n\nid: 1\n\ndata: {}\n\n"))
+	event, err := r.Next()
+	if err != nil || string(event.Data) != "{}" || event.Name != "" {
+		t.Fatalf("event = %+v, %v", event, err)
+	}
+}

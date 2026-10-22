@@ -64,6 +64,7 @@ func NewSDKClient(opts provider.CommonOptions) openaisdk.Client {
 	options := []option.RequestOption{
 		option.WithBaseURL(opts.BaseURL),
 		option.WithMaxRetries(0), // genai's llmretry wrapper handles all retries
+		option.WithMiddleware(skipEmptySSEEvents),
 	}
 	if opts.APIKey != "" {
 		options = append(options, option.WithAPIKey(opts.APIKey))
