@@ -26,7 +26,14 @@ import (
 // routed to Anthropic.
 //
 // A field forwarded this way overrides the one buildParams sets from a typed
-// option of the same name.
+// option of the same name. A forwarded thinking is read, so the sampling and
+// tool choice rules follow it. A forwarded max_tokens or tools is not: the
+// caller then answers for a thinking budget under max_tokens, and a
+// tool_choice naming a tool is checked against the typed tools only.
+//
+// The list was checked against MessageNewParams and BetaMessageNewParams of
+// anthropic-sdk-go v1.72.0; TestMessagesAPIFields_CoversTheSDKParams fails
+// when a bump adds a field to either.
 var messagesAPIFields = map[string]struct{}{
 	"cache_control":         {},
 	"container":             {},
@@ -57,7 +64,8 @@ const maxUserIDLength = 256
 // that have one, forwards the fields the Messages API defines (see
 // messagesAPIFields) and drops the rest. Each field dropped, in whole or in
 // part, is logged at debug level. It runs after the typed options, whose rules
-// it follows: thinking is whether buildParams enabled it.
+// it follows: thinking is whether buildParams enabled it, unless a forwarded
+// thinking field says otherwise.
 //
 //   - stop becomes stop_sequences.
 //   - user becomes metadata.user_id, as a fingerprint: the API asks for an
@@ -65,6 +73,10 @@ const maxUserIDLength = 256
 //     fingerprint has the format of the proxy's TokenFingerprint. A
 //     metadata.user_id the caller sets wins over user and is sent as it is,
 //     cut to the length the API accepts.
+//   - thinking, forwarded as it is, turns the rules below on or off. When it
+//     enables thinking, the temperature, set by an option or forwarded, is
+//     dropped and a forced tool choice falls back to auto, as with an
+//     option enabling it.
 //   - top_p is kept unless thinking is on, where the API restricts it, as the
 //     temperature is. A model refusing it next to a temperature answers 400:
 //     the caller sent both.
@@ -78,6 +90,8 @@ const maxUserIDLength = 256
 //     llm.ToolChoice, the option a library caller sets instead.
 //   - top_k, an Anthropic field, is forwarded when it is a whole number,
 //     unless thinking is on, where the API refuses it.
+//   - a native field and its OpenAI counterpart, stop_sequences and stop for
+//     instance, are both read; the native one, forwarded last, wins.
 //   - metadata and service_tier exist on both APIs with different values.
 //     Only metadata.user_id is kept, OpenAI's other tags dropped, and
 //     service_tier only with a value the Messages API accepts.
@@ -90,6 +104,17 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 	var dropped []string
 	drop := func(key string) { dropped = append(dropped, key) }
 	var user, metadataUserID string
+
+	if on, set := forwardedThinking(extra["thinking"]); set && on != thinking {
+		thinking = on
+		if thinking {
+			if params.Temperature.Valid() {
+				params.Temperature = param.Opt[float64]{}
+				drop("temperature")
+			}
+			unforceToolChoice(params)
+		}
+	}
 
 	for key, value := range extra {
 		switch key {
@@ -151,6 +176,15 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 
 		case "tool_choice", "parallel_tool_calls":
 			// Applied below, once the tool choice they refine is known.
+
+		case "temperature":
+			// The API rejects any temperature but the default once thinking
+			// is on, as buildParams has it.
+			if thinking {
+				drop(key)
+				continue
+			}
+			remaining[key] = value
 
 		default:
 			if _, defined := messagesAPIFields[key]; !defined {
@@ -241,6 +275,37 @@ func configureToolChoice(params *anthropicsdk.MessageNewParams, value any, think
 	return true
 }
 
+// forwardedThinking reads a thinking field forwarded as it is, and reports
+// whether it enables thinking and whether it says.
+func forwardedThinking(value any) (on, set bool) {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return false, false
+	}
+	switch config["type"] {
+	case "enabled", "adaptive":
+		return true, true
+	case "disabled":
+		return false, true
+	}
+	return false, false
+}
+
+// unforceToolChoice turns a tool choice forcing a tool into auto, the one
+// besides none the API accepts with thinking on, keeping its parallel tool use.
+func unforceToolChoice(params *anthropicsdk.MessageNewParams) {
+	var disable param.Opt[bool]
+	switch choice := params.ToolChoice; {
+	case choice.OfAny != nil:
+		disable = choice.OfAny.DisableParallelToolUse
+	case choice.OfTool != nil:
+		disable = choice.OfTool.DisableParallelToolUse
+	default:
+		return
+	}
+	params.ToolChoice = anthropicsdk.ToolChoiceUnionParam{OfAuto: &anthropicsdk.ToolChoiceAutoParam{DisableParallelToolUse: disable}}
+}
+
 // declaresTool reports whether the request declares a tool of that name.
 func declaresTool(params *anthropicsdk.MessageNewParams, name string) bool {
 	if name == "" {
@@ -320,7 +385,9 @@ func stringList(value any) ([]string, bool) {
 // userFingerprint is "sha256:" followed by the first 16 hexadecimal digits of
 // the SHA-256 of user, the format of the proxy's TokenFingerprint. It keeps
 // the identifier stable without sending it: a guessable one, such as an email,
-// is pseudonymised rather than protected.
+// is pseudonymised rather than protected. Keep it in step with
+// proxy.TokenFingerprint, which this package cannot import: a proxy test
+// checks the two agree.
 func userFingerprint(user string) string {
 	sum := sha256.Sum256([]byte(user))
 	return "sha256:" + hex.EncodeToString(sum[:8])

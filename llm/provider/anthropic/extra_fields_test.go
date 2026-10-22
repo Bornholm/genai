@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/bornholm/genai/llm"
 )
 
@@ -404,5 +406,88 @@ func TestBuildParams_ExtraFields_CutsALongMetadataUserID(t *testing.T) {
 	metadata, _ := body["metadata"].(map[string]any)
 	if got, _ := metadata["user_id"].(string); got != strings.Repeat("é", maxUserIDLength) {
 		t.Errorf("user_id has %d characters, want %d", len([]rune(got)), maxUserIDLength)
+	}
+}
+
+func TestBuildParams_ExtraFields_ForwardedThinking(t *testing.T) {
+	thinking := map[string]any{"type": "enabled", "budget_tokens": 2048}
+
+	t.Run("drops what the API refuses with it", func(t *testing.T) {
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithMaxCompletionTokens(8192),
+			llm.WithTemperature(0.5),
+			llm.WithTools(weatherTool()),
+			llm.WithToolChoice(llm.ToolChoiceRequired),
+			llm.WithExtraFields(map[string]any{"thinking": thinking, "top_p": 0.9, "top_k": 5}),
+		)
+		if !reflect.DeepEqual(body["thinking"], map[string]any{"type": "enabled", "budget_tokens": float64(2048)}) {
+			t.Errorf("thinking = %v, want it forwarded", body["thinking"])
+		}
+		for _, key := range []string{"temperature", "top_p", "top_k"} {
+			if _, ok := body[key]; ok {
+				t.Errorf("%s = %v, want it dropped under a forwarded thinking", key, body[key])
+			}
+		}
+		if got := body["tool_choice"]; !reflect.DeepEqual(got, map[string]any{"type": "auto"}) {
+			t.Errorf("tool_choice = %v, want auto under a forwarded thinking", got)
+		}
+	})
+
+	t.Run("adaptive", func(t *testing.T) {
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithTools(weatherTool()),
+			llm.WithExtraFields(map[string]any{
+				"thinking":            map[string]any{"type": "adaptive"},
+				"temperature":         0.5,
+				"tool_choice":         map[string]any{"type": "function", "function": map[string]any{"name": "weather"}},
+				"parallel_tool_calls": false,
+			}),
+		)
+		if _, ok := body["temperature"]; ok {
+			t.Errorf("temperature = %v, want it dropped under a forwarded thinking", body["temperature"])
+		}
+		want := map[string]any{"type": "auto", "disable_parallel_tool_use": true}
+		if got := body["tool_choice"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("tool_choice = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"thinking": map[string]any{"type": "disabled"}, "top_p": 0.9, "temperature": 0.5}),
+		)
+		if body["top_p"] != 0.9 || body["temperature"] != 0.5 {
+			t.Errorf("top_p = %v, temperature = %v, want both kept", body["top_p"], body["temperature"])
+		}
+	})
+}
+
+func TestBuildParams_ExtraFields_LogsTheTemperatureAForwardedThinkingDrops(t *testing.T) {
+	dropped := droppedFields(t, map[string]any{"thinking": map[string]any{"type": "adaptive"}}, llm.WithTemperature(0.5))
+	if !reflect.DeepEqual(dropped, []string{"temperature"}) {
+		t.Errorf("dropped = %v, want [temperature]", dropped)
+	}
+}
+
+// translatedFields are the Messages API fields configureExtraFields sets from
+// a value of its own, rather than forwarding them as they are.
+var translatedFields = []string{"metadata", "service_tier", "tool_choice", "top_k", "top_p"}
+
+func TestMessagesAPIFields_CoversTheSDKParams(t *testing.T) {
+	for _, params := range []any{anthropicsdk.MessageNewParams{}, anthropicsdk.BetaMessageNewParams{}} {
+		typ := reflect.TypeOf(params)
+		for i := range typ.NumField() {
+			name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+			if name == "" || name == "-" {
+				continue
+			}
+			if _, forwarded := messagesAPIFields[name]; forwarded || slices.Contains(translatedFields, name) {
+				continue
+			}
+			t.Errorf("%s, a %s field, is neither forwarded nor translated: add it to messagesAPIFields", name, typ.Name())
+		}
 	}
 }

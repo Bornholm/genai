@@ -36,7 +36,8 @@ func BearerTokenExtractor() AuthExtractor {
 // instance to key a per-user quota: "sha256:" followed by the first 16
 // hexadecimal digits of the SHA-256 of the token. The format is part of the
 // contract: stored usage and quota keys depend on it. It does not protect a
-// guessable token, which an API key is not.
+// guessable token, which an API key is not. The anthropic provider gives an
+// OpenAI user the same format, in a copy of its own: keep the two in step.
 func TokenFingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return "sha256:" + hex.EncodeToString(sum[:8])
