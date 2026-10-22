@@ -32,9 +32,11 @@ func NewReader(r io.Reader) *Reader {
 }
 
 // Next returns the next event that carries data. Comments, retry and id
-// fields are skipped. At the end of the stream it returns io.EOF; an event
-// left unterminated by the end of the stream is dropped, as the
-// specification requires: it is what a connection cut mid-event leaves.
+// fields are skipped, and so is an event whose data is empty, such as a lone
+// "data:": the specification does not dispatch it. At the end of the stream
+// it returns io.EOF; an event left unterminated by the end of the stream is
+// dropped, as the specification requires: it is what a connection cut
+// mid-event leaves.
 func (r *Reader) Next() (Event, error) {
 	var (
 		event   Event
@@ -43,10 +45,11 @@ func (r *Reader) Next() (Event, error) {
 	for r.scanner.Scan() {
 		line := bytes.TrimSuffix(r.scanner.Bytes(), []byte("\r"))
 		if len(line) == 0 {
-			if hasData {
+			if hasData && len(event.Data) > 0 {
 				return event, nil
 			}
 			event = Event{}
+			hasData = false
 			continue
 		}
 		field, value, _ := bytes.Cut(line, []byte(":"))
