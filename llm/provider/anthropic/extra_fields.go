@@ -7,56 +7,64 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
+	"unicode/utf8"
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
 
-// openAIOnlyFields lists OpenAI request fields the Messages API has no
-// counterpart for. Extra fields follow the OpenAI shape, the one the proxy
-// forwards the fields it has no mapping for in, so that portable sampling
-// parameters are not silently dropped. The Messages API answers 400 "Extra
-// inputs are not permitted" on any field it does not know, and clients built
-// against the OpenAI API send these without knowing the request will be routed
-// to Anthropic.
-var openAIOnlyFields = map[string]struct{}{
-	"frequency_penalty":  {},
-	"presence_penalty":   {},
-	"logit_bias":         {},
-	"logprobs":           {},
-	"top_logprobs":       {},
-	"n":                  {},
-	"seed":               {},
-	"modalities":         {},
-	"audio":              {},
-	"prediction":         {},
-	"store":              {},
-	"prompt_cache_key":   {},
-	"safety_identifier":  {},
-	"web_search_options": {},
-	"verbosity":          {},
-	"stream_options":     {},
-	"functions":          {},
-	"function_call":      {},
-	// The proxy maps these to typed options, but a caller setting them as
-	// extra fields would send them as they are.
-	"max_completion_tokens": {},
-	"reasoning_effort":      {},
-	"response_format":       {},
+// messagesAPIFields lists the request fields of the Messages API, beta ones
+// included, that configureExtraFields does not translate: they are forwarded
+// as they are, for a caller that knows the request goes to Anthropic. A field
+// the API does not define is dropped instead. Extra fields follow the OpenAI
+// shape, the one the proxy forwards the fields it has no mapping for in, and
+// the Messages API answers 400 "Extra inputs are not permitted" on any field
+// it does not know. Clients built against the OpenAI API, or an OpenAI
+// compatible gateway, send such fields without knowing the request will be
+// routed to Anthropic.
+//
+// A field forwarded this way overrides the one buildParams sets from a typed
+// option of the same name.
+var messagesAPIFields = map[string]struct{}{
+	"cache_control":         {},
+	"container":             {},
+	"context_management":    {},
+	"diagnostics":           {},
+	"fallback_credit_token": {},
+	"fallbacks":             {},
+	"inference_geo":         {},
+	"max_tokens":            {},
+	"mcp_servers":           {},
+	"messages":              {},
+	"model":                 {},
+	"output_config":         {},
+	"output_format":         {},
+	"speed":                 {},
+	"stop_sequences":        {},
+	"stream":                {},
+	"system":                {},
+	"temperature":           {},
+	"thinking":              {},
+	"tools":                 {},
 }
 
+// maxUserIDLength is the longest metadata.user_id the Messages API accepts.
+const maxUserIDLength = 256
+
 // configureExtraFields sets the Messages API counterpart of the OpenAI fields
-// that have one, drops the ones that have none, and forwards the rest verbatim,
-// such as an Anthropic field like top_k set by a caller that knows the request
-// goes to Anthropic. It runs after the typed options, whose rules it follows:
-// thinking is whether buildParams enabled it.
+// that have one, forwards the fields the Messages API defines (see
+// messagesAPIFields) and drops the rest. Each field dropped, in whole or in
+// part, is logged at debug level. It runs after the typed options, whose rules
+// it follows: thinking is whether buildParams enabled it.
 //
 //   - stop becomes stop_sequences.
 //   - user becomes metadata.user_id, as a fingerprint: the API asks for an
 //     opaque identifier, and OpenAI's user is often an email or a login. The
 //     fingerprint has the format of the proxy's TokenFingerprint. A
-//     metadata.user_id the caller sets is sent as it is.
+//     metadata.user_id the caller sets wins over user and is sent as it is,
+//     cut to the length the API accepts.
 //   - top_p is kept unless thinking is on, where the API restricts it, as the
 //     temperature is. A model refusing it next to a temperature answers 400:
 //     the caller sent both.
@@ -64,9 +72,12 @@ var openAIOnlyFields = map[string]struct{}{
 //     names a function, or the Messages API's own. A named tool must be one
 //     of the request's tools. Under thinking, forcing a tool falls back to
 //     auto, as ToolChoiceRequired does.
-//   - parallel_tool_calls false disables parallel tool use.
-//   - top_k, an Anthropic field, is forwarded unless thinking is on, where the
-//     API refuses it.
+//   - parallel_tool_calls false disables parallel tool use, when the request
+//     has tools it may call.
+//   - the string form of tool_choice is dropped: the proxy maps it to
+//     llm.ToolChoice, the option a library caller sets instead.
+//   - top_k, an Anthropic field, is forwarded when it is a whole number,
+//     unless thinking is on, where the API refuses it.
 //   - metadata and service_tier exist on both APIs with different values.
 //     Only metadata.user_id is kept, OpenAI's other tags dropped, and
 //     service_tier only with a value the Messages API accepts.
@@ -78,6 +89,7 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 	remaining := make(map[string]any, len(extra))
 	var dropped []string
 	drop := func(key string) { dropped = append(dropped, key) }
+	var user, metadataUserID string
 
 	for key, value := range extra {
 		switch key {
@@ -90,37 +102,36 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 			params.StopSequences = stop
 
 		case "user":
-			user, ok := value.(string)
-			if !ok || user == "" {
+			// Applied below, once metadata.user_id, which wins, is known.
+			user = asString(value)
+			if user == "" {
 				drop(key)
-				continue
-			}
-			if !params.Metadata.UserID.Valid() {
-				params.Metadata.UserID = anthropicsdk.String(userFingerprint(user))
 			}
 
 		case "metadata":
-			metadata, _ := value.(map[string]any)
-			for tag := range metadata {
-				if tag != "user_id" {
-					drop(key + "." + tag)
-				}
-			}
-			userID := asString(metadata["user_id"])
-			if userID == "" {
-				if len(metadata) == 0 {
-					drop(key)
-				}
-				continue
-			}
-			params.Metadata.UserID = anthropicsdk.String(userID)
-
-		case "top_k":
-			if thinking {
+			metadata, ok := value.(map[string]any)
+			if !ok {
 				drop(key)
 				continue
 			}
-			remaining[key] = value
+			for tag, tagValue := range metadata {
+				if tag != "user_id" {
+					drop(key + "." + tag)
+					continue
+				}
+				metadataUserID = asString(tagValue)
+				if metadataUserID == "" {
+					drop(key + "." + tag)
+				}
+			}
+
+		case "top_k":
+			topK, ok := asFloat(value)
+			if !ok || topK < 0 || topK != math.Trunc(topK) || thinking {
+				drop(key)
+				continue
+			}
+			params.TopK = anthropicsdk.Int(int64(topK))
 
 		case "top_p":
 			topP, ok := asFloat(value)
@@ -142,12 +153,22 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 			// Applied below, once the tool choice they refine is known.
 
 		default:
-			if _, openAIOnly := openAIOnlyFields[key]; openAIOnly {
+			if _, defined := messagesAPIFields[key]; !defined {
 				drop(key)
 				continue
 			}
 			remaining[key] = value
 		}
+	}
+
+	switch {
+	case metadataUserID != "":
+		if user != "" {
+			drop("user")
+		}
+		params.Metadata.UserID = anthropicsdk.String(truncate(metadataUserID, maxUserIDLength))
+	case user != "":
+		params.Metadata.UserID = anthropicsdk.String(userFingerprint(user))
 	}
 
 	if !configureToolChoice(params, extra["tool_choice"], thinking) {
@@ -165,8 +186,6 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 	}
 
 	if len(remaining) > 0 {
-		// A field missing from the lists above reaches the API as is, and a
-		// 400 on it is told apart from the logs.
 		forwarded := slices.Sorted(maps.Keys(remaining))
 		slog.DebugContext(ctx, "forwarding request fields verbatim to the anthropic messages api", slog.Any("fields", forwarded))
 		params.SetExtraFields(remaining)
@@ -177,8 +196,8 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 // reports whether it could. OpenAI's object names a function,
 // {"type":"function","function":{"name":...}}; the Messages API's own is
 // {"type":"auto"|"any"|"none"} or {"type":"tool","name":...}. The string forms
-// reach buildParams as llm.ToolChoice and are not seen here. A tool the request
-// does not declare is refused, which leaves the tool choice buildParams set.
+// are not read here. A tool the request does not declare is refused, which
+// leaves the tool choice buildParams set.
 func configureToolChoice(params *anthropicsdk.MessageNewParams, value any, thinking bool) bool {
 	choice, ok := value.(map[string]any)
 	if !ok || len(params.Tools) == 0 {
@@ -235,17 +254,20 @@ func declaresTool(params *anthropicsdk.MessageNewParams, name string) bool {
 	return false
 }
 
-// disableParallelToolUse applies parallel_tool_calls false to the tool choice,
-// and reports whether the value could be honoured. True is the default of both
-// APIs. A request without tools, or one forbidding them, has nothing to
-// disable.
+// disableParallelToolUse applies parallel_tool_calls to the tool choice, and
+// reports whether the value had an effect to have. True is the default of both
+// APIs. False needs tools the request may call: without tools, or with tools
+// forbidden, there is nothing to disable.
 func disableParallelToolUse(params *anthropicsdk.MessageNewParams, value any) bool {
 	parallel, ok := value.(bool)
 	if !ok {
 		return false
 	}
-	if parallel || len(params.Tools) == 0 {
+	if parallel {
 		return true
+	}
+	if len(params.Tools) == 0 {
+		return false
 	}
 
 	disable := anthropicsdk.Bool(true)
@@ -257,6 +279,7 @@ func disableParallelToolUse(params *anthropicsdk.MessageNewParams, value any) bo
 	case choice.OfTool != nil:
 		choice.OfTool.DisableParallelToolUse = disable
 	case choice.OfNone != nil:
+		return false
 	default:
 		// No tool choice: the API's default is auto.
 		choice.OfAuto = &anthropicsdk.ToolChoiceAutoParam{DisableParallelToolUse: disable}
@@ -320,6 +343,14 @@ func asFloat(value any) (float64, bool) {
 		return f, err == nil
 	}
 	return 0, false
+}
+
+// truncate cuts s to at most n characters.
+func truncate(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }
 
 func asString(value any) string {

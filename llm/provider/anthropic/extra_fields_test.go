@@ -1,8 +1,12 @@
 package anthropic
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -304,5 +308,101 @@ func TestBuildParams_ExtraFields_DropsFieldsTheProxyMaps(t *testing.T) {
 		if _, ok := body[key]; ok {
 			t.Errorf("%s reached the request body: %v", key, body)
 		}
+	}
+}
+
+// droppedFields builds the request for the given extra fields and returns the
+// fields the debug log reports dropped.
+func droppedFields(t *testing.T, extra map[string]any, funcs ...llm.ChatCompletionOptionFunc) []string {
+	t.Helper()
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(previous)
+
+	funcs = append([]llm.ChatCompletionOptionFunc{llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi"))}, funcs...)
+	funcs = append(funcs, llm.WithExtraFields(extra))
+	if _, err := buildParams(context.Background(), llm.NewChatCompletionOptions(funcs...), "claude-sonnet-5", DefaultMaxTokens); err != nil {
+		t.Fatalf("could not build params: %+v", err)
+	}
+
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var entry struct {
+			Msg    string   `json:"msg"`
+			Fields []string `json:"fields"`
+		}
+		if json.Unmarshal([]byte(line), &entry) == nil && strings.HasPrefix(entry.Msg, "dropped request fields") {
+			return entry.Fields
+		}
+	}
+	return nil
+}
+
+func TestBuildParams_ExtraFields_LogsEveryDrop(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+		funcs []llm.ChatCompletionOptionFunc
+		want  []string
+	}{
+		{"user behind a metadata user_id", map[string]any{"user": "u1", "metadata": map[string]any{"user_id": "u2"}}, nil, []string{"user"}},
+		{"metadata user_id not a string", map[string]any{"metadata": map[string]any{"user_id": 123}}, nil, []string{"metadata.user_id"}},
+		{"parallel_tool_calls without tools", map[string]any{"parallel_tool_calls": false}, nil, []string{"parallel_tool_calls"}},
+		{"parallel_tool_calls with tools forbidden", map[string]any{"parallel_tool_calls": false},
+			[]llm.ChatCompletionOptionFunc{llm.WithTools(weatherTool()), llm.WithToolChoice(llm.ToolChoiceNone)}, []string{"parallel_tool_calls"}},
+		{"gateway fields", map[string]any{"reasoning": map[string]any{"effort": "high"}, "provider": map[string]any{}, "repetition_penalty": 1.1},
+			nil, []string{"provider", "reasoning", "repetition_penalty"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := droppedFields(t, tc.extra, tc.funcs...); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("dropped = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildParams_ExtraFields_ForwardsOnlyMessagesAPIFields(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{
+			"container":            "container_1",
+			"include_reasoning":    true,
+			"transforms":           []any{"middle-out"},
+			"min_p":                0.1,
+			"chat_template_kwargs": map[string]any{"enable_thinking": false},
+		}),
+	)
+	if got := body["container"]; got != "container_1" {
+		t.Errorf("container = %v, want it forwarded", got)
+	}
+	for _, key := range []string{"include_reasoning", "transforms", "min_p", "chat_template_kwargs"} {
+		if _, ok := body[key]; ok {
+			t.Errorf("%s reached the request body: %v", key, body)
+		}
+	}
+}
+
+func TestBuildParams_ExtraFields_TopKMustBeAWholeNumber(t *testing.T) {
+	for _, value := range []any{"40", 40.5, -1} {
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"top_k": value}),
+		)
+		if _, ok := body["top_k"]; ok {
+			t.Errorf("top_k = %v reached the request body as %v", value, body["top_k"])
+		}
+	}
+}
+
+func TestBuildParams_ExtraFields_CutsALongMetadataUserID(t *testing.T) {
+	long := strings.Repeat("é", maxUserIDLength+10)
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"metadata": map[string]any{"user_id": long}}),
+	)
+	metadata, _ := body["metadata"].(map[string]any)
+	if got, _ := metadata["user_id"].(string); got != strings.Repeat("é", maxUserIDLength) {
+		t.Errorf("user_id has %d characters, want %d", len([]rune(got)), maxUserIDLength)
 	}
 }
