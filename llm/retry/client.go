@@ -77,6 +77,9 @@ func (c *Client) Embeddings(ctx context.Context, inputs []string, funcs ...llm.E
 // Decision implements llm.DecisionClient. An evaluation has no side effect
 // upstream, so a failed one is replayed like an embeddings call.
 func (c *Client) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	if !llm.SupportsDecision(c.client) {
+		return nil, errors.WithStack(llm.ErrUnavailable)
+	}
 	backoff := c.baseDelay
 	retries := 0
 

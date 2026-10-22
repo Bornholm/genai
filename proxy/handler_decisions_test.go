@@ -263,6 +263,66 @@ func TestHandleDecisions_CarriesTheSession(t *testing.T) {
 	}
 }
 
+// errorResponder answers every failure with its own response.
+type errorResponder struct{ seen error }
+
+func (e *errorResponder) Name() string  { return "test.on-error" }
+func (e *errorResponder) Priority() int { return 0 }
+func (e *errorResponder) OnError(_ context.Context, _ *ProxyRequest, err error) (*HookResult, error) {
+	e.seen = err
+	return &HookResult{Response: &ProxyResponse{StatusCode: http.StatusTeapot, Body: map[string]any{"error": "handled"}}}, nil
+}
+
+func TestHandleDecisions_UpstreamFailure(t *testing.T) {
+	upstreamErr := llm.NewHTTPError(http.StatusTooManyRequests, `{"error":"slow down"}`)
+
+	client := &mockDecisionClient{err: upstreamErr}
+	server := NewServer(WithHook(&resolverHook{client: client, model: "jev"}))
+	if w := postDecision(t, server, decisionBody); w.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want the upstream's 429", w.Code)
+	}
+
+	responder := &errorResponder{}
+	server = NewServer(WithHook(&resolverHook{client: client, model: "jev"}), WithHook(responder))
+	if w := postDecision(t, server, decisionBody); w.Code != http.StatusTeapot {
+		t.Errorf("status = %d, want the on-error hook's response", w.Code)
+	}
+	if !errors.Is(responder.seen, upstreamErr) {
+		t.Errorf("the on-error hook saw %v, want the upstream error", responder.seen)
+	}
+
+	server = NewServer(WithHook(&resolverHook{client: &mockDecisionClient{}, model: "jev"}))
+	if w := postDecision(t, server, decisionBody); w.Code != http.StatusInternalServerError {
+		t.Errorf("no response and no error: status = %d, want 500", w.Code)
+	}
+}
+
+// flakyDecisionClient fails its first call with a retryable error.
+type flakyDecisionClient struct {
+	mockDecisionClient
+	calls int
+}
+
+func (f *flakyDecisionClient) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	f.calls++
+	if f.calls == 1 {
+		return nil, llm.NewHTTPError(http.StatusServiceUnavailable, "busy")
+	}
+	return f.mockDecisionClient.Decision(ctx, state, questions, funcs...)
+}
+
+func TestHandleDecisions_RetriesAFailedDecision(t *testing.T) {
+	client := &flakyDecisionClient{mockDecisionClient: mockDecisionClient{response: sampleDecision(nil)}}
+	server := NewServer(WithHook(&resolverHook{client: retry.NewClient(client, time.Millisecond, 2), model: "jev"}))
+
+	if w := postDecision(t, server, decisionBody); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	if client.calls != 2 {
+		t.Errorf("calls = %d, want the failed decision replayed once", client.calls)
+	}
+}
+
 // Each decorator carries the capability of the client it wraps, and only
 // that: wrapping a chat-only client must not make it look able to decide.
 func TestDecorators_CarryTheDecisionCapability(t *testing.T) {

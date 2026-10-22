@@ -32,20 +32,16 @@ func main() {
 		log.Fatalf("[FATAL] %s", err)
 	}
 
-	// Decisions are an optional capability: it is not part of llm.Client,
-	// so it is reached with a type assertion.
-	//
-	// A client from provider.Create always satisfies the interface, even
-	// with no decision provider configured, so this assertion only catches
-	// a wrapped client: llm/retry, llm/ratelimit and llm/circuitbreaker do
-	// not forward the capability. An unconfigured one fails at the call
-	// below with llm.ErrUnavailable.
-	decider, ok := client.(llm.DecisionClient)
-	if !ok {
+	// Decisions are an optional capability: it is not part of llm.Client.
+	// A client from provider.Create, and the llm/retry, llm/ratelimit and
+	// llm/circuitbreaker decorators, always have a Decision method:
+	// llm.SupportsDecision asks them whether a decision provider stands
+	// behind it, and llm.Decide calls it.
+	if !llm.SupportsDecision(client) {
 		log.Fatal("[FATAL] this client does not carry the decision capability")
 	}
 
-	res, err := decider.Decision(ctx, state, llm.Questions{
+	res, err := llm.Decide(ctx, client, state, llm.Questions{
 		"is_urgent": llm.NoulQuestion{
 			Instructions: "Does this convey urgency?",
 			True:         "Explicitly time-sensitive",

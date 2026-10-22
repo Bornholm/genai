@@ -212,15 +212,15 @@ is not part of `llm.Client`. A client from `provider.Create` and the
 `Decision` method, so check the capability with `llm.SupportsDecision`, which
 asks them about what they actually hold. A client that cannot decide fails at
 the call with `llm.ErrUnavailable`. Decisions go through the chat limit of
-`llm/ratelimit`, and `llm/retry` replays a failed one.
+`llm/ratelimit`, and `llm/retry` replays a failed one. `llm/tokenlimit`,
+`llm/hook` and the go-plugin provider host do not carry the capability yet.
 
 ```go
 if !llm.SupportsDecision(client) {
   log.Fatal("[FATAL] client does not support decisions")
 }
-decider := client.(llm.DecisionClient)
 
-res, err := decider.Decision(ctx, "Help! My payouts have been failing for 3 days.", llm.Questions{
+res, err := llm.Decide(ctx, client, "Help! My payouts have been failing for 3 days.", llm.Questions{
   "is_urgent": llm.NoulQuestion{
     Instructions: "Does this convey urgency?",
     True:         "Explicitly time-sensitive",
@@ -265,8 +265,10 @@ and output tokens as prompt and completion tokens, with the cost when the
 upstream reports one. That cost stays out of the response body, and the
 usage is left out when the upstream reports none. A pre-request hook may
 rewrite `Body`: the state and questions sent upstream are read from it once
-the hooks have run. A model
-whose client cannot decide is answered with a 400.
+the hooks have run, while the model stays the one in `req.Model`, as on the
+other routes. The session read from the client's headers reaches the hooks
+and the upstream context, but no decision client sends it upstream yet. A
+model whose client cannot decide is answered with a 400.
 
 ## Examples
 

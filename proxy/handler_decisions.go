@@ -55,9 +55,12 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The model stays req.Model, the lever of the hooks on every route: the
+	// one the body may name now is not read.
 	_, state, questions, err := ParseDecisionRequest(req.Body)
 	if err != nil {
-		writeAPIError(w, NewInternalError("a pre-request hook left an invalid decision request: "+err.Error()))
+		slog.ErrorContext(ctx, "a pre-request hook left an invalid decision request", slog.Any("error", err))
+		writeAPIError(w, NewInternalError("a pre-request hook failed"))
 		return
 	}
 
@@ -92,6 +95,13 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeAPIError(w, apiErrorFromErr(err))
 		}
+		return
+	}
+	// A resolver may hand back any client, a plugin's included: an empty
+	// answer is an upstream failure, not a panic.
+	if llmRes == nil {
+		slog.ErrorContext(ctx, "decision client returned no response")
+		writeAPIError(w, NewInternalError("the provider returned no decision"))
 		return
 	}
 

@@ -125,6 +125,11 @@ type decisionUsage struct {
 func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 	answers := make(map[string]decisionAnswer, len(res.Answers()))
 	for id, answer := range res.Answers() {
+		// A question left unanswered is left out, as if the upstream had
+		// not returned it.
+		if answer == nil {
+			continue
+		}
 		answers[id] = formatDecisionAnswer(answer)
 	}
 

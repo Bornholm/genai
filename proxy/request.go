@@ -18,7 +18,8 @@ const (
 	// RequestTypeDecision evaluates a state against typed questions, see
 	// llm.DecisionClient. Body holds the request in the TypeSafe wire format,
 	// and the state and questions sent upstream are read from it once the
-	// pre-request hooks have run.
+	// pre-request hooks have run. The model is req.Model, as on the other
+	// routes, whatever the body names.
 	RequestTypeDecision RequestType = "decision"
 )
 
