@@ -263,6 +263,37 @@ func TestHandleDecisions_CarriesTheSession(t *testing.T) {
 	}
 }
 
+// A client from outside the repository may return typed nils: the route
+// leaves them out instead of panicking.
+func TestHandleDecisions_TypedNils(t *testing.T) {
+	var usage *llm.BaseDecisionUsage
+	var answer *llm.BaseNoulAnswer
+	client := &mockDecisionClient{response: llm.NewDecisionResponse("jev", map[string]llm.Answer{
+		"is_urgent": answer,
+		"ok":        llm.NewNoulAnswer(1),
+	}, usage)}
+	recorder := &decisionRecorder{}
+	server := NewServer(WithHook(&resolverHook{client: client, model: "jev"}), WithHook(recorder))
+
+	w := postDecision(t, server, decisionBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Answers map[string]json.RawMessage `json:"answers"`
+		Usage   json.RawMessage            `json:"usage"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body.Answers["is_urgent"]; ok || len(body.Answers) != 1 {
+		t.Errorf("answers = %v, want the typed nil left out", body.Answers)
+	}
+	if body.Usage != nil || recorder.res.TokensUsed != nil {
+		t.Errorf("a typed nil usage must read as no usage")
+	}
+}
+
 // errorResponder answers every failure with its own response.
 type errorResponder struct{ seen error }
 

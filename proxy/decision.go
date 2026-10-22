@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"reflect"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -130,11 +133,13 @@ func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 		// returned it.
 		if formatted, ok := formatDecisionAnswer(answer); ok {
 			answers[id] = formatted
+			continue
 		}
+		slog.Warn("decision answer left out of the response", slog.String("question", id), slog.String("type", fmt.Sprintf("%T", answer)))
 	}
 
 	body := decisionResponse{Model: model, Answers: answers}
-	if usage := res.Usage(); usage != nil {
+	if usage := res.Usage(); !isNil(usage) {
 		body.Usage = &decisionUsage{
 			InputTokens:  usage.InputTokens(),
 			OutputTokens: usage.OutputTokens(),
@@ -145,6 +150,11 @@ func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 }
 
 func formatDecisionAnswer(answer llm.Answer) (decisionAnswer, bool) {
+	// A client from outside the repository, a plugin's say, may return a
+	// typed nil, whose accessors would panic.
+	if isNil(answer) {
+		return decisionAnswer{}, false
+	}
 	switch a := answer.(type) {
 	case llm.NoulAnswer:
 		noul := a.Noul()
@@ -165,7 +175,7 @@ func formatDecisionAnswer(answer llm.Answer) (decisionAnswer, bool) {
 // completion tokens, and the cost when the upstream states it. It is nil when
 // the upstream reported no usage: zeroed counts would read as a free call.
 func decisionTokenUsage(usage llm.DecisionUsage) *TokenUsage {
-	if usage == nil {
+	if isNil(usage) {
 		return nil
 	}
 	tokens := &TokenUsage{
@@ -180,4 +190,13 @@ func decisionTokenUsage(usage llm.DecisionUsage) *TokenUsage {
 		}
 	}
 	return tokens
+}
+
+// isNil reports whether value is nil, or an interface holding a nil pointer.
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }
