@@ -346,7 +346,11 @@ func NewClient(client llm.Client, baseDelay time.Duration, maxRetries int, funcs
 	}
 }
 
-var _ llm.Client = &Client{}
+var (
+	_ llm.Client              = &Client{}
+	_ llm.MessagesRelayClient = &Client{}
+	_ llm.DecisionClient      = &Client{}
+)
 
 // Close releases the wrapped client when it implements io.Closer, so that a
 // plugin client stays releasable behind this decorator. The decorator owns

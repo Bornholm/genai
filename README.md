@@ -258,10 +258,14 @@ name in backticks.
 
 The proxy serves decisions on `POST /decisions`, in the TypeSafe wire format
 that OpenRouter's decisions endpoint shares: `{"model", "state", "questions"}`
-in, `{"model", "answers", "usage"}` out. A client of either service only
-changes its base URL. The hooks see a `RequestTypeDecision` request, and the
-input and output tokens as prompt and completion tokens, with the cost when
-the upstream reports one. That cost stays out of the response body. A model
+in, `{"model", "answers", "usage"}` out. A client of either service points
+its endpoint URL at the proxy's `/decisions`: the payload is shared, the
+path is not. The hooks see a `RequestTypeDecision` request, and the input
+and output tokens as prompt and completion tokens, with the cost when the
+upstream reports one. That cost stays out of the response body, and the
+usage is left out when the upstream reports none. A pre-request hook may
+rewrite `Body`: the state and questions sent upstream are read from it once
+the hooks have run. A model
 whose client cannot decide is answered with a 400.
 
 ## Examples

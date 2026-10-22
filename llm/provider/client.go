@@ -102,8 +102,9 @@ func (c *Client) ImageGeneration(ctx context.Context, prompt string, funcs ...ll
 // Decision implements [llm.DecisionClient].
 //
 // Like ImageGeneration, that interface is deliberately NOT part of
-// [llm.Client]: callers reach it with a type assertion on the concrete
-// client returned by Create.
+// [llm.Client]. The method exists whatever the client was configured with:
+// callers check the capability with [llm.SupportsDecision], which reads
+// SupportsDecision.
 func (c *Client) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
 	if c.decision == nil {
 		return nil, errors.WithStack(llm.ErrUnavailable)

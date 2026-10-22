@@ -18,18 +18,21 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	model, state, questions, err := ParseDecisionRequest(json.RawMessage(rawBody))
+	// Parsed here so that a malformed request is refused before any hook
+	// runs; what goes upstream is parsed again from the body the hooks leave.
+	model, _, _, err := ParseDecisionRequest(json.RawMessage(rawBody))
 	if err != nil {
 		writeAPIError(w, NewBadRequestError(err.Error()))
 		return
 	}
 
 	req := &ProxyRequest{
-		Type:     RequestTypeDecision,
-		Model:    model,
-		Headers:  r.Header,
-		Body:     json.RawMessage(rawBody),
-		Metadata: make(map[string]any),
+		Type:      RequestTypeDecision,
+		Model:     model,
+		Headers:   r.Header,
+		SessionID: sessionIDFromHeaders(r.Header),
+		Body:      json.RawMessage(rawBody),
+		Metadata:  make(map[string]any),
 	}
 
 	if s.options.AuthExtractor != nil {
@@ -52,6 +55,12 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, state, questions, err := ParseDecisionRequest(req.Body)
+	if err != nil {
+		writeAPIError(w, NewInternalError("a pre-request hook left an invalid decision request: "+err.Error()))
+		return
+	}
+
 	rawClient, resolvedModel, errRes, apiErr := s.resolveClient(r, req)
 	if errRes != nil {
 		writeProxyResponse(w, errRes)
@@ -68,6 +77,10 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	if !llm.SupportsDecision(rawClient) {
 		writeAPIError(w, NewBadRequestError("model '"+req.Model+"' does not support decisions"))
 		return
+	}
+
+	if req.SessionID != "" {
+		ctx = llm.ContextWithSessionID(ctx, req.SessionID)
 	}
 
 	llmRes, err := llm.Decide(ctx, rawClient, state, questions)

@@ -12,10 +12,13 @@ import (
 // calibrated probabilities rather than free text.
 //
 // Like [ImageGenerationClient], it is deliberately NOT a member of [Client]:
-// adding a method there breaks every existing implementation. Callers
-// discover the capability with a type assertion:
+// adding a method there breaks every existing implementation. A type
+// assertion is not enough to discover the capability, since decorators
+// implement the interface whatever they wrap: callers check it with
+// [SupportsDecision] and call through [Decide].
 //
-//	if decider, ok := client.(llm.DecisionClient); ok {
+//	if llm.SupportsDecision(client) {
+//	    res, err := llm.Decide(ctx, client, state, questions)
 //	    // ...
 //	}
 //

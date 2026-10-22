@@ -9,7 +9,7 @@ import (
 
 // The decision route speaks the TypeSafe "system one" wire format, which
 // OpenRouter's decisions endpoint shares: a client of either reaches the
-// proxy by changing its base URL only.
+// proxy by pointing its endpoint URL at /decisions.
 
 type decisionRequest struct {
 	Model     string                      `json:"model"`
@@ -98,7 +98,7 @@ func parseDecisionQuestion(q decisionQuestion) (llm.Question, error) {
 type decisionResponse struct {
 	Model   string                    `json:"model"`
 	Answers map[string]decisionAnswer `json:"answers"`
-	Usage   decisionUsage             `json:"usage"`
+	Usage   *decisionUsage            `json:"usage,omitempty"`
 }
 
 type decisionAnswer struct {
@@ -120,7 +120,8 @@ type decisionUsage struct {
 // FormatDecisionResponse converts a llm.DecisionResponse to the wire format,
 // under the model name the client asked for, as the other routes do. The
 // cost an upstream reports stays out of the body: it is the proxy's price,
-// not the client's, and reaches the hooks through TokenUsage.
+// not the client's, and reaches the hooks through TokenUsage. The usage is
+// left out when the upstream reported none, as it is for the hooks.
 func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 	answers := make(map[string]decisionAnswer, len(res.Answers()))
 	for id, answer := range res.Answers() {
@@ -129,7 +130,7 @@ func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 
 	body := decisionResponse{Model: model, Answers: answers}
 	if usage := res.Usage(); usage != nil {
-		body.Usage = decisionUsage{
+		body.Usage = &decisionUsage{
 			InputTokens:  usage.InputTokens(),
 			OutputTokens: usage.OutputTokens(),
 			TotalTokens:  usage.TotalTokens(),

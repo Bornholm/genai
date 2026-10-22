@@ -184,11 +184,82 @@ func TestHandleDecisions_WithoutUsage(t *testing.T) {
 	recorder := &decisionRecorder{}
 	server := NewServer(WithHook(&resolverHook{client: client, model: "jev"}), WithHook(recorder))
 
-	if w := postDecision(t, server, `{"model":"jev","state":"s","questions":{"q":{"type":"noul","instructions":"ok?"}}}`); w.Code != http.StatusOK {
+	w := postDecision(t, server, `{"model":"jev","state":"s","questions":{"q":{"type":"noul","instructions":"ok?"}}}`)
+	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
 	}
 	if recorder.res == nil || recorder.res.TokensUsed != nil {
 		t.Errorf("TokensUsed must stay nil, got %+v", recorder.res)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if usage, ok := body["usage"]; ok {
+		t.Errorf("the body must leave the usage out, got %s", usage)
+	}
+}
+
+// bodyRewriter replaces the request body, as a hook that redacts the state
+// would.
+type bodyRewriter struct{ body string }
+
+func (b *bodyRewriter) Name() string  { return "test.rewriter" }
+func (b *bodyRewriter) Priority() int { return 0 }
+func (b *bodyRewriter) PreRequest(_ context.Context, req *ProxyRequest) (*HookResult, error) {
+	req.Body = json.RawMessage(b.body)
+	return nil, nil
+}
+
+func TestHandleDecisions_SendsTheBodyTheHooksLeave(t *testing.T) {
+	client := &mockDecisionClient{response: sampleDecision(nil)}
+	rewriter := &bodyRewriter{body: `{"model":"jev","state":"redacted","questions":{"other":{"type":"noul","instructions":"still ok?"}}}`}
+	server := NewServer(WithHook(rewriter), WithHook(&resolverHook{client: client, model: "jev"}))
+
+	if w := postDecision(t, server, decisionBody); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	if state, _ := json.Marshal(client.state); string(state) != `"redacted"` {
+		t.Errorf("state sent upstream = %s, want the hook's", state)
+	}
+	if _, ok := client.questions["other"]; !ok || len(client.questions) != 1 {
+		t.Errorf("questions sent upstream = %v, want the hook's", client.questions)
+	}
+
+	rewriter.body = `{"model":"jev","state":null}`
+	if w := postDecision(t, server, decisionBody); w.Code != http.StatusInternalServerError {
+		t.Errorf("a hook breaking the body: status = %d, want 500", w.Code)
+	}
+}
+
+// sessionDecisionClient records the session the context carried.
+type sessionDecisionClient struct {
+	mockDecisionClient
+	sessionID string
+}
+
+func (s *sessionDecisionClient) Decision(ctx context.Context, state any, questions llm.Questions, funcs ...llm.DecisionOptionFunc) (llm.DecisionResponse, error) {
+	s.sessionID = llm.SessionIDFromContext(ctx)
+	return s.mockDecisionClient.Decision(ctx, state, questions, funcs...)
+}
+
+func TestHandleDecisions_CarriesTheSession(t *testing.T) {
+	client := &sessionDecisionClient{mockDecisionClient: mockDecisionClient{response: sampleDecision(nil)}}
+	recorder := &decisionRecorder{}
+	server := NewServer(WithHook(&resolverHook{client: client, model: "jev"}), WithHook(recorder))
+
+	req := httptest.NewRequest(http.MethodPost, "/decisions", bytes.NewBufferString(decisionBody))
+	req.Header.Set("X-Session-Id", "sess-1")
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+	if recorder.req == nil || recorder.req.SessionID != "sess-1" {
+		t.Errorf("hooks must see the session, got %+v", recorder.req)
+	}
+	if client.sessionID != "sess-1" {
+		t.Errorf("session on the upstream context = %q, want sess-1", client.sessionID)
 	}
 }
 
