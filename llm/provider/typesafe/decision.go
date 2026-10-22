@@ -314,7 +314,9 @@ func encodeQuestion(question llm.Question) (any, error) {
 type decisionResponse struct {
 	Model   string                   `json:"model"`
 	Answers map[string]answerPayload `json:"answers"`
-	Usage   usagePayload             `json:"usage"`
+	// Usage is nil when the upstream reports none: zeroed counts would
+	// read as a free call.
+	Usage *usagePayload `json:"usage"`
 }
 
 type usagePayload struct {
@@ -327,7 +329,10 @@ type usagePayload struct {
 	Cost *float64 `json:"cost"`
 }
 
-func (u usagePayload) toUsage() llm.DecisionUsage {
+func (u *usagePayload) toUsage() llm.DecisionUsage {
+	if u == nil {
+		return nil
+	}
 	total := u.TotalTokens
 	if total == 0 {
 		total = u.InputTokens + u.OutputTokens

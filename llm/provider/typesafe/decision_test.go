@@ -211,6 +211,24 @@ func TestDecisionClient_ReportsCost(t *testing.T) {
 	}
 }
 
+// An upstream that reports no usage gives none, rather than zeroed counts a
+// gateway would bill as a free call.
+func TestDecisionClient_WithoutUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.5}}}`)
+	}))
+	defer server.Close()
+
+	response, err := NewDecisionClient(server.URL, "", "").
+		Decision(context.Background(), "state", llm.Questions{"q": llm.NoulQuestion{Instructions: "Urgent?"}})
+	if err != nil {
+		t.Fatalf("Decision() = %v", err)
+	}
+	if usage := response.Usage(); usage != nil {
+		t.Errorf("Usage() = %+v, want nil", usage)
+	}
+}
+
 // 429 and 529 both ask for a backoff; the retry wrapper keys off
 // llm.IsRetryable, so both must answer true.
 func TestDecisionClient_RetryableErrors(t *testing.T) {

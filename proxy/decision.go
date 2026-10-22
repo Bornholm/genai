@@ -118,19 +118,19 @@ type decisionUsage struct {
 }
 
 // FormatDecisionResponse converts a llm.DecisionResponse to the wire format,
-// under the model name the client asked for, as the other routes do. The
+// under the model name the resolver returned, as the other routes do. The
 // cost an upstream reports stays out of the body: it is the proxy's price,
 // not the client's, and reaches the hooks through TokenUsage. The usage is
 // left out when the upstream reported none, as it is for the hooks.
 func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 	answers := make(map[string]decisionAnswer, len(res.Answers()))
 	for id, answer := range res.Answers() {
-		// A question left unanswered is left out, as if the upstream had
-		// not returned it.
-		if answer == nil {
-			continue
+		// A question left unanswered, or answered with a type the wire
+		// format has no fields for, is left out, as if the upstream had not
+		// returned it.
+		if formatted, ok := formatDecisionAnswer(answer); ok {
+			answers[id] = formatted
 		}
-		answers[id] = formatDecisionAnswer(answer)
 	}
 
 	body := decisionResponse{Model: model, Answers: answers}
@@ -144,19 +144,19 @@ func FormatDecisionResponse(res llm.DecisionResponse, model string) any {
 	return body
 }
 
-func formatDecisionAnswer(answer llm.Answer) decisionAnswer {
+func formatDecisionAnswer(answer llm.Answer) (decisionAnswer, bool) {
 	switch a := answer.(type) {
 	case llm.NoulAnswer:
 		noul := a.Noul()
-		return decisionAnswer{Type: llm.QuestionTypeNoul, Noul: &noul}
+		return decisionAnswer{Type: llm.QuestionTypeNoul, Noul: &noul}, true
 	case llm.ChoiceAnswer:
 		choice, confidence := a.Choice(), a.Confidence()
-		return decisionAnswer{Type: llm.QuestionTypeChoice, Choice: &choice, Probabilities: a.Probabilities(), Confidence: &confidence}
+		return decisionAnswer{Type: llm.QuestionTypeChoice, Choice: &choice, Probabilities: a.Probabilities(), Confidence: &confidence}, true
 	case llm.ScoreAnswer:
 		score, confidence := a.Score(), a.Confidence()
-		return decisionAnswer{Type: llm.QuestionTypeScore, Score: &score, Legend: a.Legend(), Probabilities: a.Probabilities(), Confidence: &confidence}
+		return decisionAnswer{Type: llm.QuestionTypeScore, Score: &score, Legend: a.Legend(), Probabilities: a.Probabilities(), Confidence: &confidence}, true
 	default:
-		return decisionAnswer{Type: answer.AnswerType()}
+		return decisionAnswer{}, false
 	}
 }
 

@@ -76,7 +76,13 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 
 	// The resolver returns an llm.Client, which decision clients are not
 	// part of: the capability is checked on what it actually returned. A
-	// model that cannot decide is the client's mistake, not an outage.
+	// model that cannot decide is the client's mistake, not an outage; a
+	// resolver returning no client is the proxy's.
+	if rawClient == nil {
+		slog.ErrorContext(ctx, "model resolver returned no client", slog.String("model", req.Model))
+		writeAPIError(w, NewInternalError("could not resolve the model"))
+		return
+	}
 	if !llm.SupportsDecision(rawClient) {
 		writeAPIError(w, NewBadRequestError("model '"+req.Model+"' does not support decisions"))
 		return
