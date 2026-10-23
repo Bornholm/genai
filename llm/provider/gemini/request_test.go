@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 // wire builds the request for opts and returns it as decoded JSON.
 func wire(t *testing.T, funcs ...llm.ChatCompletionOptionFunc) map[string]any {
 	t.Helper()
-	req, err := buildRequest(llm.NewChatCompletionOptions(funcs...))
+	req, err := buildRequest(context.Background(), llm.NewChatCompletionOptions(funcs...))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestBuildRequest_PlaceholderSignatureForAForeignToolCall(t *testing.T) {
 }
 
 func TestBuildRequest_RefusesAnOrphanToolResult(t *testing.T) {
-	_, err := buildRequest(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildRequest(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "Hi"),
 		llm.NewToolMessage("call_unknown", llm.NewToolResult("?")),
 	)))

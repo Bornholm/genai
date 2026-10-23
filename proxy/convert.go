@@ -59,10 +59,14 @@ var handledRequestFields = map[string]struct{}{
 	// The proxy exposes a single choice; forwarding n>1 would produce a
 	// response the response formatters cannot represent.
 	"n": {},
-	// Not an OpenAI field: the system prompt travels in messages. The
-	// Messages API has one, which the anthropic provider forwards and which
-	// would replace the system prompt built from messages, a hook's included.
-	"system": {},
+	// Not OpenAI fields: the conversation travels in messages. The native
+	// APIs name it otherwise, the Messages API system, generateContent
+	// contents and systemInstruction, and the anthropic and gemini providers
+	// forward those, which would replace what is built from messages: a
+	// client could send messages a hook inspects and have others run.
+	"system":            {},
+	"contents":          {},
+	"systemInstruction": {},
 }
 
 // passthroughRequestFields returns the request body fields that have no
