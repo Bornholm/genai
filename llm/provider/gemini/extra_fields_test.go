@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -264,5 +265,75 @@ func TestBuildRequest_ExtraFields_UnsignedTopK(t *testing.T) {
 	)
 	if got := body["generationConfig"].(map[string]any)["topK"]; got != float64(40) {
 		t.Errorf("topK = %v, want 40", got)
+	}
+}
+
+func TestBuildRequest_ExtraFields_KeySpelledTwiceInSnakeCase(t *testing.T) {
+	for range 20 {
+		body := wire(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"generationConfig": map[string]any{"top_p": 0.1, "top__p": 0.7}}),
+		)
+		if got := body["generationConfig"].(map[string]any)["topP"]; got != 0.7 {
+			t.Fatalf("topP = %v, want the first in sorted order, 0.7", got)
+		}
+	}
+}
+
+func TestBuildRequest_ExtraFields_LeavesOutZeroTopK(t *testing.T) {
+	body := wire(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"top_k": 0}),
+	)
+	if _, ok := body["generationConfig"]; ok {
+		t.Errorf("generationConfig = %v, want none for a zero top_k", body["generationConfig"])
+	}
+}
+
+func TestBuildRequest_ExtraFields_DropsNonFiniteValues(t *testing.T) {
+	for _, value := range []any{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		for _, key := range []string{"top_p", "top_k", "frequency_penalty", "presence_penalty"} {
+			body := wire(t,
+				llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+				llm.WithExtraFields(map[string]any{key: value}),
+			)
+			if _, ok := body["generationConfig"]; ok {
+				t.Errorf("%s %v: generationConfig = %v, want it dropped", key, value, body["generationConfig"])
+			}
+		}
+	}
+}
+
+func TestBuildRequest_ExtraFields_SmallIntegerTopK(t *testing.T) {
+	for _, value := range []any{int8(40), int16(40), uint8(40), uint16(40)} {
+		body := wire(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"top_k": value}),
+		)
+		config, _ := body["generationConfig"].(map[string]any)
+		if got := config["topK"]; got != float64(40) {
+			t.Errorf("topK = %v for %T, want 40", got, value)
+		}
+	}
+}
+
+func TestBuildRequest_ExtraFields_StopAsAString(t *testing.T) {
+	body := wire(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"stop": "END"}),
+	)
+	if got := body["generationConfig"].(map[string]any)["stopSequences"]; !reflect.DeepEqual(got, []any{"END"}) {
+		t.Errorf("stopSequences = %v, want [END]", got)
+	}
+}
+
+func TestBuildRequest_ExtraFields_GenerationConfigWithoutATypedOne(t *testing.T) {
+	body := wire(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"generationConfig": map[string]any{"candidate_count": 1}}),
+	)
+	want := map[string]any{"candidateCount": float64(1)}
+	if got := body["generationConfig"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("generationConfig = %v, want %v", got, want)
 	}
 }

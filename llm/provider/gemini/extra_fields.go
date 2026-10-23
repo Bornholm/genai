@@ -34,7 +34,8 @@ import (
 // A field forwarded this way overrides the one buildRequest sets from a typed
 // option of the same name, except generationConfig, merged key by key into
 // the typed one. A forwarded tools or toolConfig is not read: a tool_choice
-// naming a function is checked against the typed tools only.
+// naming a function is checked against the typed tools only, so combining it
+// with a forwarded tools is not supported.
 //
 // store and generationConfig are listed as fields generateContent defines,
 // but configureExtraFields checks them before forwarding them.
@@ -59,7 +60,7 @@ const maxStopSequences = 5
 // fields that have one, forwards the fields generateContent defines (see
 // generateContentFields) and drops the rest. Each field dropped, in whole or
 // in part, is logged at debug level, except the defaults it consumes: a zero
-// penalty and parallel_tool_calls true. It runs after the typed options.
+// penalty or top_k and parallel_tool_calls true. It runs after the typed options.
 //
 //   - stop becomes generationConfig.stopSequences, without empty entries and
 //     cut to the first maxStopSequences.
@@ -68,7 +69,8 @@ const maxStopSequences = 5
 //     outside [0, 1] is dropped; the other ranges depend on the model and
 //     are left to the API. A zero penalty, the default of both APIs that
 //     OpenAI clients often send, is left out: some Gemini models refuse any
-//     penalty.
+//     penalty. So is a zero top_k, which gateways send to mean unset: models
+//     running with nucleus sampling refuse any topK.
 //   - the object form of tool_choice, which names a function, forces that
 //     function: mode ANY with it as the only allowed function name. It must
 //     be one of the request's tools. The string forms are dropped: the proxy
@@ -80,8 +82,8 @@ const maxStopSequences = 5
 //     forwarded: a client may ask for its request not to be kept, not turn
 //     on a logging the operator left off.
 //   - a forwarded generationConfig is merged into the typed one with its
-//     keys in camelCase. When it spells a key both ways, the camelCase one
-//     wins and the other is dropped.
+//     keys in camelCase. When it spells a key several ways, the camelCase one
+//     wins, or else the first in sorted order, and the others are dropped.
 //   - every other field, OpenAI's user, logprobs or service_tier and the
 //     fields of OpenAI compatible gateways and servers alike, is dropped.
 func configureExtraFields(ctx context.Context, req *request, config *generationConfig, extra map[string]any) {
@@ -120,6 +122,9 @@ func configureExtraFields(ctx context.Context, req *request, config *generationC
 			topK, ok := asFloat(value)
 			if !ok || topK < 0 || topK > math.MaxInt32 || topK != math.Trunc(topK) {
 				drop(key)
+				continue
+			}
+			if topK == 0 {
 				continue
 			}
 			k := int(topK)
@@ -165,14 +170,20 @@ func configureExtraFields(ctx context.Context, req *request, config *generationC
 				drop(key)
 				continue
 			}
+			// Sorted, so that two snake_case spellings of one field, top_p
+			// and top__p, resolve the same way on every run.
 			camel := make(map[string]any, len(forwarded))
-			for field, fieldValue := range forwarded {
+			for _, field := range slices.Sorted(maps.Keys(forwarded)) {
 				name := camelCase(field)
-				if _, spelledBoth := forwarded[name]; spelledBoth && name != field {
-					drop(key + "." + field)
-					continue
+				if name != field {
+					_, spelledCamel := forwarded[name]
+					_, seen := camel[name]
+					if spelledCamel || seen {
+						drop(key + "." + field)
+						continue
+					}
 				}
-				camel[name] = fieldValue
+				camel[name] = forwarded[field]
 			}
 			remaining[key] = camel
 
@@ -275,28 +286,43 @@ func stringList(value any) ([]string, bool) {
 	return list, len(list) > 0
 }
 
+// asFloat reads a number of any Go numeric type or a json.Number. NaN and the
+// infinities are refused: JSON cannot carry them, and the request would fail
+// to marshal.
 func asFloat(value any) (float64, bool) {
+	var f float64
 	switch v := value.(type) {
 	case float64:
-		return v, true
+		f = v
 	case float32:
-		return float64(v), true
+		f = float64(v)
 	case int:
-		return float64(v), true
+		f = float64(v)
 	case int64:
-		return float64(v), true
+		f = float64(v)
 	case int32:
-		return float64(v), true
+		f = float64(v)
+	case int16:
+		f = float64(v)
+	case int8:
+		f = float64(v)
 	case uint:
-		return float64(v), true
+		f = float64(v)
 	case uint64:
-		return float64(v), true
+		f = float64(v)
 	case uint32:
-		return float64(v), true
+		f = float64(v)
+	case uint16:
+		f = float64(v)
+	case uint8:
+		f = float64(v)
 	case json.Number:
-		f, err := v.Float64()
-		return f, err == nil
+		var err error
+		if f, err = v.Float64(); err != nil {
+			return 0, false
+		}
 	default:
 		return 0, false
 	}
+	return f, !math.IsNaN(f) && !math.IsInf(f, 0)
 }
