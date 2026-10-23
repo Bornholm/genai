@@ -2,6 +2,8 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/bornholm/genai/llm"
@@ -56,4 +58,37 @@ func TestConfigureExtraFields(t *testing.T) {
 			t.Fatalf("expected reasoning_split=true, got %v", got)
 		}
 	})
+}
+
+// A tool_choice extra field naming a function, which the proxy sets for an
+// Anthropic request forcing a tool, wins over the typed choice on the wire.
+func TestConfigureExtraFields_ToolChoiceOverridesTheTypedOne(t *testing.T) {
+	params := &openai.ChatCompletionNewParams{
+		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage("hi")},
+		Model:    "m",
+	}
+	named := map[string]any{"type": "function", "function": map[string]any{"name": "weather"}}
+	opts := &llm.ChatCompletionOptions{
+		Tools:       []llm.Tool{llm.NewFuncTool("weather", "Get the weather", map[string]any{"type": "object"}, nil)},
+		ToolChoice:  llm.ToolChoiceRequired,
+		ExtraFields: map[string]any{"tool_choice": named},
+	}
+	if err := ConfigureTools(context.Background(), opts, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := ConfigureExtraFields(context.Background(), opts, params); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("could not marshal params: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("could not decode params: %v", err)
+	}
+	if got := body["tool_choice"]; !reflect.DeepEqual(got, named) {
+		t.Errorf("tool_choice = %v, want %v", got, named)
+	}
 }

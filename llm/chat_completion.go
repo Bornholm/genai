@@ -164,7 +164,10 @@ func WithSessionID(id string) ChatCompletionOptionFunc {
 
 // WithExtraFields adds arbitrary provider-specific key/values that are injected
 // verbatim into the request body. Keys already present in ExtraFields are
-// overwritten. Only providers that opt in (openai, mistral) forward them.
+// overwritten. They follow the OpenAI request shape, the one the proxy forwards
+// unmapped client fields in. Only providers that opt in forward them: openai
+// verbatim, mistral without the OpenAI platform fields it rejects, anthropic
+// translated to the Messages API where it has a counterpart.
 func WithExtraFields(fields map[string]any) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		if len(fields) == 0 {

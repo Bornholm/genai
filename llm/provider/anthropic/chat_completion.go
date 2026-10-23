@@ -35,7 +35,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		return nil, errors.WithStack(err)
 	}
 
-	params, err := buildParams(opts, c.model, c.maxTokens)
+	params, err := buildParams(ctx, opts, c.model, c.maxTokens)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -88,7 +88,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		return nil, errors.WithStack(err)
 	}
 
-	params, err := buildParams(opts, c.model, c.maxTokens)
+	params, err := buildParams(ctx, opts, c.model, c.maxTokens)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

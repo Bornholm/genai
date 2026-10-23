@@ -59,6 +59,10 @@ var handledRequestFields = map[string]struct{}{
 	// The proxy exposes a single choice; forwarding n>1 would produce a
 	// response the response formatters cannot represent.
 	"n": {},
+	// Not an OpenAI field: the system prompt travels in messages. The
+	// Messages API has one, which the anthropic provider forwards and which
+	// would replace the system prompt built from messages, a hook's included.
+	"system": {},
 }
 
 // passthroughRequestFields returns the request body fields that have no

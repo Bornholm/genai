@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 // wire JSON, which is what the assertions care about.
 func marshalParams(t *testing.T, funcs ...llm.ChatCompletionOptionFunc) map[string]any {
 	t.Helper()
-	params, err := buildParams(llm.NewChatCompletionOptions(funcs...), "claude-sonnet-5", DefaultMaxTokens)
+	params, err := buildParams(context.Background(), llm.NewChatCompletionOptions(funcs...), "claude-sonnet-5", DefaultMaxTokens)
 	if err != nil {
 		t.Fatalf("could not build params: %+v", err)
 	}
@@ -130,7 +131,7 @@ func TestBuildParams_FoldsToolResultsIntoOneUserTurn(t *testing.T) {
 }
 
 func TestBuildParams_ToolMessageWithoutToolInterfaceIsRejected(t *testing.T) {
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessage(llm.RoleTool, "orphan"),
 	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
@@ -218,7 +219,7 @@ func TestBuildParams_Thinking(t *testing.T) {
 	})
 
 	t.Run("explicit max_tokens too small for the minimum budget is an error", func(t *testing.T) {
-		_, err := buildParams(llm.NewChatCompletionOptions(
+		_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 			llm.WithMaxCompletionTokens(1000),
 			llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
@@ -268,7 +269,7 @@ func TestBuildParams_Thinking(t *testing.T) {
 
 	t.Run("configured default max_tokens is the raise margin", func(t *testing.T) {
 		budget := 20000
-		params, err := buildParams(llm.NewChatCompletionOptions(
+		params, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 			llm.WithReasoning(&llm.ReasoningOptions{MaxTokens: &budget}),
 		), "claude-sonnet-5", 16384)
@@ -396,7 +397,7 @@ func TestBuildParams_RequiredToolChoiceFallsBackToAutoWithThinking(t *testing.T)
 }
 
 func TestBuildParams_EffortClampsUnderALargeConfiguredDefault(t *testing.T) {
-	params, err := buildParams(llm.NewChatCompletionOptions(
+	params, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 		llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortXHigh)),
 	), "claude-sonnet-5", 64000)
@@ -432,7 +433,7 @@ func TestBuildParams_SeveralBreakpointsInOneMergedTurn(t *testing.T) {
 
 func TestBuildParams_TooManyBreakpointsIsRejected(t *testing.T) {
 	cc := &llm.CacheControl{Type: "ephemeral"}
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessageWithCacheControl(llm.RoleSystem, "s", cc),
 		llm.NewMessageWithCacheControl(llm.RoleUser, "1", cc),
 		llm.NewMessageWithCacheControl(llm.RoleAssistant, "2", cc),
@@ -525,7 +526,7 @@ func TestBuildParams_AudioAttachmentRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err = buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMultimodalMessage(llm.RoleUser, "Listen", audio),
 	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
@@ -560,7 +561,7 @@ func TestBuildParams_TemperatureIsClampedToOne(t *testing.T) {
 }
 
 func TestBuildParams_OnlySystemMessagesIsRejected(t *testing.T) {
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessage(llm.RoleSystem, "You are terse."),
 	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
@@ -574,7 +575,7 @@ func TestBuildParams_MalformedRequiredIsRejected(t *testing.T) {
 		"properties": map[string]any{"a": map[string]any{"type": "string"}},
 		"required":   []any{"a", 42},
 	}, nil)
-	_, err := buildParams(llm.NewChatCompletionOptions(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 		llm.WithTools(tool),
 	), "claude-sonnet-5", DefaultMaxTokens)
@@ -696,7 +697,7 @@ func TestAttachmentBlock_Rejections(t *testing.T) {
 
 func TestBuildParams_NonObjectToolSchemaIsRejected(t *testing.T) {
 	tool := llm.NewFuncTool("t", "", map[string]any{"type": "array"}, nil)
-	_, err := buildParams(llm.NewChatCompletionOptions(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 		llm.WithTools(tool),
 	), "claude-sonnet-5", DefaultMaxTokens)
@@ -707,13 +708,13 @@ func TestBuildParams_NonObjectToolSchemaIsRejected(t *testing.T) {
 
 func TestBuildParams_CacheControlValidation(t *testing.T) {
 	bad := "2h"
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessageWithCacheControl(llm.RoleUser, "Hi", &llm.CacheControl{Type: "ephemeral", TTL: &bad}),
 	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
 		t.Error("expected an unsupported TTL to be rejected")
 	}
-	_, err = buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err = buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessageWithCacheControl(llm.RoleUser, "Hi", &llm.CacheControl{Type: "persistent"}),
 	)), "claude-sonnet-5", DefaultMaxTokens)
 	if err == nil {
@@ -736,7 +737,7 @@ func TestBuildParams_CacheHintOfAnEmptyMessageMovesToThePreviousTurn(t *testing.
 }
 
 func TestBuildParams_UnsignedReasoningOnlyTurnIsRejected(t *testing.T) {
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "A"),
 		llm.NewAssistantReasoningMessage("", "thought", nil),
 		llm.NewMessage(llm.RoleUser, "B"),
@@ -750,7 +751,7 @@ func TestBuildParams_BreakpointsAreCountedOncePlaced(t *testing.T) {
 	cc := &llm.CacheControl{Type: "ephemeral"}
 	// Five hints, but two resolve on the same block (empty message after an
 	// annotated one) and one lands on a thinking-only turn: three markers.
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessageWithCacheControl(llm.RoleSystem, "s", cc),
 		llm.NewMessageWithCacheControl(llm.RoleUser, "1", cc),
 		llm.NewMessageWithCacheControl(llm.RoleUser, "", cc),
@@ -790,7 +791,7 @@ func TestBuildParams_ImageMimeTypeNormalisation(t *testing.T) {
 }
 
 func TestBuildParams_ReasoningErrorNamesTheProviderDefault(t *testing.T) {
-	_, err := buildParams(llm.NewChatCompletionOptions(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 		llm.WithReasoning(llm.NewReasoningOptions(llm.ReasoningEffortLow)),
 	), "claude-sonnet-5", 1500)
@@ -801,7 +802,7 @@ func TestBuildParams_ReasoningErrorNamesTheProviderDefault(t *testing.T) {
 
 func TestBuildParams_RaiseIsBounded(t *testing.T) {
 	budget := 6000
-	params, err := buildParams(llm.NewChatCompletionOptions(
+	params, err := buildParams(context.Background(), llm.NewChatCompletionOptions(
 		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
 		llm.WithReasoning(&llm.ReasoningOptions{MaxTokens: &budget}),
 	), "claude-sonnet-5", DefaultMaxTokens)
@@ -830,7 +831,7 @@ func TestBuildParams_EmptySystemMessageIsSkipped(t *testing.T) {
 }
 
 func TestBuildParams_EmptyAssistantMessageIsRejected(t *testing.T) {
-	_, err := buildParams(llm.NewChatCompletionOptions(llm.WithMessages(
+	_, err := buildParams(context.Background(), llm.NewChatCompletionOptions(llm.WithMessages(
 		llm.NewMessage(llm.RoleUser, "A"),
 		llm.NewMessage(llm.RoleAssistant, ""),
 		llm.NewMessage(llm.RoleUser, "B"),
