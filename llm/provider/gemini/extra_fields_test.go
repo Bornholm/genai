@@ -209,3 +209,15 @@ func TestBuildRequest_SendsAZeroGenerationConfigValue(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildRequest_ExtraFields_ForwardsOnlyStoreFalse(t *testing.T) {
+	for value, forwarded := range map[any]bool{false: true, true: false, "no": false} {
+		body := wire(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"store": value}),
+		)
+		if got, ok := body["store"]; ok != forwarded {
+			t.Errorf("store %v: got %v, want forwarded %v", value, got, forwarded)
+		}
+	}
+}

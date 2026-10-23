@@ -171,7 +171,7 @@ func WithSessionID(id string) ChatCompletionOptionFunc {
 // fields that API defines forwarded and the others dropped. Gemini has no
 // counterpart to parallel_tool_calls, and reads store, which shares its name
 // with OpenAI's field, as its own: whether the request is logged, over the
-// project's logging setting.
+// project's logging setting. Only store false reaches it.
 func WithExtraFields(fields map[string]any) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		if len(fields) == 0 {

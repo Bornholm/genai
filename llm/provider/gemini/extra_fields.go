@@ -34,9 +34,6 @@ import (
 // option of the same name, except generationConfig, merged key by key into
 // the typed one. A forwarded tools or toolConfig is not read: a tool_choice
 // naming a function is checked against the typed tools only.
-//
-// store shares its name and its boolean with OpenAI's field: on both APIs it
-// says whether the provider keeps the request.
 var generateContentFields = map[string]struct{}{
 	"cachedContent":     {},
 	"contents":          {},
@@ -45,7 +42,6 @@ var generateContentFields = map[string]struct{}{
 	"labels":            {},
 	"safetySettings":    {},
 	"serviceTier":       {},
-	"store":             {},
 	"systemInstruction": {},
 	"toolConfig":        {},
 	"tools":             {},
@@ -68,6 +64,10 @@ var generateContentFields = map[string]struct{}{
 //   - parallel_tool_calls has no counterpart and is dropped: Gemini may still
 //     call several functions at once. True, the default of both APIs, is
 //     consumed without a log, the one drop that is not logged.
+//   - store shares its name and its boolean with OpenAI's field, and on
+//     Gemini overrides the project's logging setting. Only false is
+//     forwarded: a client may ask for its request not to be kept, not turn
+//     on a logging the operator left off.
 //   - every other field, OpenAI's user, logprobs or service_tier and the
 //     fields of OpenAI compatible gateways and servers alike, is dropped.
 func configureExtraFields(ctx context.Context, req *request, config *generationConfig, extra map[string]any) {
@@ -131,6 +131,13 @@ func configureExtraFields(ctx context.Context, req *request, config *generationC
 			if parallel, ok := value.(bool); !ok || !parallel {
 				drop(key)
 			}
+
+		case "store":
+			if store, ok := value.(bool); !ok || store {
+				drop(key)
+				continue
+			}
+			remaining[key] = value
 
 		case "generationConfig":
 			// Merged into the typed one: anything but an object would
