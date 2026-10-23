@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -34,6 +35,9 @@ import (
 // option of the same name, except generationConfig, merged key by key into
 // the typed one. A forwarded tools or toolConfig is not read: a tool_choice
 // naming a function is checked against the typed tools only.
+//
+// store and generationConfig are listed as fields generateContent defines,
+// but configureExtraFields checks them before forwarding them.
 var generateContentFields = map[string]struct{}{
 	"cachedContent":     {},
 	"contents":          {},
@@ -42,32 +46,42 @@ var generateContentFields = map[string]struct{}{
 	"labels":            {},
 	"safetySettings":    {},
 	"serviceTier":       {},
+	"store":             {},
 	"systemInstruction": {},
 	"toolConfig":        {},
 	"tools":             {},
 }
 
+// maxStopSequences is the most stopSequences generateContent accepts.
+const maxStopSequences = 5
+
 // configureExtraFields sets the generateContent counterpart of the OpenAI
 // fields that have one, forwards the fields generateContent defines (see
-// generateContentFields) and drops the rest. Each field dropped is logged at
-// debug level. It runs after the typed options.
+// generateContentFields) and drops the rest. Each field dropped, in whole or
+// in part, is logged at debug level, except the defaults it consumes: a zero
+// penalty and parallel_tool_calls true. It runs after the typed options.
 //
-//   - stop becomes generationConfig.stopSequences, without empty entries.
+//   - stop becomes generationConfig.stopSequences, without empty entries and
+//     cut to the first maxStopSequences.
 //   - top_p, top_k, frequency_penalty and presence_penalty become topP, topK,
-//     frequencyPenalty and presencePenalty in generationConfig. A zero
-//     penalty, the default of both APIs that OpenAI clients often send, is
-//     left out: some Gemini models refuse any penalty.
+//     frequencyPenalty and presencePenalty in generationConfig. A top_p
+//     outside [0, 1] is dropped; the other ranges depend on the model and
+//     are left to the API. A zero penalty, the default of both APIs that
+//     OpenAI clients often send, is left out: some Gemini models refuse any
+//     penalty.
 //   - the object form of tool_choice, which names a function, forces that
 //     function: mode ANY with it as the only allowed function name. It must
 //     be one of the request's tools. The string forms are dropped: the proxy
 //     maps them to llm.ToolChoice, the option a library caller sets instead.
 //   - parallel_tool_calls has no counterpart and is dropped: Gemini may still
-//     call several functions at once. True, the default of both APIs, is
-//     consumed without a log, the one drop that is not logged.
+//     call several functions at once.
 //   - store shares its name and its boolean with OpenAI's field, and on
 //     Gemini overrides the project's logging setting. Only false is
 //     forwarded: a client may ask for its request not to be kept, not turn
 //     on a logging the operator left off.
+//   - a forwarded generationConfig is merged into the typed one with its
+//     keys in camelCase. When it spells a key both ways, the camelCase one
+//     wins and the other is dropped.
 //   - every other field, OpenAI's user, logprobs or service_tier and the
 //     fields of OpenAI compatible gateways and servers alike, is dropped.
 func configureExtraFields(ctx context.Context, req *request, config *generationConfig, extra map[string]any) {
@@ -87,11 +101,15 @@ func configureExtraFields(ctx context.Context, req *request, config *generationC
 				drop(key)
 				continue
 			}
+			if len(stop) > maxStopSequences {
+				stop = stop[:maxStopSequences]
+				drop(key + "[" + strconv.Itoa(maxStopSequences) + ":]")
+			}
 			config.StopSequences = stop
 
 		case "top_p":
 			topP, ok := asFloat(value)
-			if !ok {
+			if !ok || topP < 0 || topP > 1 {
 				drop(key)
 				continue
 			}
@@ -149,7 +167,12 @@ func configureExtraFields(ctx context.Context, req *request, config *generationC
 			}
 			camel := make(map[string]any, len(forwarded))
 			for field, fieldValue := range forwarded {
-				camel[camelCase(field)] = fieldValue
+				name := camelCase(field)
+				if _, spelledBoth := forwarded[name]; spelledBoth && name != field {
+					drop(key + "." + field)
+					continue
+				}
+				camel[name] = fieldValue
 			}
 			remaining[key] = camel
 
@@ -263,6 +286,12 @@ func asFloat(value any) (float64, bool) {
 	case int64:
 		return float64(v), true
 	case int32:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case uint32:
 		return float64(v), true
 	case json.Number:
 		f, err := v.Float64()

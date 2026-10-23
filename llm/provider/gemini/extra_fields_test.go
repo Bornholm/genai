@@ -221,3 +221,48 @@ func TestBuildRequest_ExtraFields_ForwardsOnlyStoreFalse(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRequest_ExtraFields_TopPOutOfRange(t *testing.T) {
+	for _, value := range []any{1.5, -0.1} {
+		body := wire(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"top_p": value}),
+		)
+		if _, ok := body["generationConfig"]; ok {
+			t.Errorf("generationConfig = %v for top_p %v, want it dropped", body["generationConfig"], value)
+		}
+	}
+}
+
+func TestBuildRequest_ExtraFields_CutsStopToFiveSequences(t *testing.T) {
+	body := wire(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"stop": []any{"a", "b", "c", "d", "e", "f"}}),
+	)
+	want := []any{"a", "b", "c", "d", "e"}
+	if got := body["generationConfig"].(map[string]any)["stopSequences"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("stopSequences = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRequest_ExtraFields_KeyInBothSpellings(t *testing.T) {
+	for range 20 {
+		body := wire(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"generationConfig": map[string]any{"top_p": 0.1, "topP": 0.7}}),
+		)
+		if got := body["generationConfig"].(map[string]any)["topP"]; got != 0.7 {
+			t.Fatalf("topP = %v, want the camelCase 0.7", got)
+		}
+	}
+}
+
+func TestBuildRequest_ExtraFields_UnsignedTopK(t *testing.T) {
+	body := wire(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"top_k": uint(40)}),
+	)
+	if got := body["generationConfig"].(map[string]any)["topK"]; got != float64(40) {
+		t.Errorf("topK = %v, want 40", got)
+	}
+}
