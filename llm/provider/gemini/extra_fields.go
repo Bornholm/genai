@@ -1,0 +1,232 @@
+package gemini
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"maps"
+	"math"
+	"slices"
+)
+
+// generateContentFields lists the top-level request fields of
+// generateContent that configureExtraFields does not translate: they are
+// forwarded as they are, for a caller that knows the request goes to Gemini.
+// A field generateContent does not define is dropped instead. Extra fields
+// follow the OpenAI shape, the one the proxy forwards the fields it has no
+// mapping for in, and generateContent answers 400 "Invalid JSON payload
+// received. Unknown name" on any field it does not know. Clients built
+// against the OpenAI API, or an OpenAI compatible gateway, send such fields
+// without knowing the request will be routed to Gemini.
+//
+// The names are the camelCase ones the typed fields use: the API reads the
+// snake_case spelling as the same field, so generation_config next to the
+// typed generationConfig would be sent twice.
+//
+// A field forwarded this way overrides the one buildRequest sets from a typed
+// option of the same name, except generationConfig, merged key by key into
+// the typed one. A forwarded tools or toolConfig is not read: a tool_choice
+// naming a function is checked against the typed tools only.
+//
+// store shares its name and its boolean with OpenAI's field: on both APIs it
+// says whether the provider keeps the request.
+var generateContentFields = map[string]struct{}{
+	"cachedContent":     {},
+	"contents":          {},
+	"continuationToken": {},
+	"generationConfig":  {},
+	"labels":            {},
+	"safetySettings":    {},
+	"serviceTier":       {},
+	"store":             {},
+	"systemInstruction": {},
+	"toolConfig":        {},
+	"tools":             {},
+}
+
+// configureExtraFields sets the generateContent counterpart of the OpenAI
+// fields that have one, forwards the fields generateContent defines (see
+// generateContentFields) and drops the rest. Each field dropped is logged at
+// debug level. It runs after the typed options.
+//
+//   - stop becomes generationConfig.stopSequences, without empty entries.
+//   - top_p, top_k, frequency_penalty and presence_penalty become topP, topK,
+//     frequencyPenalty and presencePenalty in generationConfig. A zero
+//     penalty, the default of both APIs that OpenAI clients often send, is
+//     left out: some Gemini models refuse any penalty.
+//   - the object form of tool_choice, which names a function, forces that
+//     function: mode ANY with it as the only allowed function name. It must
+//     be one of the request's tools. The string forms are dropped: the proxy
+//     maps them to llm.ToolChoice, the option a library caller sets instead.
+//   - parallel_tool_calls has no counterpart and is dropped, true, the
+//     default of both APIs, without a log.
+//   - every other field, OpenAI's user, logprobs or service_tier and the
+//     fields of OpenAI compatible gateways and servers alike, is dropped.
+func configureExtraFields(ctx context.Context, req *request, config *generationConfig, extra map[string]any) {
+	if len(extra) == 0 {
+		return
+	}
+
+	remaining := make(map[string]any, len(extra))
+	var dropped []string
+	drop := func(key string) { dropped = append(dropped, key) }
+
+	for key, value := range extra {
+		switch key {
+		case "stop":
+			stop, ok := stringList(value)
+			if !ok {
+				drop(key)
+				continue
+			}
+			config.StopSequences = stop
+
+		case "top_p":
+			topP, ok := asFloat(value)
+			if !ok {
+				drop(key)
+				continue
+			}
+			config.TopP = &topP
+
+		case "top_k":
+			// The upper bound keeps the int conversion defined.
+			topK, ok := asFloat(value)
+			if !ok || topK < 0 || topK > math.MaxInt32 || topK != math.Trunc(topK) {
+				drop(key)
+				continue
+			}
+			k := int(topK)
+			config.TopK = &k
+
+		case "frequency_penalty", "presence_penalty":
+			penalty, ok := asFloat(value)
+			if !ok {
+				drop(key)
+				continue
+			}
+			if penalty == 0 {
+				continue
+			}
+			if key == "frequency_penalty" {
+				config.FrequencyPenalty = &penalty
+			} else {
+				config.PresencePenalty = &penalty
+			}
+
+		case "tool_choice":
+			if !forceFunction(req, value) {
+				drop(key)
+			}
+
+		case "parallel_tool_calls":
+			if parallel, ok := value.(bool); !ok || !parallel {
+				drop(key)
+			}
+
+		default:
+			if _, defined := generateContentFields[key]; !defined {
+				drop(key)
+				continue
+			}
+			remaining[key] = value
+		}
+	}
+
+	if len(dropped) > 0 {
+		slices.Sort(dropped)
+		slog.DebugContext(ctx, "dropped request fields the gemini generatecontent api does not accept", slog.Any("fields", dropped))
+	}
+
+	if len(remaining) > 0 {
+		forwarded := slices.Sorted(maps.Keys(remaining))
+		slog.DebugContext(ctx, "forwarding request fields verbatim to the gemini generatecontent api", slog.Any("fields", forwarded))
+		req.extra = remaining
+	}
+}
+
+// forceFunction forces the function OpenAI's tool_choice object names,
+// {"type":"function","function":{"name":...}}, and reports whether it could:
+// the function must be one of the request's tools.
+func forceFunction(req *request, value any) bool {
+	choice, ok := value.(map[string]any)
+	if !ok || choice["type"] != "function" {
+		return false
+	}
+	function, _ := choice["function"].(map[string]any)
+	name, _ := function["name"].(string)
+	if !declaresFunction(req, name) {
+		return false
+	}
+	req.ToolConfig = &toolConfig{FunctionCallingConfig: functionCallingConfig{
+		Mode:                 "ANY",
+		AllowedFunctionNames: []string{name},
+	}}
+	return true
+}
+
+// declaresFunction reports whether the request declares a function of that
+// name.
+func declaresFunction(req *request, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, set := range req.Tools {
+		for _, declaration := range set.FunctionDeclarations {
+			if declaration.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stringList reads OpenAI's stop, a string or an array of strings. Empty
+// strings are left out.
+func stringList(value any) ([]string, bool) {
+	var items []any
+	switch v := value.(type) {
+	case string:
+		items = []any{v}
+	case []string:
+		for _, item := range v {
+			items = append(items, item)
+		}
+	case []any:
+		items = v
+	default:
+		return nil, false
+	}
+
+	list := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, false
+		}
+		if s != "" {
+			list = append(list, s)
+		}
+	}
+	return list, len(list) > 0
+}
+
+func asFloat(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}

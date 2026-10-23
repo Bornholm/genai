@@ -37,7 +37,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		return nil, errors.WithStack(err)
 	}
 
-	req, err := buildRequest(opts)
+	req, err := buildRequest(ctx, opts)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -68,7 +68,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		return nil, errors.WithStack(err)
 	}
 
-	req, err := buildRequest(opts)
+	req, err := buildRequest(ctx, opts)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

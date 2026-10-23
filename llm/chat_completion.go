@@ -167,7 +167,8 @@ func WithSessionID(id string) ChatCompletionOptionFunc {
 // overwritten. They follow the OpenAI request shape, the one the proxy forwards
 // unmapped client fields in. Only providers that opt in forward them: openai
 // verbatim, mistral without the OpenAI platform fields it rejects, anthropic
-// translated to the Messages API where it has a counterpart.
+// and gemini translated to their native API where it has a counterpart, the
+// fields that API defines forwarded and the others dropped.
 func WithExtraFields(fields map[string]any) ChatCompletionOptionFunc {
 	return func(opts *ChatCompletionOptions) {
 		if len(fields) == 0 {
