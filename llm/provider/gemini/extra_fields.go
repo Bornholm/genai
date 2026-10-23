@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strings"
 )
 
 // generateContentFields lists the top-level request fields of
@@ -21,7 +22,13 @@ import (
 //
 // The names are the camelCase ones the typed fields use: the API reads the
 // snake_case spelling as the same field, so generation_config next to the
-// typed generationConfig would be sent twice.
+// typed generationConfig would be sent twice. The keys of a forwarded
+// generationConfig are turned to camelCase for the same reason, before it is
+// merged into the typed one.
+//
+// The list is the GenerateContentRequest of the Gemini API reference
+// (ai.google.dev/api/generate-content, generativelanguage v1beta) as of
+// October 2026; the Vertex AI request differs.
 //
 // A field forwarded this way overrides the one buildRequest sets from a typed
 // option of the same name, except generationConfig, merged key by key into
@@ -58,8 +65,9 @@ var generateContentFields = map[string]struct{}{
 //     function: mode ANY with it as the only allowed function name. It must
 //     be one of the request's tools. The string forms are dropped: the proxy
 //     maps them to llm.ToolChoice, the option a library caller sets instead.
-//   - parallel_tool_calls has no counterpart and is dropped, true, the
-//     default of both APIs, without a log.
+//   - parallel_tool_calls has no counterpart and is dropped: Gemini may still
+//     call several functions at once. True, the default of both APIs, is
+//     consumed without a log, the one drop that is not logged.
 //   - every other field, OpenAI's user, logprobs or service_tier and the
 //     fields of OpenAI compatible gateways and servers alike, is dropped.
 func configureExtraFields(ctx context.Context, req *request, config *generationConfig, extra map[string]any) {
@@ -124,6 +132,20 @@ func configureExtraFields(ctx context.Context, req *request, config *generationC
 				drop(key)
 			}
 
+		case "generationConfig":
+			// Merged into the typed one: anything but an object would
+			// replace it.
+			forwarded, ok := value.(map[string]any)
+			if !ok {
+				drop(key)
+				continue
+			}
+			camel := make(map[string]any, len(forwarded))
+			for field, fieldValue := range forwarded {
+				camel[camelCase(field)] = fieldValue
+			}
+			remaining[key] = camel
+
 		default:
 			if _, defined := generateContentFields[key]; !defined {
 				drop(key)
@@ -179,6 +201,18 @@ func declaresFunction(req *request, name string) bool {
 		}
 	}
 	return false
+}
+
+// camelCase turns a snake_case field name, top_p for instance, into the
+// camelCase spelling the API also reads, topP. A camelCase name is left as is.
+func camelCase(name string) string {
+	parts := strings.Split(name, "_")
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "" {
+			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // stringList reads OpenAI's stop, a string or an array of strings. Empty

@@ -119,6 +119,7 @@ func TestBuildRequest_ExtraFields_DropsMalformedValues(t *testing.T) {
 		"tool_choice":         "required",
 		"parallel_tool_calls": false,
 		"generation_config":   map[string]any{"topP": 0.5},
+		"generationConfig":    "hot",
 	} {
 		t.Run(key, func(t *testing.T) {
 			body := wire(t,
@@ -176,5 +177,35 @@ func TestBuildRequest_ExtraFields_LogsEveryDrop(t *testing.T) {
 	want := []string{"parallel_tool_calls", "repetition_penalty", "tool_choice", "user"}
 	if !reflect.DeepEqual(dropped, want) {
 		t.Errorf("dropped = %v, want %v", dropped, want)
+	}
+}
+
+func TestBuildRequest_ExtraFields_ForwardedGenerationConfigInSnakeCase(t *testing.T) {
+	body := wire(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTemperature(0.5),
+		llm.WithExtraFields(map[string]any{
+			"top_p":            0.9,
+			"generationConfig": map[string]any{"top_p": 0.5, "stop_sequences": []any{"END"}, "candidateCount": 1},
+		}),
+	)
+	want := map[string]any{"temperature": 0.5, "topP": 0.5, "stopSequences": []any{"END"}, "candidateCount": float64(1)}
+	if got := body["generationConfig"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("generationConfig = %v, want %v", got, want)
+	}
+}
+
+func TestBuildRequest_SendsAZeroGenerationConfigValue(t *testing.T) {
+	disabled := false
+	for name, opt := range map[string]llm.ChatCompletionOptionFunc{
+		"temperature": llm.WithTemperature(0),
+		"reasoning":   llm.WithReasoning(&llm.ReasoningOptions{Enabled: &disabled}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := wire(t, llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")), opt)
+			if _, ok := body["generationConfig"]; !ok {
+				t.Errorf("body = %v, want a generationConfig", body)
+			}
+		})
 	}
 }
