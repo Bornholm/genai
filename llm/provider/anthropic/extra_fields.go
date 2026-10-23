@@ -29,7 +29,8 @@ import (
 // option of the same name. A forwarded thinking is read, so the sampling and
 // tool choice rules follow it. A forwarded max_tokens or tools is not: the
 // caller then answers for a thinking budget under max_tokens, and a
-// tool_choice naming a tool is checked against the typed tools only.
+// tool_choice and parallel_tool_calls are applied against the typed tools
+// only: with tools forwarded and none typed, both are dropped.
 //
 // The list was checked against MessageNewParams and BetaMessageNewParams of
 // anthropic-sdk-go v1.72.0; TestMessagesAPIFields_CoversTheSDKParams fails
@@ -50,9 +51,7 @@ var messagesAPIFields = map[string]struct{}{
 	"output_format":         {},
 	"speed":                 {},
 	"stop_sequences":        {},
-	"stream":                {},
 	"system":                {},
-	"temperature":           {},
 	"thinking":              {},
 	"tools":                 {},
 }
@@ -77,6 +76,8 @@ const maxUserIDLength = 256
 //     enables thinking, the temperature, set by an option or forwarded, is
 //     dropped and a forced tool choice falls back to auto, as with an
 //     option enabling it.
+//   - temperature is capped at maxTemperature, the OpenAI range going up to
+//     2, and dropped under thinking, as the typed option is.
 //   - top_p is kept unless thinking is on, where the API restricts it, as the
 //     temperature is. A model refusing it next to a temperature answers 400:
 //     the caller sent both.
@@ -178,13 +179,15 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 			// Applied below, once the tool choice they refine is known.
 
 		case "temperature":
-			// The API rejects any temperature but the default once thinking
-			// is on, as buildParams has it.
-			if thinking {
+			// As buildParams has it: the API rejects any temperature but the
+			// default once thinking is on, and stops at maxTemperature where
+			// the OpenAI range goes up to 2.
+			temperature, ok := asFloat(value)
+			if !ok || thinking {
 				drop(key)
 				continue
 			}
-			remaining[key] = value
+			params.Temperature = anthropicsdk.Float(min(temperature, maxTemperature))
 
 		default:
 			if _, defined := messagesAPIFields[key]; !defined {
@@ -216,6 +219,7 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 
 	if len(dropped) > 0 {
 		slices.Sort(dropped)
+		dropped = slices.Compact(dropped)
 		slog.DebugContext(ctx, "dropped request fields the anthropic messages api does not accept", slog.Any("fields", dropped))
 	}
 

@@ -73,6 +73,19 @@ type anthropicMessagesResponse struct {
 
 // ---- Request conversion ---------------------------------------------------
 
+// declaresAnthropicTool reports whether tools holds a tool of that name.
+func declaresAnthropicTool(tools []anthropicTool, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseMessagesRequest converts an Anthropic Messages JSON body to llm options.
 //
 // cache_control hints are carried over as sent, on system, user, tool_result
@@ -105,7 +118,8 @@ func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts
 
 	// top_p and stop_sequences have direct OpenAI equivalents and travel as
 	// extra fields. top_k has none: OpenAI rejects unknown arguments, so it is
-	// dropped rather than risk a 400 on every request.
+	// dropped rather than risk a 400 on every request routed to an OpenAI
+	// backend, though the anthropic provider would forward it.
 	extra := map[string]any{}
 	if req.TopP != nil {
 		extra["top_p"] = *req.TopP
@@ -147,7 +161,9 @@ func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts
 				// which extra fields follow, carries the name: the openai
 				// provider forwards it and the anthropic one translates it.
 				opts = append(opts, llm.WithToolChoice(llm.ToolChoiceRequired))
-				if name, _ := toolChoice["name"].(string); name != "" {
+				// A tool the request does not declare stays required: an
+				// OpenAI backend would refuse the object naming it.
+				if name, _ := toolChoice["name"].(string); declaresAnthropicTool(req.Tools, name) {
 					opts = append(opts, llm.WithExtraFields(map[string]any{
 						"tool_choice": map[string]any{"type": "function", "function": map[string]any{"name": name}},
 					}))

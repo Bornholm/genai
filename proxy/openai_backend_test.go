@@ -87,3 +87,21 @@ func TestOpenAIBackends_KeepANamedToolChoiceOnMessages(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAIBackend_KeepsAToolChoiceNamingAnUndeclaredToolRequired(t *testing.T) {
+	server, upstreamBody := newOpenAIBackend(t, openai.Name)
+
+	reqBody := `{"model":"m","max_tokens":100,
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"name":"weather","input_schema":{"type":"object"}}],
+		"tool_choice":{"type":"tool","name":"forecast"}}`
+	w := httptest.NewRecorder()
+	server.handleMessages(w, buildMessagesRequest(t, "/v1/messages", reqBody))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if got := upstreamBody()["tool_choice"]; got != "required" {
+		t.Errorf("tool_choice = %v, want required", got)
+	}
+}

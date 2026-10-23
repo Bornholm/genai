@@ -474,9 +474,10 @@ func TestBuildParams_ExtraFields_LogsTheTemperatureAForwardedThinkingDrops(t *te
 
 // translatedFields are the Messages API fields configureExtraFields sets from
 // a value of its own, rather than forwarding them as they are.
-var translatedFields = []string{"metadata", "service_tier", "tool_choice", "top_k", "top_p"}
+var translatedFields = []string{"metadata", "service_tier", "temperature", "tool_choice", "top_k", "top_p"}
 
 func TestMessagesAPIFields_CoversTheSDKParams(t *testing.T) {
+	defined := map[string]struct{}{}
 	for _, params := range []any{anthropicsdk.MessageNewParams{}, anthropicsdk.BetaMessageNewParams{}} {
 		typ := reflect.TypeOf(params)
 		for i := range typ.NumField() {
@@ -484,10 +485,60 @@ func TestMessagesAPIFields_CoversTheSDKParams(t *testing.T) {
 			if name == "" || name == "-" {
 				continue
 			}
+			defined[name] = struct{}{}
 			if _, forwarded := messagesAPIFields[name]; forwarded || slices.Contains(translatedFields, name) {
 				continue
 			}
 			t.Errorf("%s, a %s field, is neither forwarded nor translated: add it to messagesAPIFields", name, typ.Name())
 		}
+	}
+
+	for name := range messagesAPIFields {
+		if _, ok := defined[name]; !ok {
+			t.Errorf("%s is forwarded but neither MessageNewParams nor BetaMessageNewParams defines it", name)
+		}
+		if slices.Contains(translatedFields, name) {
+			t.Errorf("%s is both forwarded and translated", name)
+		}
+	}
+}
+
+func TestBuildParams_ExtraFields_Temperature(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTemperature(0.2),
+		llm.WithExtraFields(map[string]any{"temperature": 1.5}),
+	)
+	if body["temperature"] != 1.0 {
+		t.Errorf("temperature = %v, want the forwarded one capped at 1", body["temperature"])
+	}
+
+	body = marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithTemperature(0.2),
+		llm.WithExtraFields(map[string]any{"temperature": "hot"}),
+	)
+	if body["temperature"] != 0.2 {
+		t.Errorf("temperature = %v, want the typed one kept over a malformed value", body["temperature"])
+	}
+}
+
+func TestBuildParams_ExtraFields_LogsADropOnce(t *testing.T) {
+	dropped := droppedFields(t, map[string]any{
+		"thinking":    map[string]any{"type": "adaptive"},
+		"temperature": 0.5,
+	}, llm.WithTemperature(0.5))
+	if !reflect.DeepEqual(dropped, []string{"temperature"}) {
+		t.Errorf("dropped = %v, want [temperature]", dropped)
+	}
+}
+
+func TestBuildParams_ExtraFields_DropsStream(t *testing.T) {
+	body := marshalParams(t,
+		llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+		llm.WithExtraFields(map[string]any{"stream": true}),
+	)
+	if _, ok := body["stream"]; ok {
+		t.Errorf("stream = %v, want it dropped: the SDK call sets it", body["stream"])
 	}
 }
