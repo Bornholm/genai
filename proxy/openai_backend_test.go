@@ -105,3 +105,29 @@ func TestOpenAIBackend_KeepsAToolChoiceNamingAnUndeclaredToolRequired(t *testing
 		t.Errorf("tool_choice = %v, want required", got)
 	}
 }
+
+func TestOpenAIBackend_SendsNoParallelToolCallsWithoutToolsToCall(t *testing.T) {
+	for name, reqBody := range map[string]string{
+		"without tools": `{"model":"m","max_tokens":100,
+			"messages":[{"role":"user","content":"hi"}],
+			"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`,
+		"with tools forbidden": `{"model":"m","max_tokens":100,
+			"messages":[{"role":"user","content":"hi"}],
+			"tools":[{"name":"weather","input_schema":{"type":"object"}}],
+			"tool_choice":{"type":"none","disable_parallel_tool_use":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, upstreamBody := newOpenAIBackend(t, openai.Name)
+
+			w := httptest.NewRecorder()
+			server.handleMessages(w, buildMessagesRequest(t, "/v1/messages", reqBody))
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+			}
+			if got, ok := upstreamBody()["parallel_tool_calls"]; ok {
+				t.Errorf("parallel_tool_calls = %v, want it left out", got)
+			}
+		})
+	}
+}

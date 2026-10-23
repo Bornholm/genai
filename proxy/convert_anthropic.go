@@ -169,7 +169,9 @@ func ParseMessagesRequest(body json.RawMessage) (model string, stream bool, opts
 					}))
 				}
 			}
-			if disable, _ := toolChoice["disable_parallel_tool_use"].(bool); disable {
+			// OpenAI accepts parallel_tool_calls only next to tools, and there is
+			// nothing to disable when they are forbidden.
+			if disable, _ := toolChoice["disable_parallel_tool_use"].(bool); disable && len(req.Tools) > 0 && toolChoice["type"] != "none" {
 				opts = append(opts, llm.WithExtraFields(map[string]any{"parallel_tool_calls": false}))
 			}
 		}

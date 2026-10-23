@@ -17,7 +17,10 @@ import (
 
 // messagesAPIFields lists the request fields of the Messages API, beta ones
 // included, that configureExtraFields does not translate: they are forwarded
-// as they are, for a caller that knows the request goes to Anthropic. A field
+// as they are, for a caller that knows the request goes to Anthropic. The
+// provider calls the stable endpoint: a beta field, one BetaMessageNewParams
+// alone defines, is accepted only with the anthropic-beta header that enables
+// it, which the provider's Headers option sets. A field
 // the API does not define is dropped instead. Extra fields follow the OpenAI
 // shape, the one the proxy forwards the fields it has no mapping for in, and
 // the Messages API answers 400 "Extra inputs are not permitted" on any field
@@ -27,10 +30,13 @@ import (
 //
 // A field forwarded this way overrides the one buildParams sets from a typed
 // option of the same name. A forwarded thinking is read, so the sampling and
-// tool choice rules follow it. A forwarded max_tokens or tools is not: the
-// caller then answers for a thinking budget under max_tokens, and a
-// tool_choice and parallel_tool_calls are applied against the typed tools
-// only: with tools forwarded and none typed, both are dropped.
+// tool choice rules follow it, one way only: one enabling thinking drops what
+// the API refuses with it, one disabling it does not bring back the
+// temperature or forced tool choice a typed reasoning option dropped. A
+// forwarded max_tokens or tools is not read: the caller then answers for a
+// thinking budget under max_tokens, and tool_choice and parallel_tool_calls
+// are applied against the typed tools only, so with tools forwarded and none
+// typed both are dropped.
 //
 // The list was checked against MessageNewParams and BetaMessageNewParams of
 // anthropic-sdk-go v1.72.0; TestMessagesAPIFields_CoversTheSDKParams fails
@@ -153,7 +159,8 @@ func configureExtraFields(ctx context.Context, params *anthropicsdk.MessageNewPa
 
 		case "top_k":
 			topK, ok := asFloat(value)
-			if !ok || topK < 0 || topK != math.Trunc(topK) || thinking {
+			// The upper bound keeps the int64 conversion defined.
+			if !ok || topK < 0 || topK > math.MaxInt32 || topK != math.Trunc(topK) || thinking {
 				drop(key)
 				continue
 			}
@@ -325,7 +332,7 @@ func declaresTool(params *anthropicsdk.MessageNewParams, name string) bool {
 
 // disableParallelToolUse applies parallel_tool_calls to the tool choice, and
 // reports whether the value had an effect to have. True is the default of both
-// APIs. False needs tools the request may call: without tools, or with tools
+// APIs, consumed without being forwarded or logged. False needs tools the request may call: without tools, or with tools
 // forbidden, there is nothing to disable.
 func disableParallelToolUse(params *anthropicsdk.MessageNewParams, value any) bool {
 	parallel, ok := value.(bool)

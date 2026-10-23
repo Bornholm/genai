@@ -542,3 +542,15 @@ func TestBuildParams_ExtraFields_DropsStream(t *testing.T) {
 		t.Errorf("stream = %v, want it dropped: the SDK call sets it", body["stream"])
 	}
 }
+
+func TestBuildParams_ExtraFields_TopKOutOfRange(t *testing.T) {
+	for _, value := range []any{1e30, json.Number("1e400")} {
+		body := marshalParams(t,
+			llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")),
+			llm.WithExtraFields(map[string]any{"top_k": value}),
+		)
+		if _, ok := body["top_k"]; ok {
+			t.Errorf("top_k = %v for %v, want it dropped", body["top_k"], value)
+		}
+	}
+}
