@@ -1,10 +1,12 @@
 package gemini
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 
 	"github.com/bornholm/genai/llm"
@@ -21,7 +23,9 @@ const signatureFormat = "google-gemini-v1"
 const skipSignature = "skip_thought_signature_validator"
 
 // request is the body of generateContent. Only the fields genai has an
-// option for are typed; ExtraFields travel through MarshalJSON.
+// option for, or translates an OpenAI extra field to, are typed; the extra
+// fields generateContent defines travel through MarshalJSON (see
+// configureExtraFields).
 type request struct {
 	Contents          []content         `json:"contents"`
 	SystemInstruction *content          `json:"systemInstruction,omitempty"`
@@ -32,7 +36,9 @@ type request struct {
 }
 
 // MarshalJSON merges the extra fields over the typed ones, which they
-// override, the way the other providers merge ExtraFields.
+// override, the way the other providers merge ExtraFields. A generationConfig
+// object is merged key by key into the typed one, so that the translated
+// sampling fields survive it.
 func (r request) MarshalJSON() ([]byte, error) {
 	type plain request
 	raw, err := json.Marshal(plain(r))
@@ -44,6 +50,14 @@ func (r request) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	for k, v := range r.extra {
+		forwarded, isObject := v.(map[string]any)
+		typed, hasTyped := merged[k].(map[string]any)
+		if k == "generationConfig" && isObject && hasTyped {
+			for field, value := range forwarded {
+				typed[field] = value
+			}
+			continue
+		}
 		merged[k] = v
 	}
 	return json.Marshal(merged)
@@ -103,11 +117,17 @@ type toolConfig struct {
 }
 
 type functionCallingConfig struct {
-	Mode string `json:"mode"`
+	Mode                 string   `json:"mode"`
+	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
 }
 
 type generationConfig struct {
 	Temperature        *float64        `json:"temperature,omitempty"`
+	TopP               *float64        `json:"topP,omitempty"`
+	TopK               *int            `json:"topK,omitempty"`
+	StopSequences      []string        `json:"stopSequences,omitempty"`
+	FrequencyPenalty   *float64        `json:"frequencyPenalty,omitempty"`
+	PresencePenalty    *float64        `json:"presencePenalty,omitempty"`
 	MaxOutputTokens    *int            `json:"maxOutputTokens,omitempty"`
 	Seed               *int            `json:"seed,omitempty"`
 	ResponseMimeType   string          `json:"responseMimeType,omitempty"`
@@ -153,7 +173,7 @@ var effortRatios = map[llm.ReasoningEffort]float64{
 
 // buildRequest converts genai chat completion options to a generateContent
 // request.
-func buildRequest(opts *llm.ChatCompletionOptions) (*request, error) {
+func buildRequest(ctx context.Context, opts *llm.ChatCompletionOptions) (*request, error) {
 	if opts.Audio != nil {
 		return nil, llm.NewValidationError("audio", "the Gemini provider has no audio output")
 	}
@@ -174,7 +194,6 @@ func buildRequest(opts *llm.ChatCompletionOptions) (*request, error) {
 	req := &request{
 		Contents:          contents,
 		SystemInstruction: system,
-		extra:             opts.ExtraFields,
 	}
 
 	config := &generationConfig{
@@ -212,8 +231,9 @@ func buildRequest(opts *llm.ChatCompletionOptions) (*request, error) {
 		}
 	}
 
-	if config.Temperature != nil || config.MaxOutputTokens != nil || config.Seed != nil ||
-		config.ResponseMimeType != "" || config.ThinkingConfig != nil {
+	configureExtraFields(ctx, req, config, opts.ExtraFields)
+
+	if !reflect.ValueOf(*config).IsZero() {
 		req.GenerationConfig = config
 	}
 
