@@ -600,7 +600,10 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		"USD", // OpenRouter always reports cost in USD
 	)
 
-	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...), nil
+	// OpenRouter normalizes finish_reason to the OpenAI vocabulary, and keeps
+	// the provider's own in native_finish_reason.
+	finish := llm.ParseOpenAIFinishReason(string(res.Choices[0].FinishReason))
+	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...).WithFinishReason(finish), nil
 }
 
 // ChatCompletionStream implements llm.ChatCompletionStreamingClient.
@@ -830,6 +833,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// finish reason is what tells a complete answer from a cut one, since
 		// OpenRouter always sends one before [DONE].
 		var finished bool
+		// finish is the reason itself, kept for the completion chunk.
+		var finish llm.FinishReason
 
 		for {
 			response, err := stream.Recv()
@@ -866,6 +871,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				}
 				if choice.FinishReason != "" || choice.NativeFinishReason != "" {
 					finished = true
+				}
+				if reason := llm.ParseOpenAIFinishReason(string(choice.FinishReason)); reason != "" {
+					finish = reason
 				}
 			}
 
@@ -954,7 +962,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			return
 		}
 
-		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
+		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()).WithFinishReason(finish))
 	}()
 
 	return chunks, nil
