@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/bornholm/genai/llm"
+	"github.com/revrost/go-openrouter"
 )
 
 // TestChatCompletionStream_ReportsTheFinishReason asserts that the finish
@@ -33,6 +34,64 @@ func TestChatCompletionStream_ReportsTheFinishReason(t *testing.T) {
 				t.Errorf("finish reason = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestParseFinishReason(t *testing.T) {
+	cases := []struct {
+		normalized, native string
+		want               llm.FinishReason
+	}{
+		{"length", "MAX_TOKENS", llm.FinishReasonLength},
+		// A choice carrying only the upstream provider's value.
+		{"", "MAX_TOKENS", llm.FinishReasonLength},
+		{"", "end_turn", llm.FinishReasonStop},
+		{"", "tool_use", llm.FinishReasonToolCalls},
+		// The normalized value wins over the native one.
+		{"stop", "max_tokens", llm.FinishReasonStop},
+		{"", "SAFETY", ""},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		if got := parseFinishReason(openrouter.FinishReason(c.normalized), c.native); got != c.want {
+			t.Errorf("parseFinishReason(%q, %q) = %q, want %q", c.normalized, c.native, got, c.want)
+		}
+	}
+}
+
+// TestChatCompletionStream_ReportsANativeOnlyFinishReason asserts that a
+// choice carrying only native_finish_reason still reports its reason, the
+// stream being taken as finished on that value already.
+func TestChatCompletionStream_ReportsANativeOnlyFinishReason(t *testing.T) {
+	client := newTestClient(t, sse(
+		helloChunk,
+		`{"choices":[{"index":0,"delta":{"content":"!"},"native_finish_reason":"MAX_TOKENS"}]}`,
+		usageChunk,
+		"[DONE]",
+	))
+
+	_, last := collect(t, client)
+	if last == nil || !last.IsComplete() {
+		t.Fatalf("last chunk = %v, want the completion chunk", last)
+	}
+	if got := llm.FinishReasonOf(last); got != llm.FinishReasonLength {
+		t.Errorf("finish reason = %q, want %q", got, llm.FinishReasonLength)
+	}
+}
+
+// TestChatCompletionStream_KeepsTheReasonOfTheFirstChoice asserts that the
+// reason of a choice the consumer never receives is not reported.
+func TestChatCompletionStream_KeepsTheReasonOfTheFirstChoice(t *testing.T) {
+	client := newTestClient(t, sse(
+		helloChunk,
+		`{"choices":[{"index":0,"delta":{"content":"!"},"finish_reason":"stop"},{"index":1,"delta":{"content":"?"},"finish_reason":"length"}]}`,
+		usageChunk,
+		"[DONE]",
+	))
+
+	_, last := collect(t, client)
+	if got := llm.FinishReasonOf(last); got != llm.FinishReasonStop {
+		t.Errorf("finish reason = %q, want %q", got, llm.FinishReasonStop)
 	}
 }
 

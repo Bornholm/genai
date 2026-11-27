@@ -104,17 +104,19 @@ type messagesEvent struct {
 // output: a content block delta, or the start of a block that already holds
 // some. A tool_use block counts from its start, which names the tool, as a
 // tool call delta naming it does on the translated path; a redacted thinking
-// block arrives whole in its start event. An event whose data does not decode
-// carries none.
+// block arrives whole in its start event. The data lines of the event are
+// joined with newlines before decoding, as SSE specifies. An event whose data
+// does not decode carries none.
 func messagesEventCarriesOutput(event []byte) bool {
-	var parsed messagesEvent
+	var data [][]byte
 	for _, line := range bytes.Split(event, []byte("\n")) {
-		if data, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data:")); ok {
-			if json.Unmarshal(bytes.TrimSpace(data), &parsed) != nil {
-				return false
-			}
-			break
+		if value, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data:")); ok {
+			data = append(data, bytes.TrimPrefix(value, []byte(" ")))
 		}
+	}
+	var parsed messagesEvent
+	if json.Unmarshal(bytes.Join(data, []byte("\n")), &parsed) != nil {
+		return false
 	}
 	switch parsed.Type {
 	case "content_block_delta":

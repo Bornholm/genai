@@ -246,6 +246,7 @@ func TestCarriesOutput(t *testing.T) {
 		{"relayed tool use start", llm.NewRawEventChunk([]byte("data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n"), nil, false), true},
 		{"relayed redacted thinking start", llm.NewRawEventChunk([]byte("data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"abc\"}}\n\n"), nil, false), true},
 		{"relayed event naming a delta in its payload", llm.NewRawEventChunk([]byte("data: {\"type\":\"message_start\",\"message\":{\"model\":\"content_block_delta\",\"content\":[]}}\n\n"), nil, false), false},
+		{"relayed content delta over several data lines", llm.NewRawEventChunk([]byte("event: content_block_delta\ndata: {\"type\":\ndata: \"content_block_delta\"}\n\n"), nil, false), true},
 		{"relayed undecodable event", llm.NewRawEventChunk([]byte("data: content_block_delta\n\n"), nil, false), false},
 		{"audio", llm.NewStreamChunk(llm.NewAudioStreamDelta(llm.RoleAssistant, "", "UklGRg==", "")), true},
 	}

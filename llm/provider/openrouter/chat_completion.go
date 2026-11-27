@@ -600,9 +600,7 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		"USD", // OpenRouter always reports cost in USD
 	)
 
-	// OpenRouter normalizes finish_reason to the OpenAI vocabulary, and keeps
-	// the provider's own in native_finish_reason.
-	finish := llm.ParseOpenAIFinishReason(string(res.Choices[0].FinishReason))
+	finish := parseFinishReason(res.Choices[0].FinishReason, res.Choices[0].NativeFinishReason)
 	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...).WithFinishReason(finish), nil
 }
 
@@ -872,13 +870,15 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 				if choice.FinishReason != "" || choice.NativeFinishReason != "" {
 					finished = true
 				}
-				if reason := llm.ParseOpenAIFinishReason(string(choice.FinishReason)); reason != "" {
-					finish = reason
-				}
 			}
 
 			choice := response.Choices[0]
 			delta := choice.Delta
+			// Only the first choice reaches the consumer, so only its reason
+			// is kept.
+			if reason := parseFinishReason(choice.FinishReason, choice.NativeFinishReason); reason != "" {
+				finish = reason
+			}
 
 			// Create stream delta
 			var toolCallDeltas []llm.ToolCallDelta

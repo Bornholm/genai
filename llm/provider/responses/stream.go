@@ -172,7 +172,7 @@ func (e *streamEmitter) handle(data []byte) bool {
 		if event.Response != nil {
 			details = event.Response.IncompleteDetails
 		}
-		finish := finishReason(strings.TrimPrefix(event.Type, "response."), details)
+		finish := finishReason(strings.TrimPrefix(event.Type, "response."), details, len(e.toolIndexes) > 0)
 		e.sendTerminal(llm.NewCompleteStreamChunk(newUsage(e.usage)).WithFinishReason(finish))
 		return true
 

@@ -74,3 +74,41 @@ func TestChatCompletionStream_ReportsTheFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// TestFinishReason_ToolCalls asserts that a completed turn asking for tools
+// ends on tool_calls: the Responses API reports it completed all the same.
+func TestFinishReason_ToolCalls(t *testing.T) {
+	t.Run("completion", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"resp_1","status":"completed","output":[
+				{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{}"}
+			],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`)
+		}))
+		defer server.Close()
+
+		res, err := NewChatCompletionClient(nil, server.URL, "sk-test", "gpt-test").
+			ChatCompletion(context.Background(), llm.WithMessages(llm.NewMessage(llm.RoleUser, "Hi")))
+		if err != nil {
+			t.Fatalf("chat completion: %v", err)
+		}
+		if got := llm.FinishReasonOf(res); got != llm.FinishReasonToolCalls {
+			t.Errorf("finish reason = %q, want %q", got, llm.FinishReasonToolCalls)
+		}
+	})
+
+	t.Run("stream", func(t *testing.T) {
+		server := streamServer(t,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":""}}`,
+			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{}"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{}"}}`,
+			`{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`,
+		)
+		defer server.Close()
+
+		got := collect(t, server)
+		if reason := llm.FinishReasonOf(got.terminal); reason != llm.FinishReasonToolCalls {
+			t.Errorf("finish reason = %q, want %q", reason, llm.FinishReasonToolCalls)
+		}
+	})
+}
