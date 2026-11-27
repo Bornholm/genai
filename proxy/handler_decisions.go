@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 )
@@ -17,6 +18,7 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, NewBadRequestError("could not read request body"))
 		return
 	}
+	receivedAt := time.Now()
 
 	// Parsed here so that a malformed request is refused before any hook
 	// runs; what goes upstream is parsed again from the body the hooks leave.
@@ -33,6 +35,7 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		SessionID: sessionIDFromHeaders(r.Header),
 		Body:      json.RawMessage(rawBody),
 		Metadata:  make(map[string]any),
+		Timing:    ExchangeTiming{ReceivedAt: receivedAt},
 	}
 
 	if s.options.AuthExtractor != nil {
@@ -92,7 +95,9 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		ctx = llm.ContextWithSessionID(ctx, req.SessionID)
 	}
 
+	req.Timing.UpstreamStartAt = time.Now()
 	llmRes, err := llm.Decide(ctx, rawClient, state, questions)
+	req.Timing.CompletedAt = time.Now()
 	if err != nil {
 		slog.ErrorContext(ctx, "decision error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)

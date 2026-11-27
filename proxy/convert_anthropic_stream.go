@@ -28,6 +28,8 @@ type anthropicStreamEmitter struct {
 	toolBlocks map[int]int
 
 	sawToolCalls bool
+	// finish is the last finish reason the provider reported in the stream.
+	finish llm.FinishReason
 }
 
 func newAnthropicStreamEmitter(model string) *anthropicStreamEmitter {
@@ -131,10 +133,7 @@ func (e *anthropicStreamEmitter) Finalize(w io.Writer, usage llm.ChatCompletionU
 		return err
 	}
 
-	stopReason := "end_turn"
-	if e.sawToolCalls {
-		stopReason = "tool_use"
-	}
+	stopReason := anthropicStopReason(effectiveFinishReason(e.finish, e.sawToolCalls))
 
 	var outputTokens int64
 	if usage != nil {
@@ -164,6 +163,9 @@ var _ streamEmitter = &anthropicStreamEmitter{}
 // process emits content_block_* events for the delta carried by chunk, and
 // closes the last open block once the stream is complete.
 func (e *anthropicStreamEmitter) process(w io.Writer, chunk llm.StreamChunk) error {
+	if reason := llm.FinishReasonOf(chunk); reason != "" {
+		e.finish = reason
+	}
 	if delta := chunk.Delta(); delta != nil {
 		if rd, ok := delta.(llm.ReasoningStreamDelta); ok {
 			if reasoning := rd.Reasoning(); reasoning != "" {

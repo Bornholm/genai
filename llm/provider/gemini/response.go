@@ -66,6 +66,23 @@ func finished(reason string) bool {
 	return reason == "STOP" || reason == "MAX_TOKENS"
 }
 
+// parseFinishReason translates a Gemini finish reason. STOP is also what
+// Gemini reports when it asks for tools; the proxy tells the two apart by the
+// tool calls of the answer. The reasons that mean nothing to an OpenAI client,
+// a malformed function call for one, are left unknown.
+func parseFinishReason(reason string) llm.FinishReason {
+	switch reason {
+	case "STOP":
+		return llm.FinishReasonStop
+	case "MAX_TOKENS":
+		return llm.FinishReasonLength
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "LANGUAGE":
+		return llm.FinishReasonContentFilter
+	default:
+		return ""
+	}
+}
+
 // blockedError reports a prompt or an answer the model refused to produce.
 // A safety block repeats on a retry, so it is not a 5xx; a malformed
 // function call or an unexplained stop may not, so it is a 502.
@@ -178,9 +195,10 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 	}
 
 	usage := newUsage(res.UsageMetadata)
+	finish := parseFinishReason(res.Candidates[0].FinishReason)
 
 	if reasoning.Len() == 0 && len(details) == 0 {
-		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, text.String()), usage, toolCalls...), nil
+		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, text.String()), usage, toolCalls...).WithFinishReason(finish), nil
 	}
 
 	thoughts := reasoning.String()
@@ -194,5 +212,5 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 		thoughts,
 		details,
 		toolCalls...,
-	), nil
+	).WithFinishReason(finish), nil
 }

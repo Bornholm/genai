@@ -130,7 +130,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			return
 		}
 
-		emitter.sendTerminal(llm.NewCompleteStreamChunk(emitter.usage()))
+		emitter.sendTerminal(llm.NewCompleteStreamChunk(emitter.usage()).WithFinishReason(emitter.finish))
 	}()
 
 	return chunks, nil
@@ -179,6 +179,10 @@ type streamEmitter struct {
 	// usageSeen marks that the provider published counters at least once, so
 	// that deltas carry them instead of a zeroed usage.
 	usageSeen bool
+
+	// finish is the stop reason of the message_delta event, kept for the
+	// completion chunk.
+	finish llm.FinishReason
 }
 
 type thinkingBlock struct {
@@ -232,6 +236,9 @@ func (e *streamEmitter) handle(event anthropicsdk.MessageStreamEventUnion) {
 		e.recordUsage(event.Message.Usage)
 
 	case "message_delta":
+		if reason := parseStopReason(string(event.Delta.StopReason)); reason != "" {
+			e.finish = reason
+		}
 		if event.Usage.JSON.OutputTokens.Valid() {
 			e.outputTokens = event.Usage.OutputTokens
 			e.usageSeen = e.usageSeen || e.outputTokens > 0
@@ -401,8 +408,10 @@ func fromMessage(message *anthropicsdk.Message, excludeReasoning bool) llm.ChatC
 		message.Usage.CacheCreationInputTokens,
 	)
 
+	finish := parseStopReason(string(message.StopReason))
+
 	if reasoning == "" && len(details) == 0 {
-		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, content), usage, toolCalls...)
+		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, content), usage, toolCalls...).WithFinishReason(finish)
 	}
 
 	// The signed blocks stay on the message whatever the caller asked: they
@@ -417,7 +426,25 @@ func fromMessage(message *anthropicsdk.Message, excludeReasoning bool) llm.ChatC
 		reasoning,
 		details,
 		toolCalls...,
-	)
+	).WithFinishReason(finish)
+}
+
+// parseStopReason translates a stop_reason of the Messages API. pause_turn is
+// no end of the model's turn, a server tool interrupted it, and is left
+// unknown for the consumer to infer.
+func parseStopReason(reason string) llm.FinishReason {
+	switch anthropicsdk.StopReason(reason) {
+	case anthropicsdk.StopReasonEndTurn, anthropicsdk.StopReasonStopSequence:
+		return llm.FinishReasonStop
+	case anthropicsdk.StopReasonMaxTokens, anthropicsdk.StopReasonModelContextWindowExceeded:
+		return llm.FinishReasonLength
+	case anthropicsdk.StopReasonToolUse:
+		return llm.FinishReasonToolCalls
+	case anthropicsdk.StopReasonRefusal:
+		return llm.FinishReasonContentFilter
+	default:
+		return ""
+	}
 }
 
 // newUsage builds a genai usage from Messages API counters. The API reports

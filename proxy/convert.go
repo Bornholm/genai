@@ -1074,6 +1074,27 @@ func normalizeMIMEType(mimeType string) string {
 	return mimeType
 }
 
+// effectiveFinishReason is the finish reason a client is told: the one the
+// provider reported, or, when it reported none, the one the proxy infers from
+// the answer, tool calls or text.
+//
+// Tool calls take precedence over a plain stop: some providers, Gemini for
+// one, report that they stopped while asking for tools, and an OpenAI client
+// only runs the tools of a turn that ended on tool_calls. A cut by the token
+// limit or the content filter is kept, since the calls may then be truncated.
+func effectiveFinishReason(reported llm.FinishReason, toolCalls bool) llm.FinishReason {
+	switch {
+	case reported == llm.FinishReasonLength, reported == llm.FinishReasonContentFilter:
+		return reported
+	case toolCalls:
+		return llm.FinishReasonToolCalls
+	case reported != "":
+		return reported
+	default:
+		return llm.FinishReasonStop
+	}
+}
+
 // FormatChatCompletionResponse converts a llm.ChatCompletionResponse to OpenAI JSON.
 func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) any {
 	msg := res.Message()
@@ -1088,10 +1109,9 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 		oMsg.ReasoningDetails = fromLLMReasoningDetails(rr.ReasoningDetails())
 	}
 
-	finishReason := "stop"
+	finishReason := string(effectiveFinishReason(llm.FinishReasonOf(res), len(res.ToolCalls()) > 0))
 
 	if len(res.ToolCalls()) > 0 {
-		finishReason = "tool_calls"
 		tcs := make([]openAIToolCall, 0, len(res.ToolCalls()))
 		for _, tc := range res.ToolCalls() {
 			args := ""
@@ -1145,9 +1165,15 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 // FormatStreamChunk converts a llm.StreamChunk to an OpenAI SSE data payload.
 //
 // sawToolCalls must be true if any prior chunk in the same stream carried tool
-// calls. It selects the finish_reason emitted on the terminal chunk:
+// calls. The finish_reason emitted on the terminal chunk is the one the chunk
+// reports, see llm.FinishReasonReporter; when it reports none, sawToolCalls
+// selects it:
 //   - tool_calls stream → finish_reason:"tool_calls"
 //   - text stream       → finish_reason:"stop"
+//
+// A provider may report its reason on an earlier chunk than the terminal one;
+// the proxy's own emitter keeps it across the stream, which this function,
+// handed a single chunk, cannot.
 //
 // Usage is serialised on the terminal chunk only, whatever a chunk carries. The
 // OpenAI API reports it once, at the end, and a client accumulating it across
@@ -1160,6 +1186,12 @@ func FormatChatCompletionResponse(res llm.ChatCompletionResponse, model string) 
 // intermediate tool-call chunk makes them close the turn on truncated
 // arguments, then retry the call — an agent loop that repeats the same tools.
 func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls bool) any {
+	return formatStreamChunk(chunk, id, model, sawToolCalls, llm.FinishReasonOf(chunk))
+}
+
+// formatStreamChunk is FormatStreamChunk with the finish reason reported so far
+// in the stream, empty when the provider reported none.
+func formatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls bool, reported llm.FinishReason) any {
 	if chunk.IsComplete() {
 		c := openAIStreamChunk{
 			ID:      id,
@@ -1167,10 +1199,7 @@ func FormatStreamChunk(chunk llm.StreamChunk, id, model string, sawToolCalls boo
 			Created: time.Now().Unix(),
 			Model:   model,
 		}
-		finish := "stop"
-		if sawToolCalls {
-			finish = "tool_calls"
-		}
+		finish := string(effectiveFinishReason(reported, sawToolCalls))
 		c.Choices = []openAIStreamChoice{
 			{Index: 0, Delta: openAIStreamDelta{}, FinishReason: &finish},
 		}

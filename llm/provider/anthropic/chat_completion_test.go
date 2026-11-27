@@ -203,6 +203,9 @@ func TestChatCompletion(t *testing.T) {
 	if cw, ok := usage.(llm.CacheCreationReportingUsage); !ok || cw.CacheCreationTokens() != 50 {
 		t.Errorf("cache writes not reported: %v", usage)
 	}
+	if got := llm.FinishReasonOf(res); got != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason = %q, want %q", got, llm.FinishReasonToolCalls)
+	}
 }
 
 func TestChatCompletion_ExcludeReasoning(t *testing.T) {
@@ -341,6 +344,26 @@ func TestChatCompletionStream(t *testing.T) {
 	}
 	if cw, ok := usage.(llm.CacheCreationReportingUsage); !ok || cw.CacheCreationTokens() != 50 {
 		t.Errorf("cache writes not reported in stream: %v", usage)
+	}
+	if got := llm.FinishReasonOf(complete); got != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason of the complete chunk = %q, want %q", got, llm.FinishReasonToolCalls)
+	}
+}
+
+func TestParseStopReason(t *testing.T) {
+	for reason, want := range map[string]llm.FinishReason{
+		"end_turn":                      llm.FinishReasonStop,
+		"stop_sequence":                 llm.FinishReasonStop,
+		"max_tokens":                    llm.FinishReasonLength,
+		"model_context_window_exceeded": llm.FinishReasonLength,
+		"tool_use":                      llm.FinishReasonToolCalls,
+		"refusal":                       llm.FinishReasonContentFilter,
+		"pause_turn":                    "",
+		"":                              "",
+	} {
+		if got := parseStopReason(reason); got != want {
+			t.Errorf("parseStopReason(%q) = %q, want %q", reason, got, want)
+		}
 	}
 }
 

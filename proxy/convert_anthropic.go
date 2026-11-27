@@ -656,6 +656,22 @@ func convertAnthropicSource(attachmentType llm.AttachmentType, source map[string
 
 // ---- Response conversion ---------------------------------------------------
 
+// anthropicStopReason translates a finish reason to the stop_reason of the
+// Messages API. Anthropic says why it refused in its own stop reason; the
+// content filter of any other provider is the nearest thing to it.
+func anthropicStopReason(reason llm.FinishReason) string {
+	switch reason {
+	case llm.FinishReasonLength:
+		return "max_tokens"
+	case llm.FinishReasonToolCalls:
+		return "tool_use"
+	case llm.FinishReasonContentFilter:
+		return "refusal"
+	default:
+		return "end_turn"
+	}
+}
+
 // FormatMessagesResponse converts a llm.ChatCompletionResponse to an
 // Anthropic Messages JSON response.
 func FormatMessagesResponse(res llm.ChatCompletionResponse, model string) any {
@@ -697,10 +713,9 @@ func FormatMessagesResponse(res llm.ChatCompletionResponse, model string) any {
 		})
 	}
 
-	stopReason := "end_turn"
+	stopReason := anthropicStopReason(effectiveFinishReason(llm.FinishReasonOf(res), len(res.ToolCalls()) > 0))
 
 	if toolCalls := res.ToolCalls(); len(toolCalls) > 0 {
-		stopReason = "tool_use"
 		for _, tc := range toolCalls {
 			blocks = append(blocks, map[string]any{
 				"type":  "tool_use",

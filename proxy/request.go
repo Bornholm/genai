@@ -51,6 +51,16 @@ type ProxyRequest struct {
 
 	// Mutable metadata hooks can enrich
 	Metadata map[string]any
+
+	// Stream reports whether the client asked for a streamed response, on the
+	// chat completion and Messages routes. A relayed Messages request is
+	// always streamed.
+	Stream bool
+	// Timing records when the exchange reached each of its stages. It lives
+	// on the request rather than on the response because the error hooks,
+	// which get no response, need it as much as the post-response hooks do.
+	// The proxy fills it; a hook only reads it.
+	Timing ExchangeTiming
 }
 
 // ProxyResponse encapsulates the response before sending it to the client.
@@ -59,6 +69,13 @@ type ProxyResponse struct {
 	Body       any // will be serialized to JSON in OpenAI format
 	Headers    http.Header
 	TokensUsed *TokenUsage // filled after the LLM call
+
+	// FinishReason is why the model stopped, as the client was told: the
+	// reason the provider reported, or the one the proxy inferred from the
+	// answer when it reported none (tool_calls or stop). It is empty for an
+	// interrupted stream, whose client was told no reason or a made-up one,
+	// and for the responses that have none, embeddings and decisions.
+	FinishReason llm.FinishReason
 
 	// Interruption describes how a streamed response ended when it did not end
 	// normally. It is nil for a completed stream and for every non-streamed

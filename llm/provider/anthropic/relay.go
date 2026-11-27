@@ -131,7 +131,11 @@ func relayEvents(ctx context.Context, stream io.Reader, chunks chan<- llm.Stream
 				llm.SendTerminalChunk(ctx, chunks, llm.NewRawEventErrorChunk(event, upstreamErr, usage.usage()))
 				return
 			default:
-				if !llm.SendChunk(ctx, chunks, llm.NewRawEventChunk(event, usage.usage(), false)) {
+				chunk := llm.NewRawEventChunk(event, usage.usage(), false)
+				if reason := parseStopReason(parsed.Delta.StopReason); reason != "" {
+					chunk = llm.NewRawEventChunkWithFinishReason(event, usage.usage(), reason)
+				}
+				if !llm.SendChunk(ctx, chunks, chunk) {
 					llm.SendTerminalChunk(ctx, chunks, llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
 					return
 				}
@@ -181,6 +185,10 @@ type relayEventData struct {
 		Usage relayEventUsage `json:"usage"`
 	} `json:"message"`
 	Usage relayEventUsage `json:"usage"`
+	// Delta carries the stop reason, on the message_delta event.
+	Delta struct {
+		StopReason string `json:"stop_reason"`
+	} `json:"delta"`
 	Error struct {
 		Type string `json:"type"`
 	} `json:"error"`

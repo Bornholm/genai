@@ -81,12 +81,14 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		completion.Usage.PromptTokensDetails.CachedTokens,
 	)
 
+	finish := llm.ParseOpenAIFinishReason(completion.Choices[0].FinishReason)
+
 	// Return response with reasoning if present
 	if reasoning != "" || len(reasoningDetails) > 0 {
-		return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...), nil
+		return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...).WithFinishReason(finish), nil
 	}
 
-	return llm.NewChatCompletionResponse(message, usage, toolCalls...), nil
+	return llm.NewChatCompletionResponse(message, usage, toolCalls...).WithFinishReason(finish), nil
 }
 
 // ChatCompletionStream implements llm.ChatCompletionStreamingClient.
@@ -126,6 +128,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		defer close(chunks)
 		defer stream.Close()
 
+		// Kept for the completion chunk, sent once the stream is over.
+		var finish llm.FinishReason
+
 		var (
 			reasoningBuf  strings.Builder
 			reasoningDets []llm.ReasoningDetail
@@ -156,6 +161,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 			choice := chunk.Choices[0]
 			delta := choice.Delta
+			if reason := llm.ParseOpenAIFinishReason(choice.FinishReason); reason != "" {
+				finish = reason
+			}
 
 			// Each delta.Content from Mistral is either a plain string or a
 			// self-contained JSON array like [{"type":"thinking",...}].
@@ -231,7 +239,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		if finalUsage == nil {
 			finalUsage = llm.NewChatCompletionUsage(0, 0, 0)
 		}
-		sendTerminal(llm.NewCompleteStreamChunk(finalUsage))
+		sendTerminal(llm.NewCompleteStreamChunk(finalUsage).WithFinishReason(finish))
 	}()
 
 	return chunks, nil

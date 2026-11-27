@@ -132,6 +132,19 @@ type BaseStreamChunk struct {
 	usage     ChatCompletionUsage
 	err       error
 	complete  bool
+	finish    FinishReason
+}
+
+// FinishReason implements FinishReasonReporter.
+func (c *BaseStreamChunk) FinishReason() FinishReason {
+	return c.finish
+}
+
+// WithFinishReason sets why the model stopped and returns the chunk, for a
+// provider to chain it on the constructor, usually NewCompleteStreamChunk.
+func (c *BaseStreamChunk) WithFinishReason(reason FinishReason) *BaseStreamChunk {
+	c.finish = reason
+	return c
 }
 
 // Type implements StreamChunk
@@ -160,6 +173,7 @@ func (c *BaseStreamChunk) IsComplete() bool {
 }
 
 var _ StreamChunk = &BaseStreamChunk{}
+var _ FinishReasonReporter = &BaseStreamChunk{}
 
 // BaseStreamDelta provides a base implementation of StreamDelta and ReasoningStreamDelta
 type BaseStreamDelta struct {

@@ -92,10 +92,11 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		)
 	}
 
+	finish := llm.ParseOpenAIFinishReason(completion.Choices[0].FinishReason)
 	if reasoning != "" {
-		return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, nil, toolCalls...), nil
+		return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, nil, toolCalls...).WithFinishReason(finish), nil
 	}
-	return llm.NewChatCompletionResponse(message, usage, toolCalls...), nil
+	return llm.NewChatCompletionResponse(message, usage, toolCalls...).WithFinishReason(finish), nil
 }
 
 // ChatCompletionStream implements llm.ChatCompletionStreamingClient.
@@ -171,6 +172,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		defer close(chunks)
 		defer stream.Close()
 
+		// The finish reason comes on the last chunk with a choice, which may
+		// be followed by a usage-only chunk: it is kept for the completion
+		// chunk.
+		var finish llm.FinishReason
+
 		for stream.Next() {
 			chunk := stream.Current()
 
@@ -205,6 +211,9 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 			choice := chunk.Choices[0]
 			delta := choice.Delta
+			if reason := llm.ParseOpenAIFinishReason(choice.FinishReason); reason != "" {
+				finish = reason
+			}
 
 			// Create stream delta
 			var toolCallDeltas []llm.ToolCallDelta
@@ -272,7 +281,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		}
 
 		// Send completion chunk
-		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
+		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()).WithFinishReason(finish))
 	}()
 
 	return chunks, nil
