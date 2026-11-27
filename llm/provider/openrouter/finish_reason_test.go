@@ -49,7 +49,8 @@ func TestParseFinishReason(t *testing.T) {
 		{"", "tool_use", llm.FinishReasonToolCalls},
 		// The normalized value wins over the native one.
 		{"stop", "max_tokens", llm.FinishReasonStop},
-		{"", "SAFETY", ""},
+		{"", "SAFETY", llm.FinishReasonContentFilter},
+		{"", "MALFORMED_FUNCTION_CALL", ""},
 		{"", "", ""},
 	}
 	for _, c := range cases {

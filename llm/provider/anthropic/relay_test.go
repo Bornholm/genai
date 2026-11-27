@@ -151,16 +151,13 @@ func TestRelayMessages_ForwardsRequestAndEventsVerbatim(t *testing.T) {
 		t.Errorf("usage = %d prompt / %d completion, want 152 / 94", usage.PromptTokens(), usage.CompletionTokens())
 	}
 
-	// The stop reason travels on the message_delta event, which comes before
-	// message_stop: the consumer keeps the last one it saw.
-	var finish llm.FinishReason
-	for _, chunk := range all {
-		if reason := llm.FinishReasonOf(chunk); reason != "" {
-			finish = reason
-		}
+	// The stop reason arrives on the message_delta event and is repeated on
+	// message_stop, the completion chunk, where the other providers put it.
+	if got := llm.FinishReasonOf(last); got != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason of the completion chunk = %q, want %q", got, llm.FinishReasonToolCalls)
 	}
-	if finish != llm.FinishReasonToolCalls {
-		t.Errorf("finish reason = %q, want %q", finish, llm.FinishReasonToolCalls)
+	if got := llm.FinishReasonOf(all[len(all)-2]); got != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason of message_delta = %q, want %q", got, llm.FinishReasonToolCalls)
 	}
 }
 

@@ -114,6 +114,10 @@ func (c *ChatCompletionClient) RelayMessages(ctx context.Context, body []byte, h
 func relayEvents(ctx context.Context, stream io.Reader, chunks chan<- llm.StreamChunk) {
 	reader := bufio.NewReader(stream)
 	var usage relayUsageTracker
+	// finish is the stop reason of the message_delta event, repeated on the
+	// message_stop chunk: a consumer reading the reason off the completion
+	// chunk alone finds it there, as with the other providers.
+	var finish llm.FinishReason
 
 	for {
 		event, err := readEvent(reader)
@@ -123,7 +127,7 @@ func relayEvents(ctx context.Context, stream io.Reader, chunks chan<- llm.Stream
 
 			switch parsed.Type {
 			case "message_stop":
-				llm.SendTerminalChunk(ctx, chunks, llm.NewRawEventChunk(event, usage.usage(), true))
+				llm.SendTerminalChunk(ctx, chunks, llm.NewRawEventChunkWithFinishReason(event, usage.usage(), true, finish))
 				return
 			case "error":
 				status := statusForErrorType(shared.ErrorType(parsed.Error.Type))
@@ -133,6 +137,7 @@ func relayEvents(ctx context.Context, stream io.Reader, chunks chan<- llm.Stream
 			default:
 				chunk := llm.NewRawEventChunk(event, usage.usage(), false)
 				if reason := parseStopReason(parsed.Delta.StopReason); reason != "" {
+					finish = reason
 					chunk = llm.NewRawEventChunkWithFinishReason(event, usage.usage(), false, reason)
 				}
 				if !llm.SendChunk(ctx, chunks, chunk) {
