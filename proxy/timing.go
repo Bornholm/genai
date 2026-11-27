@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"time"
 
 	"github.com/bornholm/genai/llm"
@@ -75,13 +76,6 @@ func between(from, to time.Time) (time.Duration, bool) {
 	return to.Sub(from), true
 }
 
-// anthropicContentEvent is the type of the only relayed Messages events that
-// carry output: text, thinking and tool input all arrive as deltas of a content
-// block. It is looked for anywhere in the event, since the SSE event line is
-// optional and the type is repeated in the data; no other event of a Messages
-// stream carries the name.
-var anthropicContentEvent = []byte("content_block_delta")
-
 // carriesOutput reports whether a stream chunk carries part of the answer, as
 // opposed to a chunk announcing the role, reporting usage or closing the
 // stream.
@@ -90,17 +84,45 @@ func carriesOutput(chunk llm.StreamChunk) bool {
 		return false
 	}
 	if raw, ok := chunk.(llm.RawEventChunk); ok {
-		return bytes.Contains(raw.RawEvent(), anthropicContentEvent)
+		return messagesEventCarriesOutput(raw.RawEvent())
 	}
-	delta := chunk.Delta()
-	if delta == nil {
+	return llm.ChunkCarriesOutput(chunk)
+}
+
+// messagesEvent is a relayed Messages event, reduced to what tells whether it
+// carries output.
+type messagesEvent struct {
+	Type         string `json:"type"`
+	ContentBlock struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+	} `json:"content_block"`
+}
+
+// messagesEventCarriesOutput reports whether a relayed Messages event carries
+// output: a content block delta, or the start of a block that already holds
+// some. A tool_use block counts from its start, which names the tool, as a
+// tool call delta naming it does on the translated path; a redacted thinking
+// block arrives whole in its start event. An event whose data does not decode
+// carries none.
+func messagesEventCarriesOutput(event []byte) bool {
+	var parsed messagesEvent
+	for _, line := range bytes.Split(event, []byte("\n")) {
+		if data, ok := bytes.CutPrefix(bytes.TrimRight(line, "\r"), []byte("data:")); ok {
+			if json.Unmarshal(bytes.TrimSpace(data), &parsed) != nil {
+				return false
+			}
+			break
+		}
+	}
+	switch parsed.Type {
+	case "content_block_delta":
+		return true
+	case "content_block_start":
+		block := parsed.ContentBlock
+		return block.Type == "tool_use" || block.Type == "redacted_thinking" || block.Text != "" || block.Thinking != ""
+	default:
 		return false
 	}
-	if delta.Content() != "" || len(delta.ToolCalls()) > 0 {
-		return true
-	}
-	if rd, ok := delta.(llm.ReasoningStreamDelta); ok {
-		return rd.Reasoning() != "" || len(rd.ReasoningDetails()) > 0
-	}
-	return false
 }

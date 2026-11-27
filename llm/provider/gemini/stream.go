@@ -119,7 +119,7 @@ func (e *streamEmitter) end() {
 	default:
 		// A safety stop after some text keeps what was sent, like an
 		// OpenAI content filter.
-		e.sendTerminal(llm.NewCompleteStreamChunk(newUsage(e.usage)).WithFinishReason(parseFinishReason(e.finish)))
+		e.sendTerminal(llm.NewCompleteStreamChunk(newUsage(e.usage)).WithFinishReason(parseFinishReason(e.finish, e.toolCount > 0)))
 	}
 }
 

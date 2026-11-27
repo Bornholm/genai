@@ -10,6 +10,7 @@ func TestParseOpenAIFinishReason(t *testing.T) {
 		"tool_calls":     FinishReasonToolCalls,
 		"function_call":  FinishReasonToolCalls,
 		"content_filter": FinishReasonContentFilter,
+		"refusal":        FinishReasonContentFilter,
 		"error":          "",
 		"":               "",
 	} {

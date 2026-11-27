@@ -79,8 +79,9 @@ func NewRawEventChunk(event []byte, usage ChatCompletionUsage, complete bool) Ra
 
 // NewRawEventChunkWithFinishReason returns a chunk relaying an event that says
 // why the model stopped, the message_delta event of a Messages stream.
-func NewRawEventChunkWithFinishReason(event []byte, usage ChatCompletionUsage, reason FinishReason) RawEventChunk {
-	return &rawEventChunk{event: event, usage: usage, finish: reason}
+// complete marks the event that ends the stream, as for NewRawEventChunk.
+func NewRawEventChunkWithFinishReason(event []byte, usage ChatCompletionUsage, complete bool, reason FinishReason) RawEventChunk {
+	return &rawEventChunk{event: event, usage: usage, complete: complete, finish: reason}
 }
 
 // NewRawEventErrorChunk returns a chunk relaying an upstream error event.

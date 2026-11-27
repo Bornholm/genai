@@ -133,7 +133,7 @@ func relayEvents(ctx context.Context, stream io.Reader, chunks chan<- llm.Stream
 			default:
 				chunk := llm.NewRawEventChunk(event, usage.usage(), false)
 				if reason := parseStopReason(parsed.Delta.StopReason); reason != "" {
-					chunk = llm.NewRawEventChunkWithFinishReason(event, usage.usage(), reason)
+					chunk = llm.NewRawEventChunkWithFinishReason(event, usage.usage(), false, reason)
 				}
 				if !llm.SendChunk(ctx, chunks, chunk) {
 					llm.SendTerminalChunk(ctx, chunks, llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))

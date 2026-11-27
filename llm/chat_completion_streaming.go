@@ -175,6 +175,34 @@ func (c *BaseStreamChunk) IsComplete() bool {
 var _ StreamChunk = &BaseStreamChunk{}
 var _ FinishReasonReporter = &BaseStreamChunk{}
 
+// ChunkCarriesOutput reports whether the delta of chunk holds output a
+// consumer shows or acts on: content, tool calls, reasoning or audio. A chunk
+// announcing the role alone, reporting usage, ending the stream or relaying a
+// raw event carries none by this measure.
+func ChunkCarriesOutput(chunk StreamChunk) bool {
+	if chunk == nil {
+		return false
+	}
+	delta := chunk.Delta()
+	if delta == nil {
+		return false
+	}
+	if delta.Content() != "" || len(delta.ToolCalls()) > 0 {
+		return true
+	}
+	if r, ok := delta.(ReasoningStreamDelta); ok && (r.Reasoning() != "" || len(r.ReasoningDetails()) > 0) {
+		return true
+	}
+	type audioDelta interface {
+		AudioData() string
+		Transcript() string
+	}
+	if a, ok := delta.(audioDelta); ok && (a.AudioData() != "" || a.Transcript() != "") {
+		return true
+	}
+	return false
+}
+
 // BaseStreamDelta provides a base implementation of StreamDelta and ReasoningStreamDelta
 type BaseStreamDelta struct {
 	role             Role

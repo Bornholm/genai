@@ -67,12 +67,15 @@ func finished(reason string) bool {
 }
 
 // parseFinishReason translates a Gemini finish reason. STOP is also what
-// Gemini reports when it asks for tools; the proxy tells the two apart by the
-// tool calls of the answer. The reasons that mean nothing to an OpenAI client,
-// a malformed function call for one, are left unknown.
-func parseFinishReason(reason string) llm.FinishReason {
+// Gemini reports when it asks for tools, so toolCalls, whether the answer
+// carries any, tells the two apart. The reasons that mean nothing to an OpenAI
+// client, a malformed function call for one, are left unknown.
+func parseFinishReason(reason string, toolCalls bool) llm.FinishReason {
 	switch reason {
 	case "STOP":
+		if toolCalls {
+			return llm.FinishReasonToolCalls
+		}
 		return llm.FinishReasonStop
 	case "MAX_TOKENS":
 		return llm.FinishReasonLength
@@ -195,7 +198,7 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 	}
 
 	usage := newUsage(res.UsageMetadata)
-	finish := parseFinishReason(res.Candidates[0].FinishReason)
+	finish := parseFinishReason(res.Candidates[0].FinishReason, len(toolCalls) > 0)
 
 	if reasoning.Len() == 0 && len(details) == 0 {
 		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, text.String()), usage, toolCalls...).WithFinishReason(finish), nil

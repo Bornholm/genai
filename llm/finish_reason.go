@@ -40,7 +40,7 @@ func ParseOpenAIFinishReason(value string) FinishReason {
 		return FinishReasonLength
 	case "tool_calls", "function_call", "tool_use":
 		return FinishReasonToolCalls
-	case "content_filter":
+	case "content_filter", "refusal":
 		return FinishReasonContentFilter
 	default:
 		return ""

@@ -68,8 +68,30 @@ func TestParseFinishReason(t *testing.T) {
 		"MALFORMED_FUNCTION_CALL": "",
 		"":                        "",
 	} {
-		if got := parseFinishReason(reason); got != want {
+		if got := parseFinishReason(reason, false); got != want {
 			t.Errorf("parseFinishReason(%q) = %q, want %q", reason, got, want)
 		}
+	}
+	// Gemini reports STOP when it asks for tools.
+	if got := parseFinishReason("STOP", true); got != llm.FinishReasonToolCalls {
+		t.Errorf("parseFinishReason(STOP, tool calls) = %q, want %q", got, llm.FinishReasonToolCalls)
+	}
+	// A cut by the token limit stays one, tool calls or not.
+	if got := parseFinishReason("MAX_TOKENS", true); got != llm.FinishReasonLength {
+		t.Errorf("parseFinishReason(MAX_TOKENS, tool calls) = %q, want %q", got, llm.FinishReasonLength)
+	}
+}
+
+// TestChatCompletionStream_ReportsToolCallsOnStop asserts that a streamed turn
+// asking for tools ends on tool_calls, though Gemini says STOP.
+func TestChatCompletionStream_ReportsToolCallsOnStop(t *testing.T) {
+	server := streamServer(t,
+		`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"fc-1","name":"ping","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}`,
+	)
+	defer server.Close()
+
+	got := collect(t, server)
+	if reason := llm.FinishReasonOf(got.terminal); reason != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason = %q, want %q", reason, llm.FinishReasonToolCalls)
 	}
 }

@@ -345,7 +345,12 @@ func (o *streamObserver) observe(chunk llm.StreamChunk) {
 	if o.req.Timing.FirstOutputAt.IsZero() && carriesOutput(chunk) {
 		o.req.Timing.FirstOutputAt = time.Now()
 	}
-	if chunk.Error() == nil && chunk.Delta() != nil && len(chunk.Delta().ToolCalls()) > 0 {
+	// An error chunk ends the stream with no reason the client is told, so
+	// whatever it carries is not one.
+	if chunk.Error() != nil {
+		return
+	}
+	if chunk.Delta() != nil && len(chunk.Delta().ToolCalls()) > 0 {
 		o.toolCalls = true
 	}
 	if reason := llm.FinishReasonOf(chunk); reason != "" {

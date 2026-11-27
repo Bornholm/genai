@@ -241,6 +241,13 @@ func TestCarriesOutput(t *testing.T) {
 		{"relayed message_start", llm.NewRawEventChunk([]byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n"), nil, false), false},
 		{"relayed content delta", llm.NewRawEventChunk([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\"}\n\n"), nil, false), true},
 		{"relayed content delta without event line", llm.NewRawEventChunk([]byte("data: {\"type\": \"content_block_delta\"}\n\n"), nil, false), true},
+		{"relayed empty text block start", llm.NewRawEventChunk([]byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"), nil, false), false},
+		{"relayed text block start with text", llm.NewRawEventChunk([]byte("data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"text\",\"text\":\"Hi\"}}\n\n"), nil, false), true},
+		{"relayed tool use start", llm.NewRawEventChunk([]byte("data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{}}}\n\n"), nil, false), true},
+		{"relayed redacted thinking start", llm.NewRawEventChunk([]byte("data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"abc\"}}\n\n"), nil, false), true},
+		{"relayed event naming a delta in its payload", llm.NewRawEventChunk([]byte("data: {\"type\":\"message_start\",\"message\":{\"model\":\"content_block_delta\",\"content\":[]}}\n\n"), nil, false), false},
+		{"relayed undecodable event", llm.NewRawEventChunk([]byte("data: content_block_delta\n\n"), nil, false), false},
+		{"audio", llm.NewStreamChunk(llm.NewAudioStreamDelta(llm.RoleAssistant, "", "UklGRg==", "")), true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
