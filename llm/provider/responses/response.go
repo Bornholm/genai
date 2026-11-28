@@ -206,9 +206,10 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 	}
 
 	usage := newUsage(res.Usage)
+	finish := finishReason(res.Status, res.IncompleteDetails, len(toolCalls) > 0)
 
 	if len(reasoning) == 0 && len(details) == 0 {
-		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, content.String()), usage, toolCalls...), nil
+		return llm.NewChatCompletionResponse(llm.NewMessage(llm.RoleAssistant, content.String()), usage, toolCalls...).WithFinishReason(finish), nil
 	}
 
 	// The details stay whatever the caller asked: they are what the next
@@ -224,7 +225,32 @@ func fromResponse(res *response, excludeReasoning bool) (llm.ChatCompletionRespo
 		text,
 		details,
 		toolCalls...,
-	), nil
+	).WithFinishReason(finish), nil
+}
+
+// finishReason translates the status of a response, and the reason it is
+// incomplete when it is, to a finish reason. A completed response says nothing
+// of tool calls: toolCalls, whether it carries any, tells a turn asking for
+// tools from a finished answer.
+func finishReason(status string, details *incompleteDetails, toolCalls bool) llm.FinishReason {
+	switch status {
+	case "completed":
+		if toolCalls {
+			return llm.FinishReasonToolCalls
+		}
+		return llm.FinishReasonStop
+	case "incomplete":
+		if details == nil {
+			return ""
+		}
+		switch details.Reason {
+		case "max_output_tokens":
+			return llm.FinishReasonLength
+		case "content_filter":
+			return llm.FinishReasonContentFilter
+		}
+	}
+	return ""
 }
 
 // responseFailure returns the error of a failed response, nil otherwise. A

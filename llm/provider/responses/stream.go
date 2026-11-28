@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/pkg/errors"
@@ -165,7 +166,14 @@ func (e *streamEmitter) handle(data []byte) bool {
 			e.fail(errors.WithStack(llm.ErrNoMessage))
 			return true
 		}
-		e.sendTerminal(llm.NewCompleteStreamChunk(newUsage(e.usage)))
+		// The event type repeats the status, for a gateway leaving the
+		// response out of the terminal event.
+		var details *incompleteDetails
+		if event.Response != nil {
+			details = event.Response.IncompleteDetails
+		}
+		finish := finishReason(strings.TrimPrefix(event.Type, "response."), details, len(e.toolIndexes) > 0)
+		e.sendTerminal(llm.NewCompleteStreamChunk(newUsage(e.usage)).WithFinishReason(finish))
 		return true
 
 	case "response.failed":

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 )
@@ -19,6 +20,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicAPIError(w, NewBadRequestError("could not read request body"))
 		return
 	}
+	receivedAt := time.Now()
 
 	// 2. Parse
 	model, stream, chatOpts, err := ParseMessagesRequest(json.RawMessage(rawBody))
@@ -36,6 +38,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Body:        json.RawMessage(rawBody),
 		ChatOptions: chatOpts,
 		Metadata:    make(map[string]any),
+		Stream:      stream,
+		Timing:      ExchangeTiming{ReceivedAt: receivedAt},
 	}
 
 	// 4. Extract UserID
@@ -101,7 +105,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Call LLM
+	req.Timing.UpstreamStartAt = time.Now()
 	llmRes, err := completionClient.ChatCompletion(ctx, opts...)
+	req.Timing.CompletedAt = time.Now()
 	if err != nil {
 		slog.ErrorContext(ctx, "messages completion error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)
@@ -126,9 +132,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		tokensUsed.CachedTokens = int(cu.CachedTokens())
 	}
 	proxyRes := &ProxyResponse{
-		StatusCode: http.StatusOK,
-		Body:       body,
-		TokensUsed: tokensUsed,
+		StatusCode:   http.StatusOK,
+		Body:         body,
+		TokensUsed:   tokensUsed,
+		FinishReason: effectiveFinishReason(llm.FinishReasonOf(llmRes), len(llmRes.ToolCalls()) > 0),
 	}
 
 	// 10. Post-response hooks

@@ -600,7 +600,8 @@ func (c *ChatCompletionClient) ChatCompletion(ctx context.Context, funcs ...llm.
 		"USD", // OpenRouter always reports cost in USD
 	)
 
-	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...), nil
+	finish := parseFinishReason(res.Choices[0].FinishReason, res.Choices[0].NativeFinishReason)
+	return llm.NewChatCompletionResponseWithReasoning(message, usage, reasoning, reasoningDetails, toolCalls...).WithFinishReason(finish), nil
 }
 
 // ChatCompletionStream implements llm.ChatCompletionStreamingClient.
@@ -830,6 +831,8 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 		// finish reason is what tells a complete answer from a cut one, since
 		// OpenRouter always sends one before [DONE].
 		var finished bool
+		// finish is the reason itself, kept for the completion chunk.
+		var finish llm.FinishReason
 
 		for {
 			response, err := stream.Recv()
@@ -871,6 +874,11 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 
 			choice := response.Choices[0]
 			delta := choice.Delta
+			// Only the first choice reaches the consumer, so only its reason
+			// is kept.
+			if reason := parseFinishReason(choice.FinishReason, choice.NativeFinishReason); reason != "" {
+				finish = reason
+			}
 
 			// Create stream delta
 			var toolCallDeltas []llm.ToolCallDelta
@@ -954,7 +962,7 @@ func (c *ChatCompletionClient) ChatCompletionStream(ctx context.Context, funcs .
 			return
 		}
 
-		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()))
+		sendTerminal(llm.NewCompleteStreamChunk(currentUsage()).WithFinishReason(finish))
 	}()
 
 	return chunks, nil

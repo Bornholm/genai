@@ -278,7 +278,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, funcs ...llm.ChatComp
 					// A completion chunk counts too: a provider sending anything
 					// after it breaks the contract, and a retry would follow a
 					// whole answer with a second one.
-					forwarded = forwarded || chunk.IsComplete() || carriesOutput(chunk)
+					forwarded = forwarded || chunk.IsComplete() || llm.ChunkCarriesOutput(chunk)
 				case <-ctx.Done():
 					abandonAttempt(stream)
 					sendTerminal(llm.NewErrorStreamChunk(errors.WithStack(ctx.Err())))
@@ -364,29 +364,6 @@ func (c *Client) Close() error {
 		return closer.Close()
 	}
 	return nil
-}
-
-// carriesOutput reports whether chunk holds output a consumer shows or acts
-// on: content, tool calls, reasoning or audio.
-func carriesOutput(chunk llm.StreamChunk) bool {
-	delta := chunk.Delta()
-	if delta == nil {
-		return false
-	}
-	if delta.Content() != "" || len(delta.ToolCalls()) > 0 {
-		return true
-	}
-	if r, ok := delta.(llm.ReasoningStreamDelta); ok && (r.Reasoning() != "" || len(r.ReasoningDetails()) > 0) {
-		return true
-	}
-	type audioDelta interface {
-		AudioData() string
-		Transcript() string
-	}
-	if a, ok := delta.(audioDelta); ok && (a.AudioData() != "" || a.Transcript() != "") {
-		return true
-	}
-	return false
 }
 
 // wait waits for d, or until ctx ends, and reports whether d elapsed. Unlike

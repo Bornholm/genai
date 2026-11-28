@@ -150,6 +150,15 @@ func TestRelayMessages_ForwardsRequestAndEventsVerbatim(t *testing.T) {
 	if usage.PromptTokens() != 152 || usage.CompletionTokens() != 94 {
 		t.Errorf("usage = %d prompt / %d completion, want 152 / 94", usage.PromptTokens(), usage.CompletionTokens())
 	}
+
+	// The stop reason arrives on the message_delta event and is repeated on
+	// message_stop, the completion chunk, where the other providers put it.
+	if got := llm.FinishReasonOf(last); got != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason of the completion chunk = %q, want %q", got, llm.FinishReasonToolCalls)
+	}
+	if got := llm.FinishReasonOf(all[len(all)-2]); got != llm.FinishReasonToolCalls {
+		t.Errorf("finish reason of message_delta = %q, want %q", got, llm.FinishReasonToolCalls)
+	}
 }
 
 func TestRelayMessages_RejectionKeepsStatusHeadersAndBody(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 )
@@ -17,6 +18,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, NewBadRequestError("could not read request body"))
 		return
 	}
+	receivedAt := time.Now()
 
 	model, inputs, embOpts, err := ParseEmbeddingRequest(json.RawMessage(rawBody))
 	if err != nil {
@@ -31,6 +33,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		Body:             json.RawMessage(rawBody),
 		EmbeddingOptions: embOpts,
 		Metadata:         make(map[string]any),
+		Timing:           ExchangeTiming{ReceivedAt: receivedAt},
 	}
 
 	if s.options.AuthExtractor != nil {
@@ -69,7 +72,9 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Timing.UpstreamStartAt = time.Now()
 	llmRes, err := embClient.Embeddings(ctx, inputs, req.EmbeddingOptions...)
+	req.Timing.CompletedAt = time.Now()
 	if err != nil {
 		slog.ErrorContext(ctx, "embeddings error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)

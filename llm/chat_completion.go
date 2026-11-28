@@ -564,6 +564,19 @@ type BaseChatCompletionResponse struct {
 	usage            ChatCompletionUsage
 	reasoning        string
 	reasoningDetails []ReasoningDetail
+	finishReason     FinishReason
+}
+
+// FinishReason implements FinishReasonReporter.
+func (b *BaseChatCompletionResponse) FinishReason() FinishReason {
+	return b.finishReason
+}
+
+// WithFinishReason sets why the model stopped and returns the response, for a
+// provider to chain it on the constructor.
+func (b *BaseChatCompletionResponse) WithFinishReason(reason FinishReason) *BaseChatCompletionResponse {
+	b.finishReason = reason
+	return b
 }
 
 // Usage implements ChatCompletionResponse.
@@ -614,6 +627,7 @@ func NewChatCompletionResponseWithReasoning(message Message, usage ChatCompletio
 
 var _ ChatCompletionResponse = &BaseChatCompletionResponse{}
 var _ ReasoningChatCompletionResponse = &BaseChatCompletionResponse{}
+var _ FinishReasonReporter = &BaseChatCompletionResponse{}
 
 // CacheCreationReportingUsage is satisfied by usage objects from providers
 // that bill cache writes separately from cache reads (e.g. Anthropic, whose

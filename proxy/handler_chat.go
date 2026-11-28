@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, NewBadRequestError("could not read request body"))
 		return
 	}
+	receivedAt := time.Now()
 
 	// 2. Parse
 	model, stream, chatOpts, err := ParseChatCompletionRequest(json.RawMessage(rawBody))
@@ -38,6 +40,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Body:        json.RawMessage(rawBody),
 		ChatOptions: chatOpts,
 		Metadata:    make(map[string]any),
+		Stream:      stream,
+		Timing:      ExchangeTiming{ReceivedAt: receivedAt},
 	}
 
 	// 4. Extract UserID
@@ -96,7 +100,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Call LLM
+	req.Timing.UpstreamStartAt = time.Now()
 	llmRes, err := completionClient.ChatCompletion(ctx, opts...)
+	req.Timing.CompletedAt = time.Now()
 	if err != nil {
 		slog.ErrorContext(ctx, "chat completion error", slog.Any("error", err))
 		errRes, _ := s.chain.RunOnError(ctx, req, err)
@@ -127,9 +133,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	proxyRes := &ProxyResponse{
-		StatusCode: http.StatusOK,
-		Body:       body,
-		TokensUsed: tokensUsed,
+		StatusCode:   http.StatusOK,
+		Body:         body,
+		TokensUsed:   tokensUsed,
+		FinishReason: effectiveFinishReason(llm.FinishReasonOf(llmRes), len(llmRes.ToolCalls()) > 0),
 	}
 
 	// 10. Post-response hooks
@@ -159,6 +166,7 @@ type openAIStreamEmitter struct {
 	streamID     string
 	model        string
 	sawToolCalls bool
+	finish       llm.FinishReason
 }
 
 func newOpenAIStreamEmitter(model string) *openAIStreamEmitter {
@@ -172,8 +180,11 @@ func (e *openAIStreamEmitter) write(w io.Writer, chunk llm.StreamChunk) error {
 	if !chunk.IsComplete() && chunk.Delta() != nil && len(chunk.Delta().ToolCalls()) > 0 {
 		e.sawToolCalls = true
 	}
+	if reason := llm.FinishReasonOf(chunk); reason != "" {
+		e.finish = reason
+	}
 
-	payload := FormatStreamChunk(chunk, e.streamID, e.model, e.sawToolCalls)
+	payload := formatStreamChunk(chunk, e.streamID, e.model, e.sawToolCalls, e.finish)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return errors.WithStack(err)

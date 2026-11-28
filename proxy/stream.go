@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"syscall"
+	"time"
 
 	"github.com/bornholm/genai/llm"
 )
@@ -78,8 +79,10 @@ func (s *Server) streamChatCompletion(
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 
+	req.Timing.UpstreamStartAt = time.Now()
 	chunks, err := client.ChatCompletionStream(streamCtx, opts...)
 	if err != nil {
+		req.Timing.CompletedAt = time.Now()
 		slog.ErrorContext(ctx, "stream chat completion error", slog.Any("error", err))
 		s.writeStreamOpenError(ctx, w, req, emitter, err)
 		return
@@ -89,11 +92,15 @@ func (s *Server) streamChatCompletion(
 	// This lets us return a proper HTTP error status when the backend
 	// immediately rejects the request (e.g. invalid model parameters).
 	firstChunk, ok := <-chunks
+	observer := &streamObserver{req: req}
+	observer.observe(firstChunk)
 	if !ok {
+		req.Timing.CompletedAt = time.Now()
 		s.writeStreamOpenError(ctx, w, req, emitter, errors.New("stream closed with no data"))
 		return
 	}
 	if firstChunk.Error() != nil {
+		req.Timing.CompletedAt = time.Now()
 		slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", firstChunk.Error()))
 		s.writeStreamOpenError(ctx, w, req, emitter, firstChunk.Error())
 		return
@@ -164,6 +171,7 @@ func (s *Server) streamChatCompletion(
 
 	if interruption == nil && !firstChunk.IsComplete() {
 		for chunk := range chunks {
+			observer.observe(chunk)
 			if chunk.Error() != nil {
 				sawTerminal = true
 				slog.ErrorContext(ctx, "stream chunk error", slog.Any("error", chunk.Error()))
@@ -222,6 +230,9 @@ func (s *Server) streamChatCompletion(
 			}
 		}
 	}
+	// The stream is no longer read past this point, whatever ended it: the
+	// writes still to come are the proxy's, not the provider's.
+	req.Timing.CompletedAt = time.Now()
 
 	// The channel closed without the provider ever signalling completion or
 	// failure. The client keeps the normal closing events — a provider is free
@@ -289,6 +300,9 @@ func (s *Server) streamChatCompletion(
 		TokensUsed:   streamTokensUsed,
 		Interruption: interruption,
 	}
+	if interruption == nil {
+		proxyRes.FinishReason = observer.finishReason()
+	}
 	// The hooks run on a context detached from the request. On the client_gone
 	// path r.Context() is already canceled — that is what ended the stream — and
 	// a usage hook writing to a network or SQL store would fail on
@@ -313,6 +327,41 @@ func (s *Server) streamChatCompletion(
 			slog.WarnContext(ctx, "post-response hook error", slog.Any("error", err))
 		}
 	}
+}
+
+// streamObserver follows what a stream says about itself as the proxy reads
+// it: when its first output arrived, whether it asked for tools, and the last
+// finish reason the provider reported.
+type streamObserver struct {
+	req       *ProxyRequest
+	toolCalls bool
+	finish    llm.FinishReason
+}
+
+func (o *streamObserver) observe(chunk llm.StreamChunk) {
+	if chunk == nil {
+		return
+	}
+	if o.req.Timing.FirstOutputAt.IsZero() && carriesOutput(chunk) {
+		o.req.Timing.FirstOutputAt = time.Now()
+	}
+	// An error chunk ends the stream with no reason the client is told, so
+	// whatever it carries is not one.
+	if chunk.Error() != nil {
+		return
+	}
+	if chunk.Delta() != nil && len(chunk.Delta().ToolCalls()) > 0 {
+		o.toolCalls = true
+	}
+	if reason := llm.FinishReasonOf(chunk); reason != "" {
+		o.finish = reason
+	}
+}
+
+// finishReason is the reason the emitters gave the client, for a stream that
+// ended normally.
+func (o *streamObserver) finishReason() llm.FinishReason {
+	return effectiveFinishReason(o.finish, o.toolCalls)
 }
 
 // writeFailureCause tells a client that walked away from a write that failed on
